@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Film Negative Processor</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+        }
+
+        body {
+            background: #1a1a1a;
+            color: #fff;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            display: flex;
+            gap: 20px;
+            max-width: 1800px;
+            margin: 0 auto;
+            height: calc(100vh - 40px);
+        }
+
+        .controls {
+            width: 320px;
+            padding: 24px;
+            background: #252525;
+            border-radius: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            height: 100%;
+            overflow-y: auto;
+        }
+
+        .preview {
+            flex-grow: 1;
+            background: #252525;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .preview img {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+        }
+
+        .toggle-switch {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 16px;
+            background: #2a2a2a;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .toggle-switch:hover {
+            background: #333;
+        }
+
+        .toggle-switch input[type="checkbox"] {
+            appearance: none;
+            width: 40px;
+            height: 24px;
+            background: #444;
+            border-radius: 12px;
+            position: relative;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .toggle-switch input[type="checkbox"]:checked {
+            background: #0066cc;
+        }
+
+        .toggle-switch input[type="checkbox"]::before {
+            content: '';
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            top: 2px;
+            left: 2px;
+            background: white;
+            transition: all 0.3s ease;
+        }
+
+        .toggle-switch input[type="checkbox"]:checked::before {
+            transform: translateX(16px);
+        }
+
+        .upload-area {
+            border: 2px dashed #444;
+            border-radius: 8px;
+            padding: 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .upload-area:hover {
+            border-color: #666;
+            background: #2a2a2a;
+        }
+
+        .upload-area.dragover {
+            border-color: #0066cc;
+            background: #1a1a1a;
+        }
+
+        .slider-container {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .slider-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .slider-label {
+            font-weight: 500;
+            color: #ddd;
+        }
+
+        .slider-value {
+            color: #999;
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        .control-group {
+            background: #2a2a2a;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+
+        .control-group h3 {
+            color: #fff;
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #444;
+        }
+
+        input[type="range"] {
+            -webkit-appearance: none;
+            width: 100%;
+            height: 6px;
+            background: #333;
+            border-radius: 3px;
+            outline: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px;
+            height: 16px;
+            background: #0066cc;
+            border-radius: 50%;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        input[type="range"]::-webkit-slider-thumb:hover {
+            background: #0077ee;
+            transform: scale(1.1);
+        }
+
+        .button-group {
+            display: flex;
+            gap: 8px;
+            margin-top: auto;
+        }
+
+        button {
+            flex: 1;
+            padding: 12px;
+            border: none;
+            border-radius: 6px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            font-size: 14px;
+        }
+
+        .primary-button {
+            background: #0066cc;
+            color: white;
+        }
+
+        .primary-button:hover {
+            background: #0077ee;
+        }
+
+        .secondary-button {
+            background: #333;
+            color: #fff;
+        }
+
+        .secondary-button:hover {
+            background: #444;
+        }
+
+        .fine-control {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .fine-control input[type="number"] {
+            width: 60px;
+            padding: 4px;
+            border: 1px solid #444;
+            border-radius: 4px;
+            background: #1a1a1a;
+            color: #fff;
+            font-size: 14px;
+        }
+
+        .loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.7);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 18px;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #0066cc;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 12px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="controls">
+            <div class="upload-area" id="dropZone">
+                <input type="file" id="fileInput" accept="image/*" style="display: none;">
+                <p>Drop your film negative here<br>or click to upload</p>
+            </div>
+
+            <div class="toggle-switch">
+                <input type="checkbox" id="show-analysis" onchange="toggleAnalysis(this.checked)">
+                <label for="show-analysis">Show Unexposed Film Detection</label>
+            </div>
+
+            <div class="control-group">
+                <h3>Tone</h3>
+                <div class="slider-container">
+                    <div class="slider-header">
+                        <span class="slider-label">Exposure</span>
+                        <div class="fine-control">
+                            <input type="number" id="exposureNumber" value="0.0" step="0.1" min="-2.0" max="2.0">
+                            <span class="slider-value" id="exposureValue">0.0</span>
+                        </div>
+                    </div>
+                    <input type="range" id="exposure" min="-2.0" max="2.0" step="0.1" value="0.0">
+                </div>
+
+                <div class="slider-container">
+                    <div class="slider-header">
+                        <span class="slider-label">Contrast</span>
+                        <div class="fine-control">
+                            <input type="number" id="contrastNumber" value="1.0" step="0.05" min="0.2" max="3.0">
+                            <span class="slider-value" id="contrastValue">1.0</span>
+                        </div>
+                    </div>
+                    <input type="range" id="contrast" min="0.2" max="3.0" step="0.05" value="1.0">
+                </div>
+
+                <div class="slider-container">
+                    <div class="slider-header">
+                        <span class="slider-label">Highlights</span>
+                        <div class="fine-control">
+                            <input type="number" id="highlight_recoveryNumber" value="0.0" step="0.05" min="0.0" max="1.0">
+                            <span class="slider-value" id="highlight_recoveryValue">0.0</span>
+                        </div>
+                    </div>
+                    <input type="range" id="highlight_recovery" min="0.0" max="1.0" step="0.05" value="0.0">
+                </div>
+
+                <div class="slider-container">
+                    <div class="slider-header">
+                        <span class="slider-label">Shadows</span>
+                        <div class="fine-control">
+                            <input type="number" id="shadow_recoveryNumber" value="0.0" step="0.05" min="0.0" max="1.0">
+                            <span class="slider-value" id="shadow_recoveryValue">0.0</span>
+                        </div>
+                    </div>
+                    <input type="range" id="shadow_recovery" min="0.0" max="1.0" step="0.05" value="0.0">
+                </div>
+            </div>
+
+            <div class="control-group">
+                <h3>Color</h3>
+                <div class="slider-container">
+                    <div class="slider-header">
+                        <span class="slider-label">Temperature</span>
+                        <div class="fine-control">
+                            <input type="number" id="temperatureNumber" value="0.0" step="0.1" min="-5.0" max="5.0">
+                            <span class="slider-value" id="temperatureValue">0.0</span>
+                        </div>
+                    </div>
+                    <input type="range" id="temperature" min="-5.0" max="5.0" step="0.1" value="0.0">
+                </div>
+
+                <div class="slider-container">
+                    <div class="slider-header">
+                        <span class="slider-label">Tint</span>
+                        <div class="fine-control">
+                            <input type="number" id="tintNumber" value="0.0" step="0.1" min="-5.0" max="5.0">
+                            <span class="slider-value" id="tintValue">0.0</span>
+                        </div>
+                    </div>
+                    <input type="range" id="tint" min="-5.0" max="5.0" step="0.1" value="0.0">
+                </div>
+
+                <div class="slider-container">
+                    <div class="slider-header">
+                        <span class="slider-label">Red Balance</span>
+                        <div class="fine-control">
+                            <input type="number" id="redNumber" value="1.0" step="0.02" min="0.5" max="2.0">
+                            <span class="slider-value" id="redValue">1.0</span>
+                        </div>
+                    </div>
+                    <input type="range" id="red" min="0.5" max="2.0" step="0.02" value="1.0">
+                </div>
+
+                <div class="slider-container">
+                    <div class="slider-header">
+                        <span class="slider-label">Green Balance</span>
+                        <div class="fine-control">
+                            <input type="number" id="greenNumber" value="1.0" step="0.02" min="0.5" max="2.0">
+                            <span class="slider-value" id="greenValue">1.0</span>
+                        </div>
+                    </div>
+                    <input type="range" id="green" min="0.5" max="2.0" step="0.02" value="1.0">
+                </div>
+
+                <div class="slider-container">
+                    <div class="slider-header">
+                        <span class="slider-label">Blue Balance</span>
+                        <div class="fine-control">
+                            <input type="number" id="blueNumber" value="1.0" step="0.02" min="0.5" max="2.0">
+                            <span class="slider-value" id="blueValue">1.0</span>
+                        </div>
+                    </div>
+                    <input type="range" id="blue" min="0.5" max="2.0" step="0.02" value="1.0">
+                </div>
+
+                <div class="slider-container">
+                    <div class="slider-header">
+                        <span class="slider-label">Saturation</span>
+                        <div class="fine-control">
+                            <input type="number" id="saturationNumber" value="1.0" step="0.05" min="0.0" max="2.5">
+                            <span class="slider-value" id="saturationValue">1.0</span>
+                        </div>
+                    </div>
+                    <input type="range" id="saturation" min="0.0" max="2.5" step="0.05" value="1.0">
+                </div>
+
+                <div class="slider-container">
+                    <div class="slider-header">
+                        <span class="slider-label">Film Base Correction</span>
+                        <div class="fine-control">
+                            <input type="number" id="film_correctionNumber" value="0.0" step="0.05" min="0.0" max="1.0">
+                            <span class="slider-value" id="film_correctionValue">0.0</span>
+                        </div>
+                    </div>
+                    <input type="range" id="film_correction" min="0.0" max="1.0" step="0.05" value="0.0">
+                </div>
+            </div>
+
+            <div class="control-group">
+                <h3>Effects</h3>
+                <div class="slider-container">
+                    <div class="slider-header">
+                        <span class="slider-label">Clarity</span>
+                        <div class="fine-control">
+                            <input type="number" id="clarityNumber" value="0.0" step="0.05" min="0.0" max="1.0">
+                            <span class="slider-value" id="clarityValue">0.0</span>
+                        </div>
+                    </div>
+                    <input type="range" id="clarity" min="0.0" max="1.0" step="0.05" value="0.0">
+                </div>
+
+                <div class="slider-container">
+                    <div class="slider-header">
+                        <span class="slider-label">Dehaze</span>
+                        <div class="fine-control">
+                            <input type="number" id="dehazeNumber" value="0.0" step="0.05" min="0.0" max="1.0">
+                            <span class="slider-value" id="dehazeValue">0.0</span>
+                        </div>
+                    </div>
+                    <input type="range" id="dehaze" min="0.0" max="1.0" step="0.05" value="0.0">
+                </div>
+
+                <div class="slider-container">
+                    <div class="slider-header">
+                        <span class="slider-label">Gamma</span>
+                        <div class="fine-control">
+                            <input type="number" id="gammaNumber" value="1.0" step="0.02" min="0.5" max="2.0">
+                            <span class="slider-value" id="gammaValue">1.0</span>
+                        </div>
+                    </div>
+                    <input type="range" id="gamma" min="0.5" max="2.0" step="0.02" value="1.0">
+                </div>
+            </div>
+
+            <div class="button-group">
+                <button class="secondary-button" onclick="resetAll()">Reset All</button>
+                <button class="primary-button" onclick="saveImage()">Save Image</button>
+            </div>
+        </div>
+        <div class="preview">
+            <img id="preview">
+            <div class="loading-overlay">
+                <div class="spinner"></div>
+                <span>Processing...</span>
+            </div>
+        </div>
+    </div>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script>
+        let debounceTimer;
+        let isProcessing = false;
+        
+        function updatePreview() {
+            if (isProcessing) return;
+            
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(() => {
+                const params = {
+                    contrast: parseFloat($('#contrast').val() || 1.0),
+                    exposure: parseFloat($('#exposure').val() || 0.0),
+                    highlight_recovery: parseFloat($('#highlight_recovery').val() || 0.0),
+                    shadow_recovery: parseFloat($('#shadow_recovery').val() || 0.0),
+                    saturation: parseFloat($('#saturation').val() || 1.0),
+                    temperature: parseFloat($('#temperature').val() || 0.0),
+                    tint: parseFloat($('#tint').val() || 0.0),
+                    red: parseFloat($('#red').val() || 1.0),
+                    green: parseFloat($('#green').val() || 1.0),
+                    blue: parseFloat($('#blue').val() || 1.0),
+                    gamma: parseFloat($('#gamma').val() || 1.0),
+                    clarity: parseFloat($('#clarity').val() || 0.0),
+                    dehaze: parseFloat($('#dehaze').val() || 0.0),
+                    film_correction: parseFloat($('#film_correction').val() || 0.0),
+                    show_analysis: $('#show-analysis').prop('checked')
+                };
+                
+                showLoading();
+                
+                fetch('/process', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(params)
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.image) {
+                        $('#preview').attr('src', 'data:image/jpeg;base64,' + data.image);
+                    }
+                })
+                .finally(() => {
+                    hideLoading();
+                });
+            }, 150);  // Slightly longer debounce for smoother experience
+        }
+
+        function showLoading() {
+            isProcessing = true;
+            $('.loading-overlay').fadeIn(200);
+        }
+
+        function hideLoading() {
+            isProcessing = false;
+            $('.loading-overlay').fadeOut(200);
+        }
+
+        function updateSliderAndNumber(sliderId, value) {
+            $(`#${sliderId}`).val(value);
+            $(`#${sliderId}Number`).val(value);
+            $(`#${sliderId}Value`).text(parseFloat(value).toFixed(2));
+        }
+
+        // Handle slider changes
+        $('input[type="range"]').on('input', function() {
+            const value = parseFloat(this.value);
+            const baseId = this.id;
+            updateSliderAndNumber(baseId, value);
+            updatePreview();
+        });
+
+        // Handle number input changes
+        $('input[type="number"]').on('input', function() {
+            const value = parseFloat(this.value);
+            const baseId = this.id.replace('Number', '');
+            updateSliderAndNumber(baseId, value);
+            updatePreview();
+        });
+
+        // Drag and drop handling
+        const dropZone = document.getElementById('dropZone');
+
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, preventDefaults, false);
+        });
+
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropZone.addEventListener(eventName, highlight, false);
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, unhighlight, false);
+        });
+
+        function highlight(e) {
+            dropZone.classList.add('dragover');
+        }
+
+        function unhighlight(e) {
+            dropZone.classList.remove('dragover');
+        }
+
+        dropZone.addEventListener('click', () => {
+            document.getElementById('fileInput').click();
+        });
+
+        dropZone.addEventListener('drop', handleDrop, false);
+
+        function handleDrop(e) {
+            const dt = e.dataTransfer;
+            const file = dt.files[0];
+            handleFile(file);
+        }
+
+        $('#fileInput').change(function(e) {
+            const file = e.target.files[0];
+            handleFile(file);
+        });
+
+        function handleFile(file) {
+            if (!file) return;
+            
+            showLoading();
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            fetch('/upload', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => {
+                if (!response.ok) throw new Error('Upload failed');
+                return response.json();
+            })
+            .then(data => {
+                if (data.image) {
+                    $('#preview').attr('src', 'data:image/jpeg;base64,' + data.image);
+                }
+                // No need to call updatePreview() here since we already have the initial image
+            })
+            .catch(error => {
+                alert('Error uploading file: ' + error.message);
+            })
+            .finally(() => {
+                hideLoading();
+            });
+        }
+
+        function resetAll() {
+            const defaultValues = {
+                exposure: 0.0,
+                contrast: 1.0,
+                highlight_recovery: 0.0,
+                shadow_recovery: 0.0,
+                saturation: 1.0,
+                temperature: 0.0,
+                tint: 0.0,
+                red: 1.0,
+                green: 1.0,
+                blue: 1.0,
+                gamma: 1.0,
+                clarity: 0.0,
+                dehaze: 0.0,
+                film_correction: 0.0
+            };
+
+            Object.entries(defaultValues).forEach(([id, value]) => {
+                updateSliderAndNumber(id, value);
+            });
+
+            updatePreview();
+        }
+
+        function toggleAnalysis(checked) {
+            updatePreview();  // This will send the current state including show_analysis
+        }
+
+        function saveImage() {
+            if (!$('#preview').attr('src')) {
+                alert('Please upload and process an image first.');
+                return;
+            }
+            
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const link = document.createElement('a');
+            link.href = $('#preview').attr('src');
+            link.download = `processed_image_${timestamp}.jpg`;
+            link.click();
+        }
+    </script>
+</body>
+</html>
