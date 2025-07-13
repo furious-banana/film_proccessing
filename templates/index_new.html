@@ -309,7 +309,9 @@
                 
                 <div class="control-item">
                     <span class="control-label">Film Correction</span>
-                    <div class="toggle" id="film_correction_toggle" onclick="toggleControl('film_correction')">
+                    <div class="control-input">
+                        <input type="range" class="slider" id="film_correction" min="0" max="1" step="0.01" value="0">
+                        <span class="value-display" id="film_correction_value">0.00</span>
                     </div>
                 </div>
 
@@ -483,14 +485,12 @@
 
         // Toggle controls
         const toggleStates = {
-            film_correction: false,
             auto_levels: true,
             auto_white_balance: true,
             show_analysis: false
         };
 
         function toggleControl(controlName) {
-            console.log(`Toggling ${controlName} from ${toggleStates[controlName]} to ${!toggleStates[controlName]}`);
             toggleStates[controlName] = !toggleStates[controlName];
             const toggle = document.getElementById(controlName + '_toggle');
             toggle.classList.toggle('active', toggleStates[controlName]);
@@ -533,13 +533,8 @@
             });
 
             // Add toggle states
-            params.film_correction = toggleStates.film_correction ? 1.0 : 0.0;
             params.auto_levels = toggleStates.auto_levels ? 1.0 : 0.0;
             params.auto_white_balance = toggleStates.auto_white_balance ? 1.0 : 0.0;
-            
-            // Debug logging
-            console.log('Toggle states:', toggleStates);
-            console.log('Parameters being sent:', params);
             
             return params;
         }

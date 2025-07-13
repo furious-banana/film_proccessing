@@ -24,7 +24,9 @@ class FilmProcessor:
             'tint': 0.0,
             'clarity': 0.0,
             'dehaze': 0.0,
-            'film_correction': 0.0  # New parameter: 0 = no correction, 1 = full correction
+            'film_correction': 0.0,  # Film base subtraction: 0 = no correction, 1 = full correction
+            'auto_levels': 1.0,      # Auto levels: 0 = disabled, 1 = enabled
+            'auto_white_balance': 1.0  # Auto white balance: 0 = disabled, 1 = enabled
         }
         self.cached_stages = {}
         self.debug_dims = None
@@ -84,8 +86,21 @@ class FilmProcessor:
                         
                         logger.info(f"Applied film base subtraction: R={correction[0]:.3f}, G={correction[1]:.3f}, B={correction[2]:.3f}")
                         logger.info(f"Correction strength: {correction_strength:.2f}")
+                        
                     else:
                         logger.info("Film base correction disabled (strength = 0)")
+                
+                # Step 2: Auto color correct to highlights (if enabled) - apply regardless of film correction
+                if self.params.get('auto_levels', 1.0) > 0.5:
+                    img_float, color_adjustments = self._auto_color_correct_to_highlights(img_float)
+                else:
+                    logger.info("Auto levels disabled")
+                
+                # Step 3: Auto white balance (if enabled) - apply regardless of film correction  
+                if self.params.get('auto_white_balance', 1.0) > 0.5:
+                    img_float, wb_adjustments = self._auto_white_balance_combination(img_float)
+                else:
+                    logger.info("Auto white balance disabled")
                         
             except Exception as e:
                 logger.warning(f"Film analysis failed, using basic inversion only: {str(e)}")
@@ -364,10 +379,23 @@ class FilmProcessor:
                     img_float = np.clip(img_float, 0.0, 1.0)
                     
                     logger.info(f"Applied film base subtraction: R={correction[0]:.3f}, G={correction[1]:.3f}, B={correction[2]:.3f}")
+                    
                 else:
                     logger.warning("Could not get film base color for regeneration")
             else:
                 logger.info("Film correction disabled for regeneration")
+                
+            # Step 2: Auto color correct to highlights (if enabled) - apply regardless of film correction
+            if self.params.get('auto_levels', 1.0) > 0.5:
+                img_float, color_adjustments = self._auto_color_correct_to_highlights(img_float)
+            else:
+                logger.info("Auto levels disabled")
+            
+            # Step 3: Auto white balance (if enabled) - apply regardless of film correction
+            if self.params.get('auto_white_balance', 1.0) > 0.5:
+                img_float, wb_adjustments = self._auto_white_balance_combination(img_float)
+            else:
+                logger.info("Auto white balance disabled")
                 
         except Exception as e:
             logger.error(f"Error in film correction during regeneration: {str(e)}")
@@ -377,3 +405,188 @@ class FilmProcessor:
         self.cached_stages['initial'] = result
         
         return result
+
+    def _auto_color_correct_to_highlights(self, img_float):
+        """
+        Automatically adjust RGB channels so highlights just peak by a small number of pixels
+        """
+        logger.info("Starting automatic color correction to highlights")
+        
+        try:
+            # Define what "just peaking" means - allow this many pixels to clip per channel
+            max_clipped_pixels = max(10, int(img_float.shape[0] * img_float.shape[1] * 0.0001))  # 0.01% of pixels
+            logger.info(f"Target: max {max_clipped_pixels} clipped pixels per channel")
+            
+            # Work on each channel separately
+            corrected = img_float.copy()
+            adjustments = []
+            
+            for channel in range(3):
+                channel_name = ['Red', 'Green', 'Blue'][channel]
+                channel_data = img_float[:, :, channel]
+                
+                # Find the current maximum value
+                current_max = np.max(channel_data)
+                logger.info(f"{channel_name} channel current max: {current_max:.3f}")
+                
+                # Binary search to find the right multiplier
+                # We want to scale the channel so that only max_clipped_pixels exceed 1.0
+                min_multiplier = 0.1
+                max_multiplier = 10.0
+                best_multiplier = 1.0
+                
+                for iteration in range(20):  # Binary search iterations
+                    test_multiplier = (min_multiplier + max_multiplier) / 2
+                    test_channel = channel_data * test_multiplier
+                    clipped_pixels = np.sum(test_channel > 1.0)
+                    
+                    if clipped_pixels <= max_clipped_pixels:
+                        # Too few clipped pixels, can increase multiplier
+                        min_multiplier = test_multiplier
+                        best_multiplier = test_multiplier
+                    else:
+                        # Too many clipped pixels, need to decrease multiplier
+                        max_multiplier = test_multiplier
+                    
+                    # If we're close enough, stop
+                    if abs(clipped_pixels - max_clipped_pixels) <= 5:
+                        best_multiplier = test_multiplier
+                        break
+                
+                # Apply the best multiplier to this channel
+                corrected[:, :, channel] = channel_data * best_multiplier
+                adjustments.append(best_multiplier)
+                
+                # Final check
+                final_clipped = np.sum(corrected[:, :, channel] > 1.0)
+                logger.info(f"{channel_name} channel: multiplier={best_multiplier:.3f}, clipped_pixels={final_clipped}")
+            
+            # Clip to valid range
+            corrected = np.clip(corrected, 0.0, 1.0)
+            
+            logger.info(f"Color correction complete: R×{adjustments[0]:.3f}, G×{adjustments[1]:.3f}, B×{adjustments[2]:.3f}")
+            
+            # Log the actual effect
+            original_range = f"R:{img_float[:,:,0].min():.3f}-{img_float[:,:,0].max():.3f}, G:{img_float[:,:,1].min():.3f}-{img_float[:,:,1].max():.3f}, B:{img_float[:,:,2].min():.3f}-{img_float[:,:,2].max():.3f}"
+            corrected_range = f"R:{corrected[:,:,0].min():.3f}-{corrected[:,:,0].max():.3f}, G:{corrected[:,:,1].min():.3f}-{corrected[:,:,1].max():.3f}, B:{corrected[:,:,2].min():.3f}-{corrected[:,:,2].max():.3f}"
+            logger.info(f"Auto levels effect - Before: {original_range}")
+            logger.info(f"Auto levels effect - After: {corrected_range}")
+            
+            return corrected, adjustments
+            
+        except Exception as e:
+            logger.error(f"Error in auto color correction: {str(e)}")
+            return img_float, [1.0, 1.0, 1.0]
+
+    def _auto_white_balance_combination(self, img_float):
+        """
+        Combination white balance approach:
+        1. Use highlights for initial white balance 
+        2. Fine-tune with overall image statistics
+        3. Apply film-specific knowledge
+        """
+        logger.info("Starting combination white balance correction")
+        
+        try:
+            # Step 1: Highlight-based white balance
+            gray = np.mean(img_float, axis=2)
+            
+            # Find brightest 2% of pixels (likely white/neutral areas)
+            highlight_threshold = np.percentile(gray, 98)
+            highlight_mask = gray >= highlight_threshold
+            
+            num_highlight_pixels = np.sum(highlight_mask)
+            logger.info(f"Found {num_highlight_pixels} highlight pixels for white balance")
+            
+            if num_highlight_pixels > 10:  # Need enough pixels for reliable sampling
+                # Average the highlight pixels - these should be neutral
+                highlight_r = np.mean(img_float[highlight_mask, 0])
+                highlight_g = np.mean(img_float[highlight_mask, 1]) 
+                highlight_b = np.mean(img_float[highlight_mask, 2])
+                
+                logger.info(f"Highlight colors: R={highlight_r:.3f}, G={highlight_g:.3f}, B={highlight_b:.3f}")
+                
+                # Calculate initial white balance factors
+                # Use green as reference (it's usually most accurate)
+                highlight_wb_r = highlight_g / highlight_r if highlight_r > 0.01 else 1.0
+                highlight_wb_g = 1.0  # Green is reference
+                highlight_wb_b = highlight_g / highlight_b if highlight_b > 0.01 else 1.0
+                
+                logger.info(f"Highlight-based WB factors: R={highlight_wb_r:.3f}, G={highlight_wb_g:.3f}, B={highlight_wb_b:.3f}")
+                
+            else:
+                logger.warning("Insufficient highlight pixels, using neutral factors")
+                highlight_wb_r = highlight_wb_g = highlight_wb_b = 1.0
+            
+            # Step 2: Fine-tune with overall image statistics
+            # Calculate average color of mid-tones (avoid pure blacks and blown highlights)
+            midtone_mask = (gray > 0.1) & (gray < 0.8)
+            
+            if np.sum(midtone_mask) > 100:
+                midtone_r = np.mean(img_float[midtone_mask, 0])
+                midtone_g = np.mean(img_float[midtone_mask, 1])
+                midtone_b = np.mean(img_float[midtone_mask, 2])
+                
+                # Calculate how far midtones are from neutral
+                midtone_target = (midtone_r + midtone_g + midtone_b) / 3
+                midtone_wb_r = midtone_target / midtone_r if midtone_r > 0.01 else 1.0
+                midtone_wb_g = midtone_target / midtone_g if midtone_g > 0.01 else 1.0
+                midtone_wb_b = midtone_target / midtone_b if midtone_b > 0.01 else 1.0
+                
+                logger.info(f"Midtone-based WB factors: R={midtone_wb_r:.3f}, G={midtone_wb_g:.3f}, B={midtone_wb_b:.3f}")
+                
+                # Blend highlight and midtone corrections (favor highlights but consider midtones)
+                blend_weight = 0.7  # 70% highlights, 30% midtones
+                final_wb_r = highlight_wb_r * blend_weight + midtone_wb_r * (1 - blend_weight)
+                final_wb_g = highlight_wb_g * blend_weight + midtone_wb_g * (1 - blend_weight)
+                final_wb_b = highlight_wb_b * blend_weight + midtone_wb_b * (1 - blend_weight)
+                
+            else:
+                logger.warning("Insufficient midtone pixels, using highlight-only correction")
+                final_wb_r = highlight_wb_r
+                final_wb_g = highlight_wb_g
+                final_wb_b = highlight_wb_b
+            
+            # Step 3: Apply film-specific knowledge
+            # Film typically has slight color casts that should be corrected
+            # After film base removal, we often need to reduce blue/cyan cast
+            film_correction_r = 1.0      # Red usually needs minimal adjustment
+            film_correction_g = 0.98     # Green slight reduction
+            film_correction_b = 0.92     # Blue typically needs most reduction
+            
+            # Combine white balance with film-specific corrections
+            combined_r = final_wb_r * film_correction_r
+            combined_g = final_wb_g * film_correction_g  
+            combined_b = final_wb_b * film_correction_b
+            
+            # Normalize to prevent over-brightening (keep the brightest factor at or below 1.1)
+            max_factor = max(combined_r, combined_g, combined_b)
+            if max_factor > 1.1:
+                normalization = 1.1 / max_factor
+                combined_r *= normalization
+                combined_g *= normalization
+                combined_b *= normalization
+            
+            logger.info(f"Final WB factors: R={combined_r:.3f}, G={combined_g:.3f}, B={combined_b:.3f}")
+            
+            # Apply the white balance correction
+            corrected = img_float.copy()
+            corrected[:, :, 0] *= combined_r
+            corrected[:, :, 1] *= combined_g
+            corrected[:, :, 2] *= combined_b
+            
+            # Clip to valid range
+            corrected = np.clip(corrected, 0.0, 1.0)
+            
+            # Log the actual effect
+            original_range = f"R:{img_float[:,:,0].min():.3f}-{img_float[:,:,0].max():.3f}, G:{img_float[:,:,1].min():.3f}-{img_float[:,:,1].max():.3f}, B:{img_float[:,:,2].min():.3f}-{img_float[:,:,2].max():.3f}"
+            corrected_range = f"R:{corrected[:,:,0].min():.3f}-{corrected[:,:,0].max():.3f}, G:{corrected[:,:,1].min():.3f}-{corrected[:,:,1].max():.3f}, B:{corrected[:,:,2].min():.3f}-{corrected[:,:,2].max():.3f}"
+            logger.info(f"Auto white balance effect - Before: {original_range}")
+            logger.info(f"Auto white balance effect - After: {corrected_range}")
+            logger.info("White balance correction complete")
+            
+            return corrected, [combined_r, combined_g, combined_b]
+            
+        except Exception as e:
+            logger.error(f"Error in white balance correction: {str(e)}")
+            return img_float, [1.0, 1.0, 1.0]

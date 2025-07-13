@@ -29,6 +29,7 @@ def index():
     return render_template('index.html')
 
 @app.route('/process', methods=['POST'])
+@app.route('/adjust', methods=['POST'])
 def process_image():
     try:
         params = request.json
@@ -48,13 +49,15 @@ def process_image():
             'saturation': float(params.get('saturation', 1.0)),
             'temperature': float(params.get('temperature', 0.0)),
             'tint': float(params.get('tint', 0.0)),
-            'red_balance': float(params.get('red', 1.0)),
-            'green_balance': float(params.get('green', 1.0)),
-            'blue_balance': float(params.get('blue', 1.0)),
+            'red_balance': float(params.get('red_balance', 1.0)),
+            'green_balance': float(params.get('green_balance', 1.0)),
+            'blue_balance': float(params.get('blue_balance', 1.0)),
             'gamma': float(params.get('gamma', 1.0)),
             'clarity': float(params.get('clarity', 0.0)),
             'dehaze': float(params.get('dehaze', 0.0)),
-            'film_correction': float(params.get('film_correction', 0.0))  # New parameter
+            'film_correction': float(params.get('film_correction', 0.0)),
+            'auto_levels': float(params.get('auto_levels', 0.0)),  # Toggle parameter
+            'auto_white_balance': float(params.get('auto_white_balance', 0.0))  # Toggle parameter
         }
         
         processor.update_params(**all_params)
@@ -111,13 +114,13 @@ def process_image():
 def upload_file():
     try:
         global processor
-        if 'file' not in request.files:
+        if 'image' not in request.files:
             return jsonify({
                 'error': 'No file uploaded',
                 'success': False
             })
         
-        file = request.files['file']
+        file = request.files['image']
         if not file:
             return jsonify({
                 'error': 'Empty file provided',
@@ -159,6 +162,7 @@ def upload_file():
                 logger.info(f"Shape after RGB conversion: {img_array.shape}")
             
             logger.info(f"Final image array shape before FilmProcessor: {img_array.shape}")
+            global processor
             processor = FilmProcessor(img_array)
             
             # Process with default settings and return initial image
