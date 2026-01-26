@@ -63,3 +63,18 @@ htmlcov/
 # Utility test files (keep these)
 # test_imports.py
 # test_flask.py
+
+# Ignore test and temp files
+test_*.py
+test_*.jpg
+test_*.png
+test_*.jpeg
+test_*.bmp
+*.log
+
+# Ignore executables
+uvw.exe
+uvx.exe
+
+# Ignore images archive if not needed
+images_archive/

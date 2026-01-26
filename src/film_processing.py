@@ -3,590 +3,428 @@ from PIL import Image
 import numpy as np
 import cv2
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('FilmProcessor')
 
 class FilmProcessor:
-    def __init__(self, image_array):
+    def __init__(self, image_array, is_negative=True):
         self.original = image_array
+        self.original_image = image_array  # Keep for pixel sampling
+        self.is_negative = is_negative
         self.params = {
-            'contrast': 1.0,
-            'saturation': 1.0,
-            'red_balance': 1.0,
-            'green_balance': 1.0,
-            'blue_balance': 1.0,
-            'gamma': 1.0,
-            'exposure': 0.0,  # Start with neutral exposure - let user adjust as needed
-            'highlight_recovery': 0.0,
-            'shadow_recovery': 0.0,
-            'temperature': 0.0,
-            'tint': 0.0,
-            'clarity': 0.0,
-            'dehaze': 0.0,
-            'film_correction': 0.0,  # Film base subtraction: 0 = no correction, 1 = full correction
-            'auto_levels': 1.0,      # Auto levels: 0 = disabled, 1 = enabled
-            'auto_white_balance': 1.0  # Auto white balance: 0 = disabled, 1 = enabled
+            'exposure': 0.0,  # Exposure in stops: -3 to +3
+            'contrast': 0.0,  # Contrast: -100 to +100
+            'highlights': 0.0,  # Highlights: -100 to +100
+            'shadows': 0.0,  # Shadows: -100 to +100
+            'whites': 0.0,  # Whites: -100 to +100
+            'blacks': 0.0,  # Blacks: -100 to +100
+            'film_correction': 0.0,  # Film base correction for negatives: 0 to 1
+            # Eyedropper points
+            'black_point_r': None,
+            'black_point_g': None,
+            'black_point_b': None,
+            'white_point_r': None,
+            'white_point_g': None,
+            'white_point_b': None,
+            'gray_point_r': None,
+            'gray_point_g': None,
+            'gray_point_b': None,
+            # Curves
+            'curves': None,
         }
         self.cached_stages = {}
-        self.debug_dims = None
-        self.debug_mask = None
-        self.film_mask = None
         self._initialize_cache()
-
+    
     def _initialize_cache(self):
-        """Initialize the processing cache with the initial image inversion and analysis"""
+        """Initialize the processing cache with inverted image (if negative)"""
         try:
-            # Ensure original image is 3-channel RGB
-            logger.info(f"Input image shape: {self.original.shape}")
-            if len(self.original.shape) == 2:
-                logger.info("Converting grayscale to RGB")
-                self.original = np.stack([self.original] * 3, axis=-1)
-            elif len(self.original.shape) == 3 and self.original.shape[2] != 3:
-                logger.warning(f"Input image has {self.original.shape[2]} channels, converting to RGB")
-                self.original = np.array(Image.fromarray(self.original).convert('RGB'))
-            elif len(self.original.shape) != 3:
-                logger.error(f"Unexpected image shape: {self.original.shape}")
-                raise ValueError(f"Cannot process image with shape {self.original.shape}")
-
-            logger.info(f"Original image shape after conversion: {self.original.shape}")
+            logger.info(f"Initializing cache. Is negative: {self.is_negative}")
+            logger.info(f"Original image shape: {self.original.shape}, dtype: {self.original.dtype}")
             
-            # Basic inversion first - invert each channel separately
-            inverted = (255 - self.original).astype(np.uint8)
-            logger.info(f"Inverted image shape: {inverted.shape}")
+            # Ensure 3-channel RGB
+            if len(self.original.shape) == 2:
+                img = np.stack([self.original] * 3, axis=-1)
+            else:
+                img = self.original
+            
+            # Input is already float32 [0.0, 1.0] from upload
+            # No need to convert - just ensure it's in valid range
+            img = np.clip(img, 0.0, 1.0).astype(np.float32)
+            
+            # Invert for negatives, keep as-is for regular photos
+            if self.is_negative:
+                inverted = 1.0 - img  # Invert in float space
+                logger.info("Inverted negative (float32)")
+            else:
+                inverted = img.copy()
+                logger.info("Regular photo - no inversion")
+            
             self.cached_stages['inverted'] = inverted
             
-            # Convert to float32 for processing
-            img_float = inverted.astype(np.float32) / 255.0
-            logger.info(f"Float image shape: {img_float.shape}")
+            # Already in float32 [0.0, 1.0] - ready for processing
+            img_float = inverted
             
-            try:
-                # Analyze the original negative to find unexposed film areas
-                neg_analysis = self._analyze_negative_characteristics(self.original)
-                
+            # Apply film base correction if it's a negative
+            if self.is_negative:
+                # Note: _analyze_negative_characteristics expects uint8, need to convert temporarily
+                temp_uint8 = (self.original * 255).astype(np.uint8) if self.original.dtype == np.float32 else self.original
+                neg_analysis = self._analyze_negative_characteristics(temp_uint8)
                 if neg_analysis and isinstance(neg_analysis, dict):
-                    # Get film base color but apply correction based on parameter
                     film_base_color = neg_analysis.get('film_base_color', np.zeros(3))
                     correction_strength = self.params.get('film_correction', 0.0)
                     
-                    logger.info(f"Film base color detected: R={film_base_color[0]:.3f}, G={film_base_color[1]:.3f}, B={film_base_color[2]:.3f}")
-                    logger.info(f"Film correction strength: {correction_strength:.2f}")
-                    
-                    if correction_strength > 0.01:  # Only apply if user wants correction
-                        # Apply film base subtraction - subtract the film base color directly
-                        # film_base_color is already in 0-255 range, convert to 0-1 range
-                        film_base_normalized = film_base_color / 255.0
-                        
-                        # Apply correction with user-controlled strength
-                        correction = film_base_normalized * correction_strength
-                        img_float = img_float - correction
-                        
-                        # Ensure we don't go below zero or above 1
-                        img_float = np.clip(img_float, 0.0, 1.0)
-                        
-                        logger.info(f"Applied film base subtraction: R={correction[0]:.3f}, G={correction[1]:.3f}, B={correction[2]:.3f}")
-                        logger.info(f"Correction strength: {correction_strength:.2f}")
-                        
-                    else:
-                        logger.info("Film base correction disabled (strength = 0)")
-                
-                # Step 2: Auto color correct to highlights (if enabled) - apply regardless of film correction
-                if self.params.get('auto_levels', 1.0) > 0.5:
-                    img_float, color_adjustments = self._auto_color_correct_to_highlights(img_float)
-                else:
-                    logger.info("Auto levels disabled")
-                
-                # Step 3: Auto white balance (if enabled) - apply regardless of film correction  
-                if self.params.get('auto_white_balance', 1.0) > 0.5:
-                    img_float, wb_adjustments = self._auto_white_balance_combination(img_float)
-                else:
-                    logger.info("Auto white balance disabled")
-                        
-            except Exception as e:
-                logger.warning(f"Film analysis failed, using basic inversion only: {str(e)}")
-                # Analysis failed, but we can continue with basic inversion
-                
-            # Store final processed version
-            self.cached_stages['initial'] = np.clip(img_float * 255, 0, 255).astype(np.uint8)
+                    if correction_strength > 0:
+                        film_base_color_norm = film_base_color / 255.0
+                        for c in range(3):
+                            img_float[:, :, c] -= film_base_color_norm[c] * correction_strength
+                        logger.info(f"Applied film base correction: strength={correction_strength:.2f}")
+            
+            # Store final processed version in float32 [0.0, 1.0]
+            self.cached_stages['initial'] = np.clip(img_float, 0.0, 1.0).astype(np.float32)
             
         except Exception as e:
             logger.error(f"Cache initialization failed: {str(e)}")
-            # Absolute fallback - ensure we have a valid 3-channel image
-            if len(self.original.shape) == 2:
-                inverted = np.stack([(255 - self.original)] * 3, axis=-1)
+            # Fallback
+            if self.is_negative:
+                inverted = 255 - self.original if len(self.original.shape) == 3 else np.stack([255 - self.original] * 3, axis=-1)
             else:
-                inverted = (255 - self.original).astype(np.uint8)
+                inverted = self.original if len(self.original.shape) == 3 else np.stack([self.original] * 3, axis=-1)
+            self.cached_stages['inverted'] = inverted
             self.cached_stages['initial'] = inverted
-
-    def _analyze_negative_characteristics(self, original_negative):
-        """
-        Correct film base detection approach:
-        1. Find brightest pixels in the original negative (unexposed film)
-        2. Invert those pixels to see what color they become after inversion
-        3. That inverted color is what gets subtracted from the entire inverted image
-        """
-        logger.info("Starting film base detection on negative")
-        
+    
+    def _analyze_negative_characteristics(self, negative_img):
+        """Analyze film negative to detect film base color"""
         try:
-            h, w = original_negative.shape[:2]
+            # Find brightest pixels (unexposed film areas)
+            if len(negative_img.shape) == 2:
+                negative_img = np.stack([negative_img] * 3, axis=-1)
             
-            # Step 1: Find the single brightest pixel in the negative (unexposed film)
-            # Convert to grayscale to find overall brightness
-            if len(original_negative.shape) == 3:
-                gray = cv2.cvtColor(original_negative, cv2.COLOR_RGB2GRAY)
-            else:
-                gray = original_negative
+            luminance = np.mean(negative_img, axis=2)
+            threshold = np.percentile(luminance, 95)
+            mask = luminance >= threshold
             
-            # Find the single brightest pixel
-            max_location = np.unravel_index(np.argmax(gray), gray.shape)
-            logger.info(f"Brightest pixel found at location: {max_location}")
+            if np.sum(mask) > 0:
+                film_base_color = np.array([
+                    np.median(negative_img[:, :, 0][mask]),
+                    np.median(negative_img[:, :, 1][mask]),
+                    np.median(negative_img[:, :, 2][mask])
+                ])
+                logger.info(f"Film base detected: R={film_base_color[0]:.1f}, G={film_base_color[1]:.1f}, B={film_base_color[2]:.1f}")
+                return {'film_base_color': film_base_color}
             
-            # Sample the color of this single brightest pixel
-            negative_unexposed_color = original_negative[max_location]
-            logger.info(f"Single brightest pixel color in negative: R={negative_unexposed_color[0]}, G={negative_unexposed_color[1]}, B={negative_unexposed_color[2]}")
-            
-            # Step 3: Invert this color to see what it becomes after inversion
-            # This inverted color is what we subtract from the entire inverted image
-            inverted_unexposed_color = 255 - negative_unexposed_color
-            logger.info(f"Inverted unexposed color (to subtract): R={inverted_unexposed_color[0]:.1f}, G={inverted_unexposed_color[1]:.1f}, B={inverted_unexposed_color[2]:.1f}")
-            
-            # Store debug information - create a single pixel mask
-            debug_mask = np.zeros_like(gray, dtype=np.uint8)
-            debug_mask[max_location] = 255
-            self.debug_mask = debug_mask
-            self.debug_dims = (h, w)
-            
-            return {
-                'film_base_color': inverted_unexposed_color,  # This is the color to subtract
-                'color_matrix': np.eye(3),  # No color matrix - just subtraction
-                'fine_tuning': np.eye(3)
-            }
-            
+            return {'film_base_color': np.zeros(3)}
         except Exception as e:
             logger.error(f"Error in film base detection: {str(e)}")
-            return self._get_minimal_correction()
-
-    def _get_minimal_correction(self):
-        """Return minimal correction when detection fails"""
-        return {
-            'film_base_color': np.array([128, 128, 128]),  # Neutral gray - minimal correction
-            'color_matrix': np.eye(3),
-            'fine_tuning': np.eye(3)
-        }
-
-    def _ensure_3d_shape(self, img, operation_name="unknown"):
-        """Ensure image has proper 3D shape (H, W, 3)"""
-        if len(img.shape) == 2:
-            logger.debug(f"Converting 2D to 3D after {operation_name}")
-            return np.stack([img] * 3, axis=-1)
-        elif len(img.shape) == 3 and img.shape[2] != 3:
-            logger.debug(f"Converting {img.shape[2]}-channel to 3-channel after {operation_name}")
-            return np.array(Image.fromarray((img * 255).astype(np.uint8)).convert('RGB')).astype(np.float32) / 255.0
-        elif len(img.shape) != 3:
-            logger.error(f"Invalid shape {img.shape} after {operation_name}")
-            raise ValueError(f"Cannot process image with shape {img.shape}")
-        return img
-
+            return {'film_base_color': np.zeros(3)}
+    
     def get_processed_image(self):
-        """Apply all current parameters to the image and return the result"""
+        """Apply all adjustments and return the result"""
         try:
-            # Check if we have the initial processed version with current parameters
-            initial = self.cached_stages.get('initial')
+            # Get base image (already in float32 [0.0, 1.0] range)
+            processed = self.cached_stages.get('initial', self.cached_stages.get('inverted'))
             
-            if initial is None:
-                # Need to regenerate initial processing with current film correction
-                logger.info("Regenerating initial processing with current parameters")
-                initial = self._regenerate_initial_processing()
-                
-            logger.info(f"Initial shape from cache: {initial.shape}")
-            processed = initial.astype(np.float32) / 255.0
-            logger.info(f"Processed shape after float conversion: {processed.shape}")
+            if processed is None:
+                logger.error("No cached image found")
+                return np.ones((100, 100, 3), dtype=np.uint8) * 128
             
-            # Ensure we have a 3-channel image at the start
-            if len(processed.shape) == 2:
-                logger.info(f"Converting single-channel image {processed.shape} to 3-channel")
-                processed = np.stack([processed] * 3, axis=-1)
-                logger.info(f"Shape after channel conversion: {processed.shape}")
-            elif len(processed.shape) == 3 and processed.shape[2] != 3:
-                logger.warning(f"Image has {processed.shape[2]} channels, converting to RGB")
-                processed = np.array(Image.fromarray((processed * 255).astype(np.uint8)).convert('RGB')).astype(np.float32) / 255.0
-                logger.info(f"Shape after RGB conversion: {processed.shape}")
-            elif len(processed.shape) != 3:
-                logger.error(f"Unexpected image shape: {processed.shape}")
-                raise ValueError(f"Cannot process image with shape {processed.shape}")
-
-            # Apply exposure adjustment
+            # Already in float [0, 1] - no conversion needed
+            # (Preserves 16-bit precision as float32)
+            
+            # Apply eyedropper levels adjustment FIRST (before other tone adjustments)
+            processed = self._apply_levels_adjustment(processed)
+            
+            # Apply exposure (photographic stops)
             if self.params['exposure'] != 0:
                 processed *= 2 ** self.params['exposure']
-                processed = self._ensure_3d_shape(processed, "exposure")
-                logger.debug(f"Processed shape after exposure: {processed.shape}")
-
-            # Apply contrast
-            if self.params['contrast'] != 1.0:
-                processed = np.power(processed, self.params['contrast'])
-                processed = self._ensure_3d_shape(processed, "contrast")
-                logger.debug(f"Processed shape after contrast: {processed.shape}")
-
-            # Apply color balance
-            if any(self.params[key] != 1.0 for key in ['red_balance', 'green_balance', 'blue_balance']):
-                color_matrix = np.array([
-                    [self.params['red_balance'], 0, 0],
-                    [0, self.params['green_balance'], 0],
-                    [0, 0, self.params['blue_balance']]
-                ])
-                # Validate shape before matrix multiplication
-                if len(processed.shape) != 3 or processed.shape[2] != 3:
-                    logger.error(f"Invalid shape for color matrix: {processed.shape}")
-                    raise ValueError(f"Expected (H, W, 3) shape, got {processed.shape}")
-                processed = np.dot(processed.reshape(-1, 3), color_matrix.T).reshape(processed.shape)
-                processed = self._ensure_3d_shape(processed, "color_balance")
-                logger.debug(f"Processed shape after color balance: {processed.shape}")
-
-            # Apply gamma correction
-            if self.params['gamma'] != 1.0:
-                processed = np.power(processed, 1.0 / self.params['gamma'])
-                processed = self._ensure_3d_shape(processed, "gamma")
-                logger.debug(f"Processed shape after gamma: {processed.shape}")
-
-            # Apply saturation
-            if self.params['saturation'] != 1.0:
-                # Convert to HSV for saturation adjustment
-                hsv = cv2.cvtColor((processed * 255).astype(np.uint8), cv2.COLOR_RGB2HSV).astype(np.float32)
-                hsv[..., 1] *= self.params['saturation']
-                processed = cv2.cvtColor(np.clip(hsv, 0, 255).astype(np.uint8), cv2.COLOR_HSV2RGB).astype(np.float32) / 255.0
-                processed = self._ensure_3d_shape(processed, "saturation")
-                logger.debug(f"Processed shape after saturation: {processed.shape}")
-
-            # Apply highlight and shadow recovery
-            if self.params['highlight_recovery'] > 0 or self.params['shadow_recovery'] > 0:
-                try:
-                    # Ensure we're working with a 3-channel image
-                    if len(processed.shape) != 3 or processed.shape[2] != 3:
-                        logger.warning(f"Expected 3-channel image, got shape {processed.shape}. Converting...")
-                        if len(processed.shape) == 2:
-                            processed = np.stack([processed] * 3, axis=-1)
-                        elif processed.shape[2] != 3:
-                            processed = np.array(Image.fromarray((processed * 255).astype(np.uint8)).convert('RGB')).astype(np.float32) / 255.0
-
-                    logger.debug(f"Processed shape before highlight/shadow: {processed.shape}")
-                    
-                    # Calculate luminance - ensure processed is 3D
-                    if len(processed.shape) == 3:
-                        luminance = np.mean(processed, axis=2)
-                    else:
-                        logger.error(f"Unexpected processed shape for luminance calculation: {processed.shape}")
-                        raise ValueError(f"Cannot calculate luminance for shape {processed.shape}")
-                    
-                    logger.debug(f"Luminance shape: {luminance.shape}")
-                    highlights = np.clip((luminance - 0.5) * 2, 0, 1)
-                    shadows = np.clip((0.5 - luminance) * 2, 0, 1)
-                    
-                    highlight_mask = 1 - (highlights * self.params['highlight_recovery'])
-                    shadow_mask = 1 + (shadows * self.params['shadow_recovery'])
-                    
-                    # Create a combined mask and properly broadcast it to all color channels
-                    combined_mask = highlight_mask * shadow_mask
-                    logger.debug(f"Combined mask shape: {combined_mask.shape}")
-                    
-                    # Ensure proper broadcasting by expanding mask dimensions
-                    if len(combined_mask.shape) == 2:
-                        combined_mask = np.expand_dims(combined_mask, axis=2)
-                    
-                    logger.debug(f"Final mask shape: {combined_mask.shape}, processed shape: {processed.shape}")
-                    
-                    # Apply the mask - make sure shapes are compatible
-                    if combined_mask.shape[:2] != processed.shape[:2]:
-                        logger.error(f"Shape mismatch: mask {combined_mask.shape} vs processed {processed.shape}")
-                        raise ValueError(f"Mask and image shape mismatch")
-                    
-                    processed = processed * combined_mask  # Broadcasting should work now
-                    
-                    logger.debug(f"Processed shape after highlight/shadow: {processed.shape}")
-                except Exception as e:
-                    logger.error(f"Error in highlight/shadow recovery: {str(e)}, shapes: processed={processed.shape}, mask={combined_mask.shape if 'combined_mask' in locals() else 'not created'}")
-                    # Continue processing without highlight/shadow recovery
-
-            # Final cleanup and validation
-            processed = np.clip(processed * 255, 0, 255).astype(np.uint8)
+                logger.info(f"Applied exposure: {self.params['exposure']:.2f} stops")
             
-            # Final shape validation
-            if len(processed.shape) != 3 or processed.shape[2] != 3:
-                logger.warning(f"Final processed image has unexpected shape {processed.shape}, fixing...")
-                if len(processed.shape) == 2:
-                    processed = np.stack([processed] * 3, axis=-1)
-                else:
-                    processed = np.array(Image.fromarray(processed).convert('RGB'))
-                logger.info(f"Final corrected shape: {processed.shape}")
+            # Apply contrast (linear gain around midpoint)
+            if self.params['contrast'] != 0:
+                # Convert contrast from -100/+100 to multiplier (0.5 to 2.0)
+                contrast_factor = 1.0 + (self.params['contrast'] / 100.0)
+                # Apply around 0.5 midpoint
+                processed = (processed - 0.5) * contrast_factor + 0.5
+                logger.info(f"Applied contrast: {self.params['contrast']:.1f}")
+            
+            # Calculate luminance for tone-based adjustments
+            luminance = 0.299 * processed[:, :, 0] + 0.587 * processed[:, :, 1] + 0.114 * processed[:, :, 2]
+            
+            # Apply highlights (affects bright areas)
+            if self.params['highlights'] != 0:
+                # Create mask for highlights (bright areas)
+                highlight_mask = np.power(luminance, 4)  # Strong falloff for highlights only
+                adjustment = self.params['highlights'] / 50.0  # Increase sensitivity
+                for c in range(3):
+                    processed[:, :, c] += highlight_mask * adjustment
+                logger.info(f"Applied highlights: {self.params['highlights']:.1f}")
+            
+            # Apply shadows (affects dark areas)
+            if self.params['shadows'] != 0:
+                # Create mask for shadows (dark areas)
+                shadow_mask = np.power(1.0 - luminance, 4)  # Strong falloff for shadows only
+                adjustment = self.params['shadows'] / 50.0  # Increase sensitivity
+                for c in range(3):
+                    processed[:, :, c] += shadow_mask * adjustment
+                logger.info(f"Applied shadows: {self.params['shadows']:.1f}")
+            
+            # Apply whites (shifts white point)
+            if self.params['whites'] != 0:
+                # Compress/expand the bright end of the range
+                white_adjust = self.params['whites'] / 100.0
+                # Apply S-curve to whites
+                mask = np.power(luminance, 3)
+                for c in range(3):
+                    processed[:, :, c] += mask * white_adjust
+                logger.info(f"Applied whites: {self.params['whites']:.1f}")
+            
+            # Apply blacks (shifts black point)
+            if self.params['blacks'] != 0:
+                # Compress/expand the dark end of the range
+                black_adjust = self.params['blacks'] / 100.0
+                # Apply S-curve to blacks
+                mask = np.power(1.0 - luminance, 3)
+                for c in range(3):
+                    processed[:, :, c] += mask * black_adjust
+                logger.info(f"Applied blacks: {self.params['blacks']:.1f}")
+            
+            # Apply tone curves LAST (after all tone adjustments)
+            processed = self._apply_curves(processed)
+            
+            # DEBUG: Check final processed values
+            sample_final = processed[processed.shape[0]//2:processed.shape[0]//2+3, processed.shape[1]//2:processed.shape[1]//2+3, :]
+            logger.info(f"DEBUG: Final processed values (gamma-encoded): \n{sample_final[0, 0, :]}")
+            
+            # Clip to valid range and convert to 8-bit
+            # Data is already gamma-encoded (sRGB), matching Photoshop's 16-bit behavior
+            processed = np.clip(processed, 0.0, 1.0)
+            processed = (processed * 255).astype(np.uint8)
+            logger.info(f"DEBUG: Final 8-bit values: {processed[processed.shape[0]//2, processed.shape[1]//2, :]}")
             
             return processed
-
+            
         except Exception as e:
             logger.error(f"Error processing image: {str(e)}")
-            # Return the basic inverted image as fallback, ensuring it's 3-channel
             fallback = self.cached_stages.get('initial', self.cached_stages.get('inverted'))
-            if len(fallback.shape) == 2:
-                fallback = np.stack([fallback] * 3, axis=-1)
-            elif len(fallback.shape) == 3 and fallback.shape[2] != 3:
-                fallback = np.array(Image.fromarray(fallback).convert('RGB'))
+            if fallback is None:
+                return np.ones((100, 100, 3), dtype=np.uint8) * 128
             return fallback
-
+    
+    def _apply_levels_adjustment(self, img):
+        """Apply black/white/gray point adjustments per channel"""
+        try:
+            # Check if any eyedropper points are set
+            has_black = all(self.params[f'black_point_{c}'] is not None for c in ['r', 'g', 'b'])
+            has_white = all(self.params[f'white_point_{c}'] is not None for c in ['r', 'g', 'b'])
+            has_gray = all(self.params[f'gray_point_{c}'] is not None for c in ['r', 'g', 'b'])
+            
+            if not (has_black or has_white or has_gray):
+                return img
+            
+            # Work with a copy
+            result = img.copy()
+            
+            # Get points (convert from 0-255 to 0-1)
+            black_pt = np.array([
+                self.params['black_point_r'] / 255.0 if self.params['black_point_r'] is not None else 0.0,
+                self.params['black_point_g'] / 255.0 if self.params['black_point_g'] is not None else 0.0,
+                self.params['black_point_b'] / 255.0 if self.params['black_point_b'] is not None else 0.0
+            ])
+            
+            white_pt = np.array([
+                self.params['white_point_r'] / 255.0 if self.params['white_point_r'] is not None else 1.0,
+                self.params['white_point_g'] / 255.0 if self.params['white_point_g'] is not None else 1.0,
+                self.params['white_point_b'] / 255.0 if self.params['white_point_b'] is not None else 1.0
+            ])
+            
+            gray_pt = np.array([
+                self.params['gray_point_r'] / 255.0 if self.params['gray_point_r'] is not None else None,
+                self.params['gray_point_g'] / 255.0 if self.params['gray_point_g'] is not None else None,
+                self.params['gray_point_b'] / 255.0 if self.params['gray_point_b'] is not None else None
+            ])
+            
+            # Apply gray point correction first (removes color casts)
+            if has_gray:
+                # Calculate the average of the gray point
+                gray_avg = np.mean(gray_pt)
+                if gray_avg > 0:
+                    # Scale each channel so that gray point becomes neutral
+                    for c in range(3):
+                        if gray_pt[c] > 0:
+                            result[:, :, c] *= (gray_avg / gray_pt[c])
+                    logger.info(f"Applied gray point correction: {gray_pt}")
+            
+            # Apply black and white points (per-channel levels)
+            if has_black or has_white:
+                for c in range(3):
+                    # Ensure white point is above black point
+                    if white_pt[c] <= black_pt[c]:
+                        white_pt[c] = black_pt[c] + 0.01
+                    
+                    # Apply levels formula: output = (input - black) * (1 / (white - black))
+                    result[:, :, c] = (result[:, :, c] - black_pt[c]) * (1.0 / (white_pt[c] - black_pt[c]))
+                
+                logger.info(f"Applied levels: black={black_pt}, white={white_pt}")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in levels adjustment: {str(e)}")
+            return img
+    
+    def _apply_curves(self, img):
+        """Apply tone curves per channel"""
+        try:
+            if self.params.get('curves') is None:
+                return img
+            
+            import json
+            curves_data = json.loads(self.params['curves']) if isinstance(self.params['curves'], str) else self.params['curves']
+            
+            # Work with a copy
+            result = img.copy()
+            
+            # Apply RGB curve (affects all channels equally)
+            if 'rgb' in curves_data and len(curves_data['rgb']) >= 2:
+                lut = self._build_curve_lut(curves_data['rgb'])
+                for c in range(3):
+                    result[:, :, c] = self._apply_lut(result[:, :, c], lut)
+                logger.info("Applied RGB curve")
+            
+            # Apply per-channel curves
+            channel_names = ['red', 'green', 'blue']
+            for idx, channel_name in enumerate(channel_names):
+                if channel_name in curves_data and len(curves_data[channel_name]) >= 2:
+                    # Check if it's not a linear curve
+                    curve = curves_data[channel_name]
+                    is_linear = (len(curve) == 2 and 
+                               abs(curve[0]['x'] - 0.0) < 0.01 and abs(curve[0]['y'] - 0.0) < 0.01 and
+                               abs(curve[1]['x'] - 1.0) < 0.01 and abs(curve[1]['y'] - 1.0) < 0.01)
+                    
+                    if not is_linear:
+                        lut = self._build_curve_lut(curve)
+                        result[:, :, idx] = self._apply_lut(result[:, :, idx], lut)
+                        logger.info(f"Applied {channel_name} curve")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error applying curves: {str(e)}")
+            return img
+    
+    def _build_curve_lut(self, curve_points):
+        """Build a lookup table from curve control points using monotone cubic interpolation"""
+        # Sort points by x coordinate
+        points = sorted(curve_points, key=lambda p: p['x'])
+        
+        n = len(points)
+        if n < 2:
+            return np.linspace(0, 1, 256, dtype=np.float32)
+        
+        xs = np.array([p['x'] for p in points], dtype=np.float32)
+        ys = np.array([p['y'] for p in points], dtype=np.float32)
+        
+        # Monotone cubic Hermite spline (Fritsch-Carlson)
+        # Compute slopes between consecutive points
+        dxs = xs[1:] - xs[:-1]
+        dys = ys[1:] - ys[:-1]
+        ms = dys / dxs  # Secant slopes
+        
+        # Compute tangents at each point
+        c1s = np.zeros(n, dtype=np.float32)
+        c1s[0] = ms[0]  # First endpoint
+        
+        for i in range(1, n - 1):
+            m_left = ms[i - 1]
+            m_right = ms[i]
+            
+            # If secants have opposite signs or either is zero, use zero tangent
+            if m_left * m_right <= 0:
+                c1s[i] = 0.0
+            else:
+                # Weighted harmonic mean
+                dx_left = dxs[i - 1]
+                dx_right = dxs[i]
+                common = dx_left + dx_right
+                c1s[i] = 3.0 * common / ((common + dx_right) / m_left + (common + dx_left) / m_right)
+        
+        c1s[n - 1] = ms[-1]  # Last endpoint
+        
+        # Apply monotonicity constraints
+        for i in range(n - 1):
+            if abs(ms[i]) < 1e-10:
+                c1s[i] = 0.0
+                c1s[i + 1] = 0.0
+            else:
+                alpha = c1s[i] / ms[i]
+                beta = c1s[i + 1] / ms[i]
+                
+                # Restrict to circle of radius 3
+                if alpha * alpha + beta * beta > 9.0:
+                    tau = 3.0 / np.sqrt(alpha * alpha + beta * beta)
+                    c1s[i] = tau * alpha * ms[i]
+                    c1s[i + 1] = tau * beta * ms[i]
+        
+        # Compute cubic coefficients for each segment
+        c2s = np.zeros(n - 1, dtype=np.float32)
+        c3s = np.zeros(n - 1, dtype=np.float32)
+        
+        for i in range(n - 1):
+            inv_dx = 1.0 / dxs[i]
+            common = c1s[i] + c1s[i + 1] - 2.0 * ms[i]
+            c2s[i] = (ms[i] - c1s[i] - common) * inv_dx
+            c3s[i] = common * inv_dx * inv_dx
+        
+        # Build lookup table
+        lut = np.zeros(256, dtype=np.float32)
+        
+        for idx in range(256):
+            x = idx / 255.0
+            
+            # Find segment
+            if x <= xs[0]:
+                lut[idx] = ys[0]
+            elif x >= xs[-1]:
+                lut[idx] = ys[-1]
+            else:
+                # Binary search for segment
+                i = np.searchsorted(xs, x, side='right') - 1
+                i = min(max(i, 0), n - 2)
+                
+                # Evaluate cubic polynomial
+                dx = x - xs[i]
+                lut[idx] = ys[i] + dx * (c1s[i] + dx * (c2s[i] + dx * c3s[i]))
+        
+        return lut
+    
+    def _apply_lut(self, channel, lut):
+        """Apply a lookup table to a channel"""
+        # Convert to 0-255 range, apply LUT, return to 0-1 range
+        indices = np.clip(channel * 255, 0, 255).astype(np.uint8)
+        return lut[indices]
+    
     def update_params(self, **kwargs):
-        """Update processing parameters and apply them to the image"""
-        # Update parameters with new values
-        for key, value in kwargs.items():
-            if key in self.params:
-                self.params[key] = value
+        """Update parameters and regenerate cache if needed"""
+        # Check if film_correction changed
+        film_correction_changed = 'film_correction' in kwargs and kwargs['film_correction'] != self.params.get('film_correction', 0.0)
         
-        # Clear the processed results to force reprocessing with new parameters
-        # Keep 'inverted' but clear 'initial' since it contains the film correction
-        keys_to_clear = [k for k in self.cached_stages.keys() if k not in ['inverted']]
-        for key in keys_to_clear:
-            del self.cached_stages[key]
-            
+        # Update parameters
+        self.params.update(kwargs)
         logger.info(f"Updated params: {kwargs}")
-        logger.info(f"film_correction now: {self.params['film_correction']}")
-
-    def _regenerate_initial_processing(self):
-        """Regenerate the initial processing stage with current film correction parameters"""
-        # Start with the basic inverted image
-        inverted = self.cached_stages.get('inverted')
-        if inverted is None:
-            raise ValueError("No inverted image available in cache")
-            
-        # Convert to float for processing
-        img_float = inverted.astype(np.float32) / 255.0
         
+        # Regenerate cache if film correction changed
+        if film_correction_changed:
+            logger.info("Film correction changed, regenerating cache")
+            self._initialize_cache()
+    
+    def get_histogram(self):
+        """Get histogram for display"""
         try:
-            # Apply film correction if enabled
-            correction_strength = self.params.get('film_correction', 0.0)
-            
-            if correction_strength > 0.01:
-                # Analyze the original negative to find film base color
-                neg_analysis = self._analyze_negative_characteristics(self.original)
-                
-                if neg_analysis and isinstance(neg_analysis, dict):
-                    film_base_color = neg_analysis.get('film_base_color', np.zeros(3))
-                    
-                    logger.info(f"Regenerating with film correction: R={film_base_color[0]:.1f}, G={film_base_color[1]:.1f}, B={film_base_color[2]:.1f}")
-                    logger.info(f"Film correction strength: {correction_strength:.2f}")
-                    
-                    # Apply film base subtraction - subtract the film base color directly
-                    film_base_normalized = film_base_color / 255.0
-                    correction = film_base_normalized * correction_strength
-                    img_float = img_float - correction
-                    
-                    # Ensure we don't go below zero or above 1
-                    img_float = np.clip(img_float, 0.0, 1.0)
-                    
-                    logger.info(f"Applied film base subtraction: R={correction[0]:.3f}, G={correction[1]:.3f}, B={correction[2]:.3f}")
-                    
-                else:
-                    logger.warning("Could not get film base color for regeneration")
-            else:
-                logger.info("Film correction disabled for regeneration")
-                
-            # Step 2: Auto color correct to highlights (if enabled) - apply regardless of film correction
-            if self.params.get('auto_levels', 1.0) > 0.5:
-                img_float, color_adjustments = self._auto_color_correct_to_highlights(img_float)
-            else:
-                logger.info("Auto levels disabled")
-            
-            # Step 3: Auto white balance (if enabled) - apply regardless of film correction
-            if self.params.get('auto_white_balance', 1.0) > 0.5:
-                img_float, wb_adjustments = self._auto_white_balance_combination(img_float)
-            else:
-                logger.info("Auto white balance disabled")
-                
+            img = self.get_processed_image()
+            histograms = {}
+            for i, color in enumerate(['red', 'green', 'blue']):
+                hist, _ = np.histogram(img[:, :, i], bins=256, range=(0, 256))
+                histograms[color] = hist.tolist()
+            return histograms
         except Exception as e:
-            logger.error(f"Error in film correction during regeneration: {str(e)}")
-            
-        # Convert back to uint8 and cache
-        result = np.clip(img_float * 255, 0, 255).astype(np.uint8)
-        self.cached_stages['initial'] = result
-        
-        return result
-
-    def _auto_color_correct_to_highlights(self, img_float):
-        """
-        Automatically adjust RGB channels so highlights just peak by a small number of pixels
-        """
-        logger.info("Starting automatic color correction to highlights")
-        
-        try:
-            # Define what "just peaking" means - allow this many pixels to clip per channel
-            max_clipped_pixels = max(10, int(img_float.shape[0] * img_float.shape[1] * 0.0001))  # 0.01% of pixels
-            logger.info(f"Target: max {max_clipped_pixels} clipped pixels per channel")
-            
-            # Work on each channel separately
-            corrected = img_float.copy()
-            adjustments = []
-            
-            for channel in range(3):
-                channel_name = ['Red', 'Green', 'Blue'][channel]
-                channel_data = img_float[:, :, channel]
-                
-                # Find the current maximum value
-                current_max = np.max(channel_data)
-                logger.info(f"{channel_name} channel current max: {current_max:.3f}")
-                
-                # Binary search to find the right multiplier
-                # We want to scale the channel so that only max_clipped_pixels exceed 1.0
-                min_multiplier = 0.1
-                max_multiplier = 10.0
-                best_multiplier = 1.0
-                
-                for iteration in range(20):  # Binary search iterations
-                    test_multiplier = (min_multiplier + max_multiplier) / 2
-                    test_channel = channel_data * test_multiplier
-                    clipped_pixels = np.sum(test_channel > 1.0)
-                    
-                    if clipped_pixels <= max_clipped_pixels:
-                        # Too few clipped pixels, can increase multiplier
-                        min_multiplier = test_multiplier
-                        best_multiplier = test_multiplier
-                    else:
-                        # Too many clipped pixels, need to decrease multiplier
-                        max_multiplier = test_multiplier
-                    
-                    # If we're close enough, stop
-                    if abs(clipped_pixels - max_clipped_pixels) <= 5:
-                        best_multiplier = test_multiplier
-                        break
-                
-                # Apply the best multiplier to this channel
-                corrected[:, :, channel] = channel_data * best_multiplier
-                adjustments.append(best_multiplier)
-                
-                # Final check
-                final_clipped = np.sum(corrected[:, :, channel] > 1.0)
-                logger.info(f"{channel_name} channel: multiplier={best_multiplier:.3f}, clipped_pixels={final_clipped}")
-            
-            # Clip to valid range
-            corrected = np.clip(corrected, 0.0, 1.0)
-            
-            logger.info(f"Color correction complete: R×{adjustments[0]:.3f}, G×{adjustments[1]:.3f}, B×{adjustments[2]:.3f}")
-            
-            # Log the actual effect
-            original_range = f"R:{img_float[:,:,0].min():.3f}-{img_float[:,:,0].max():.3f}, G:{img_float[:,:,1].min():.3f}-{img_float[:,:,1].max():.3f}, B:{img_float[:,:,2].min():.3f}-{img_float[:,:,2].max():.3f}"
-            corrected_range = f"R:{corrected[:,:,0].min():.3f}-{corrected[:,:,0].max():.3f}, G:{corrected[:,:,1].min():.3f}-{corrected[:,:,1].max():.3f}, B:{corrected[:,:,2].min():.3f}-{corrected[:,:,2].max():.3f}"
-            logger.info(f"Auto levels effect - Before: {original_range}")
-            logger.info(f"Auto levels effect - After: {corrected_range}")
-            
-            return corrected, adjustments
-            
-        except Exception as e:
-            logger.error(f"Error in auto color correction: {str(e)}")
-            return img_float, [1.0, 1.0, 1.0]
-
-    def _auto_white_balance_combination(self, img_float):
-        """
-        Combination white balance approach:
-        1. Use highlights for initial white balance 
-        2. Fine-tune with overall image statistics
-        3. Apply film-specific knowledge
-        """
-        logger.info("Starting combination white balance correction")
-        
-        try:
-            # Step 1: Highlight-based white balance
-            gray = np.mean(img_float, axis=2)
-            
-            # Find brightest 2% of pixels (likely white/neutral areas)
-            highlight_threshold = np.percentile(gray, 98)
-            highlight_mask = gray >= highlight_threshold
-            
-            num_highlight_pixels = np.sum(highlight_mask)
-            logger.info(f"Found {num_highlight_pixels} highlight pixels for white balance")
-            
-            if num_highlight_pixels > 10:  # Need enough pixels for reliable sampling
-                # Average the highlight pixels - these should be neutral
-                highlight_r = np.mean(img_float[highlight_mask, 0])
-                highlight_g = np.mean(img_float[highlight_mask, 1]) 
-                highlight_b = np.mean(img_float[highlight_mask, 2])
-                
-                logger.info(f"Highlight colors: R={highlight_r:.3f}, G={highlight_g:.3f}, B={highlight_b:.3f}")
-                
-                # Calculate initial white balance factors
-                # Use green as reference (it's usually most accurate)
-                highlight_wb_r = highlight_g / highlight_r if highlight_r > 0.01 else 1.0
-                highlight_wb_g = 1.0  # Green is reference
-                highlight_wb_b = highlight_g / highlight_b if highlight_b > 0.01 else 1.0
-                
-                logger.info(f"Highlight-based WB factors: R={highlight_wb_r:.3f}, G={highlight_wb_g:.3f}, B={highlight_wb_b:.3f}")
-                
-            else:
-                logger.warning("Insufficient highlight pixels, using neutral factors")
-                highlight_wb_r = highlight_wb_g = highlight_wb_b = 1.0
-            
-            # Step 2: Fine-tune with overall image statistics
-            # Calculate average color of mid-tones (avoid pure blacks and blown highlights)
-            midtone_mask = (gray > 0.1) & (gray < 0.8)
-            
-            if np.sum(midtone_mask) > 100:
-                midtone_r = np.mean(img_float[midtone_mask, 0])
-                midtone_g = np.mean(img_float[midtone_mask, 1])
-                midtone_b = np.mean(img_float[midtone_mask, 2])
-                
-                # Calculate how far midtones are from neutral
-                midtone_target = (midtone_r + midtone_g + midtone_b) / 3
-                midtone_wb_r = midtone_target / midtone_r if midtone_r > 0.01 else 1.0
-                midtone_wb_g = midtone_target / midtone_g if midtone_g > 0.01 else 1.0
-                midtone_wb_b = midtone_target / midtone_b if midtone_b > 0.01 else 1.0
-                
-                logger.info(f"Midtone-based WB factors: R={midtone_wb_r:.3f}, G={midtone_wb_g:.3f}, B={midtone_wb_b:.3f}")
-                
-                # Blend highlight and midtone corrections (favor highlights but consider midtones)
-                blend_weight = 0.7  # 70% highlights, 30% midtones
-                final_wb_r = highlight_wb_r * blend_weight + midtone_wb_r * (1 - blend_weight)
-                final_wb_g = highlight_wb_g * blend_weight + midtone_wb_g * (1 - blend_weight)
-                final_wb_b = highlight_wb_b * blend_weight + midtone_wb_b * (1 - blend_weight)
-                
-            else:
-                logger.warning("Insufficient midtone pixels, using highlight-only correction")
-                final_wb_r = highlight_wb_r
-                final_wb_g = highlight_wb_g
-                final_wb_b = highlight_wb_b
-            
-            # Step 3: Apply film-specific knowledge
-            # Film typically has slight color casts that should be corrected
-            # After film base removal, we often need to reduce blue/cyan cast
-            film_correction_r = 1.0      # Red usually needs minimal adjustment
-            film_correction_g = 0.98     # Green slight reduction
-            film_correction_b = 0.92     # Blue typically needs most reduction
-            
-            # Combine white balance with film-specific corrections
-            combined_r = final_wb_r * film_correction_r
-            combined_g = final_wb_g * film_correction_g  
-            combined_b = final_wb_b * film_correction_b
-            
-            # Normalize to prevent over-brightening (keep the brightest factor at or below 1.1)
-            max_factor = max(combined_r, combined_g, combined_b)
-            if max_factor > 1.1:
-                normalization = 1.1 / max_factor
-                combined_r *= normalization
-                combined_g *= normalization
-                combined_b *= normalization
-            
-            logger.info(f"Final WB factors: R={combined_r:.3f}, G={combined_g:.3f}, B={combined_b:.3f}")
-            
-            # Apply the white balance correction
-            corrected = img_float.copy()
-            corrected[:, :, 0] *= combined_r
-            corrected[:, :, 1] *= combined_g
-            corrected[:, :, 2] *= combined_b
-            
-            # Clip to valid range
-            corrected = np.clip(corrected, 0.0, 1.0)
-            
-            # Log the actual effect
-            original_range = f"R:{img_float[:,:,0].min():.3f}-{img_float[:,:,0].max():.3f}, G:{img_float[:,:,1].min():.3f}-{img_float[:,:,1].max():.3f}, B:{img_float[:,:,2].min():.3f}-{img_float[:,:,2].max():.3f}"
-            corrected_range = f"R:{corrected[:,:,0].min():.3f}-{corrected[:,:,0].max():.3f}, G:{corrected[:,:,1].min():.3f}-{corrected[:,:,1].max():.3f}, B:{corrected[:,:,2].min():.3f}-{corrected[:,:,2].max():.3f}"
-            logger.info(f"Auto white balance effect - Before: {original_range}")
-            logger.info(f"Auto white balance effect - After: {corrected_range}")
-            logger.info("White balance correction complete")
-            
-            return corrected, [combined_r, combined_g, combined_b]
-            
-        except Exception as e:
-            logger.error(f"Error in white balance correction: {str(e)}")
-            return img_float, [1.0, 1.0, 1.0]
+            logger.error(f"Error generating histogram: {str(e)}")
+            return {'red': [0]*256, 'green': [0]*256, 'blue': [0]*256}

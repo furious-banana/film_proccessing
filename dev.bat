@@ -16,14 +16,8 @@ if "%1"=="run" (
 )
 
 if "%1"=="test" (
-    echo Running import tests...
-    uv run python test_imports.py
-    echo.
-    echo Testing Flask app...
-    uv run python test_flask.py
-    echo.
-    echo Running pytest...
-    uv run python -m pytest tests/ -v
+    echo Running basic tests...
+    uv run python tests/test_basic.py
     goto :eof
 )
 

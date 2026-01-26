@@ -1,695 +1,273 @@
-<!DOCTYPE html>
-<html>
+﻿<!DOCTYPE html>
+<html lang="en">
 <head>
-    <title>Film Negative Processor</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-            font-family: 'Inter', system-ui, -apple-system, sans-serif;
-        }
-
-        body {
-            background: #0f0f0f;
-            color: #fff;
-            min-height: 100vh;
-            padding: 16px;
-            line-height: 1.5;
-        }
-
-        .container {
-            display: flex;
-            gap: 16px;
-            max-width: 1800px;
-            margin: 0 auto;
-            height: calc(100vh - 32px);
-        }
-
-        .controls {
-            width: 340px;
-            padding: 20px;
-            background: linear-gradient(145deg, #1e1e1e, #252525);
-            border-radius: 16px;
-            border: 1px solid #333;
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-            height: 100%;
-            overflow-y: auto;
-            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-        }
-
-        .preview {
-            flex-grow: 1;
-            background: linear-gradient(145deg, #1a1a1a, #222);
-            border-radius: 16px;
-            border: 1px solid #333;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            overflow: hidden;
-            position: relative;
-            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-        }
-
-        .control-group {
-            background: rgba(255,255,255,0.02);
-            border: 1px solid rgba(255,255,255,0.1);
-            border-radius: 12px;
-            padding: 16px;
-            transition: all 0.2s ease;
-        }
-
-        .control-group:hover {
-            background: rgba(255,255,255,0.04);
-            border-color: rgba(255,255,255,0.15);
-        }
-
-        .control-group h3 {
-            font-size: 14px;
-            font-weight: 600;
-            color: #fff;
-            margin-bottom: 12px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .control-item {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 12px;
-        }
-
-        .control-item:last-child {
-            margin-bottom: 0;
-        }
-
-        .control-label {
-            font-size: 13px;
-            color: #ccc;
-            font-weight: 500;
-            min-width: 100px;
-        }
-
-        .control-input {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            flex: 1;
-        }
-
-        .slider {
-            flex: 1;
-            height: 6px;
-            background: linear-gradient(90deg, #333, #555);
-            border-radius: 3px;
-            outline: none;
-            cursor: pointer;
-            -webkit-appearance: none;
-            appearance: none;
-            transition: all 0.15s ease;
-        }
-
-        .slider::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            width: 18px;
-            height: 18px;
-            background: linear-gradient(145deg, #0070f3, #0051cc);
-            border-radius: 50%;
-            cursor: pointer;
-            box-shadow: 0 2px 8px rgba(0,112,243,0.3);
-            transition: all 0.15s ease;
-        }
-
-        .slider::-webkit-slider-thumb:hover {
-            transform: scale(1.1);
-            box-shadow: 0 4px 12px rgba(0,112,243,0.5);
-        }
-
-        .slider::-moz-range-thumb {
-            width: 18px;
-            height: 18px;
-            background: linear-gradient(145deg, #0070f3, #0051cc);
-            border-radius: 50%;
-            cursor: pointer;
-            border: none;
-            box-shadow: 0 2px 8px rgba(0,112,243,0.3);
-        }
-
-        .value-display {
-            min-width: 45px;
-            text-align: right;
-            font-size: 12px;
-            color: #999;
-            font-family: 'SF Mono', 'Monaco', 'Cascadia Code', monospace;
-        }
-
-        .toggle {
-            position: relative;
-            width: 44px;
-            height: 24px;
-            background: #333;
-            border-radius: 12px;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            border: 1px solid #555;
-        }
-
-        .toggle.active {
-            background: linear-gradient(145deg, #0070f3, #0051cc);
-            border-color: #0070f3;
-        }
-
-        .toggle::after {
-            content: '';
-            position: absolute;
-            top: 2px;
-            left: 2px;
-            width: 18px;
-            height: 18px;
-            background: white;
-            border-radius: 50%;
-            transition: all 0.2s ease;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-        }
-
-        .toggle.active::after {
-            transform: translateX(20px);
-        }
-
-        .upload-section {
-            text-align: center;
-            padding: 24px;
-            background: rgba(255,255,255,0.02);
-            border: 2px dashed rgba(255,255,255,0.1);
-            border-radius: 12px;
-            transition: all 0.2s ease;
-            cursor: pointer;
-        }
-
-        .upload-section:hover {
-            background: rgba(255,255,255,0.04);
-            border-color: rgba(255,255,255,0.2);
-        }
-
-        .upload-section.dragover {
-            background: rgba(0,112,243,0.1);
-            border-color: #0070f3;
-        }
-
-        #fileInput {
-            display: none;
-        }
-
-        .upload-button {
-            background: linear-gradient(145deg, #0070f3, #0051cc);
-            color: white;
-            border: none;
-            padding: 12px 24px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-weight: 500;
-            font-size: 14px;
-            transition: all 0.2s ease;
-            box-shadow: 0 4px 12px rgba(0,112,243,0.2);
-        }
-
-        .upload-button:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 6px 16px rgba(0,112,243,0.3);
-        }
-
-        #previewImage {
-            max-width: 100%;
-            max-height: 100%;
-            object-fit: contain;
-            transition: opacity 0.1s ease;
-            border-radius: 8px;
-        }
-
-        .processing {
-            opacity: 0.7;
-        }
-
-        .image-info {
-            position: absolute;
-            top: 16px;
-            left: 16px;
-            background: rgba(0,0,0,0.7);
-            padding: 8px 12px;
-            border-radius: 6px;
-            font-size: 12px;
-            color: #ccc;
-            backdrop-filter: blur(8px);
-        }
-
-        /* Smooth scrollbar for controls */
-        .controls::-webkit-scrollbar {
-            width: 6px;
-        }
-
-        .controls::-webkit-scrollbar-track {
-            background: rgba(255,255,255,0.05);
-            border-radius: 3px;
-        }
-
-        .controls::-webkit-scrollbar-thumb {
-            background: rgba(255,255,255,0.2);
-            border-radius: 3px;
-        }
-
-        .controls::-webkit-scrollbar-thumb:hover {
-            background: rgba(255,255,255,0.3);
-        }
-
-        /* Loading indicator */
-        .loading-indicator {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            display: none;
-        }
-
-        .spinner {
-            width: 40px;
-            height: 40px;
-            border: 3px solid rgba(255,255,255,0.1);
-            border-top: 3px solid #0070f3;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-        }
-
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-    </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Professional Film Processor | Photoshop-Class Film Development</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <div class="container">
-        <div class="controls">
-            <!-- Upload Section -->
-            <div class="upload-section" id="dropZone">
-                <input type="file" id="fileInput" accept="image/*">
-                <button class="upload-button" onclick="document.getElementById('fileInput').click()">
-                    Select Film Negative
-                </button>
-                <p style="margin-top: 8px; font-size: 12px; color: #888;">
-                    Or drag and drop your film negative here
-                </p>
-            </div>
-
-            <!-- Film Processing Controls -->
-            <div class="control-group">
-                <h3>Film Processing</h3>
-                
-                <div class="control-item">
-                    <span class="control-label">Film Correction</span>
-                    <div class="toggle" id="film_correction_toggle" onclick="toggleControl('film_correction')">
-                    </div>
-                </div>
-
-                <div class="control-item">
-                    <span class="control-label">Auto Levels</span>
-                    <div class="toggle active" id="auto_levels_toggle" onclick="toggleControl('auto_levels')">
-                    </div>
-                </div>
-
-                <div class="control-item">
-                    <span class="control-label">Auto White Balance</span>
-                    <div class="toggle active" id="auto_white_balance_toggle" onclick="toggleControl('auto_white_balance')">
-                    </div>
-                </div>
-
-                <div class="control-item">
-                    <span class="control-label">Show Detection</span>
-                    <div class="toggle" id="show_analysis_toggle" onclick="toggleControl('show_analysis')">
-                    </div>
-                </div>
-            </div>
-
-            <!-- Tone Controls -->
-            <div class="control-group">
-                <h3>Tone</h3>
-                
-                <div class="control-item">
-                    <span class="control-label">Exposure</span>
-                    <div class="control-input">
-                        <input type="range" class="slider" id="exposure" min="-2" max="2" step="0.01" value="0">
-                        <span class="value-display" id="exposure_value">0.00</span>
-                    </div>
-                </div>
-
-                <div class="control-item">
-                    <span class="control-label">Contrast</span>
-                    <div class="control-input">
-                        <input type="range" class="slider" id="contrast" min="0.2" max="3" step="0.01" value="1">
-                        <span class="value-display" id="contrast_value">1.00</span>
-                    </div>
-                </div>
-
-                <div class="control-item">
-                    <span class="control-label">Highlights</span>
-                    <div class="control-input">
-                        <input type="range" class="slider" id="highlight_recovery" min="0" max="1" step="0.01" value="0">
-                        <span class="value-display" id="highlight_recovery_value">0.00</span>
-                    </div>
-                </div>
-
-                <div class="control-item">
-                    <span class="control-label">Shadows</span>
-                    <div class="control-input">
-                        <input type="range" class="slider" id="shadow_recovery" min="0" max="1" step="0.01" value="0">
-                        <span class="value-display" id="shadow_recovery_value">0.00</span>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Color Controls -->
-            <div class="control-group">
-                <h3>Color</h3>
-                
-                <div class="control-item">
-                    <span class="control-label">Temperature</span>
-                    <div class="control-input">
-                        <input type="range" class="slider" id="temperature" min="-5" max="5" step="0.01" value="0">
-                        <span class="value-display" id="temperature_value">0.00</span>
-                    </div>
-                </div>
-
-                <div class="control-item">
-                    <span class="control-label">Tint</span>
-                    <div class="control-input">
-                        <input type="range" class="slider" id="tint" min="-5" max="5" step="0.01" value="0">
-                        <span class="value-display" id="tint_value">0.00</span>
-                    </div>
-                </div>
-
-                <div class="control-item">
-                    <span class="control-label">Red Balance</span>
-                    <div class="control-input">
-                        <input type="range" class="slider" id="red_balance" min="0.5" max="2" step="0.01" value="1">
-                        <span class="value-display" id="red_balance_value">1.00</span>
-                    </div>
-                </div>
-
-                <div class="control-item">
-                    <span class="control-label">Green Balance</span>
-                    <div class="control-input">
-                        <input type="range" class="slider" id="green_balance" min="0.5" max="2" step="0.01" value="1">
-                        <span class="value-display" id="green_balance_value">1.00</span>
-                    </div>
-                </div>
-
-                <div class="control-item">
-                    <span class="control-label">Blue Balance</span>
-                    <div class="control-input">
-                        <input type="range" class="slider" id="blue_balance" min="0.5" max="2" step="0.01" value="1">
-                        <span class="value-display" id="blue_balance_value">1.00</span>
-                    </div>
-                </div>
-
-                <div class="control-item">
-                    <span class="control-label">Saturation</span>
-                    <div class="control-input">
-                        <input type="range" class="slider" id="saturation" min="0" max="2" step="0.01" value="1">
-                        <span class="value-display" id="saturation_value">1.00</span>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Advanced Controls -->
-            <div class="control-group">
-                <h3>Advanced</h3>
-                
-                <div class="control-item">
-                    <span class="control-label">Gamma</span>
-                    <div class="control-input">
-                        <input type="range" class="slider" id="gamma" min="0.5" max="2.5" step="0.01" value="1">
-                        <span class="value-display" id="gamma_value">1.00</span>
-                    </div>
-                </div>
-
-                <div class="control-item">
-                    <span class="control-label">Clarity</span>
-                    <div class="control-input">
-                        <input type="range" class="slider" id="clarity" min="-1" max="1" step="0.01" value="0">
-                        <span class="value-display" id="clarity_value">0.00</span>
-                    </div>
-                </div>
-
-                <div class="control-item">
-                    <span class="control-label">Dehaze</span>
-                    <div class="control-input">
-                        <input type="range" class="slider" id="dehaze" min="-1" max="1" step="0.01" value="0">
-                        <span class="value-display" id="dehaze_value">0.00</span>
-                    </div>
-                </div>
-            </div>
+    <!-- Professional Top Bar -->
+    <div class="top-bar">
+        <div class="logo">
+            <i class="fas fa-camera"></i>
+            Professional Image Processor
         </div>
-
-        <div class="preview">
-            <div class="loading-indicator" id="loadingIndicator">
-                <div class="spinner"></div>
+        <div class="top-controls">
+            <div class="image-mode-toggle" style="margin-right: 16px; display: flex; align-items: center; gap: 8px;">
+                <span style="font-size: 11px; color: var(--text-tertiary);">Mode:</span>
+                <div class="view-toggle">
+                    <button class="view-btn mode-btn" id="modePhoto" onclick="switchImageMode('photo')">Photo</button>
+                    <button class="view-btn mode-btn active" id="modeNegative" onclick="switchImageMode('negative')">Negative</button>
+                </div>
             </div>
-            <img id="previewImage" style="display: none;">
-            <div class="image-info" id="imageInfo" style="display: none;">
-                <span id="imageSize"></span>
+            <div class="view-toggle">
+                <button class="view-btn active">Develop</button>
+                <button class="view-btn">Library</button>
+                <button class="view-btn">Export</button>
             </div>
         </div>
     </div>
 
-    <script>
-        let currentImage = null;
-        let isProcessing = false;
-        let showAnalysis = false;
-        
-        // Debounce function for smooth updates
-        function debounce(func, wait) {
-            let timeout;
-            return function executedFunction(...args) {
-                const later = () => {
-                    clearTimeout(timeout);
-                    func(...args);
-                };
-                clearTimeout(timeout);
-                timeout = setTimeout(later, wait);
-            };
-        }
+    <!-- Main Layout -->
+    <div class="main-container">
+        <!-- Left Panel - Professional Controls -->
+        <div class="left-panel">
+            <div class="panel-tabs">
+                <button class="panel-tab active" id="basicTab">Adjustments</button>
+            </div>
 
-        // Toggle controls
-        const toggleStates = {
-            film_correction: false,
-            auto_levels: true,
-            auto_white_balance: true,
-            show_analysis: false
-        };
+            <div class="panel-content">
+                <!-- Upload Section -->
+                <div class="upload-zone" id="uploadZone">
+                    <input type="file" id="fileInput" accept="image/*">
+                    <div class="upload-icon">
+                        <i class="fas fa-cloud-upload-alt"></i>
+                    </div>
+                    <div class="upload-text" id="uploadText">
+                        Drag & drop your image here
+                    </div>
+                    <button class="upload-btn" id="uploadBtn" onclick="document.getElementById('fileInput').click()">
+                        Select Image
+                    </button>
+                </div>
 
-        function toggleControl(controlName) {
-            console.log(`Toggling ${controlName} from ${toggleStates[controlName]} to ${!toggleStates[controlName]}`);
-            toggleStates[controlName] = !toggleStates[controlName];
-            const toggle = document.getElementById(controlName + '_toggle');
-            toggle.classList.toggle('active', toggleStates[controlName]);
-            
-            if (controlName !== 'show_analysis') {
-                debouncedUpdateImage();
-            } else {
-                showAnalysis = toggleStates[controlName];
-                if (currentImage) {
-                    updateImage();
-                }
-            }
-        }
+                <!-- Basic Panel -->
+                <div id="basicPanel" class="tab-panel active">
+                    <!-- Tone Section -->
+                    <div class="control-section">
+                        <div class="section-header">
+                            <span class="section-title">Tone</span>
+                            <button id="undoBtn" style="padding: 4px 12px; font-size: 11px; background: var(--bg-tertiary); border: 1px solid var(--border-primary); border-radius: 3px; cursor: pointer; color: var(--text-primary);" title="Undo last change (Ctrl+Z)">
+                                ↶ Undo
+                            </button>
+                        </div>
+                        
+                        <div class="control-group">
+                            <div class="control-row">
+                                <span class="control-label">Exposure</span>
+                                <div class="control-wrapper">
+                                    <input type="range" class="pro-slider" id="exposure" 
+                                           min="-1" max="1" step="0.001" value="0">
+                                    <span class="value-display" id="exposure_value">0.000</span>
+                                </div>
+                            </div>
+                            
+                            <div class="control-row">
+                                <span class="control-label">Contrast</span>
+                                <div class="control-wrapper">
+                                    <input type="range" class="pro-slider" id="contrast" 
+                                           min="-50" max="50" step="0.01" value="0">
+                                    <span class="value-display" id="contrast_value">0.00</span>
+                                </div>
+                            </div>
+                            
+                            <div class="control-row">
+                                <span class="control-label">Highlights</span>
+                                <div class="control-wrapper">
+                                    <input type="range" class="pro-slider" id="highlights" 
+                                           min="-50" max="50" step="0.01" value="0">
+                                    <span class="value-display" id="highlights_value">0.00</span>
+                                </div>
+                            </div>
+                            
+                            <div class="control-row">
+                                <span class="control-label">Shadows</span>
+                                <div class="control-wrapper">
+                                    <input type="range" class="pro-slider" id="shadows" 
+                                           min="-50" max="50" step="0.01" value="0">
+                                    <span class="value-display" id="shadows_value">0.00</span>
+                                </div>
+                            </div>
+                            
+                            <div class="control-row">
+                                <span class="control-label">Whites</span>
+                                <div class="control-wrapper">
+                                    <input type="range" class="pro-slider" id="whites" 
+                                           min="-50" max="50" step="0.01" value="0">
+                                    <span class="value-display" id="whites_value">0.00</span>
+                                </div>
+                            </div>
+                            
+                            <div class="control-row">
+                                <span class="control-label">Blacks</span>
+                                <div class="control-wrapper">
+                                    <input type="range" class="pro-slider" id="blacks" 
+                                           min="-50" max="50" step="0.01" value="0">
+                                    <span class="value-display" id="blacks_value">0.00</span>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Eyedropper Tools -->
+                        <div class="control-group" style="margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border-color);">
+                            <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px; font-weight: 500;">
+                                COLOR CORRECTION EYEDROPPERS
+                            </div>
+                            <div style="display: flex; gap: 8px;">
+                                <button class="eyedropper-btn" id="blackPointBtn" title="Click, then click on image to set black point">
+                                    <span style="background: #000; width: 12px; height: 12px; display: inline-block; border-radius: 2px; margin-right: 4px;"></span>
+                                    Black Point
+                                </button>
+                                <button class="eyedropper-btn" id="grayPointBtn" title="Click, then click on neutral gray to remove color cast">
+                                    <span style="background: #888; width: 12px; height: 12px; display: inline-block; border-radius: 2px; margin-right: 4px;"></span>
+                                    Gray Point
+                                </button>
+                                <button class="eyedropper-btn" id="whitePointBtn" title="Click, then click on image to set white point">
+                                    <span style="background: #fff; width: 12px; height: 12px; display: inline-block; border-radius: 2px; border: 1px solid #444; margin-right: 4px;"></span>
+                                    White Point
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <!-- Tone Curve -->
+                        <div class="control-group" style="margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border-color);">
+                            <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px; font-weight: 500;">
+                                TONE CURVE
+                            </div>
+                            
+                            <!-- Channel selector -->
+                            <div style="display: flex; gap: 4px; margin-bottom: 8px;">
+                                <button class="curve-channel-btn active" data-channel="rgb" style="flex: 1; padding: 4px; font-size: 10px; background: var(--bg-tertiary); border: 1px solid var(--border-primary); border-radius: 3px; cursor: pointer; color: var(--text-primary);">RGB</button>
+                                <button class="curve-channel-btn" data-channel="red" style="flex: 1; padding: 4px; font-size: 10px; background: var(--bg-tertiary); border: 1px solid var(--border-primary); border-radius: 3px; cursor: pointer; color: #ff4444;">Red</button>
+                                <button class="curve-channel-btn" data-channel="green" style="flex: 1; padding: 4px; font-size: 10px; background: var(--bg-tertiary); border: 1px solid var(--border-primary); border-radius: 3px; cursor: pointer; color: #44ff44;">Green</button>
+                                <button class="curve-channel-btn" data-channel="blue" style="flex: 1; padding: 4px; font-size: 10px; background: var(--bg-tertiary); border: 1px solid var(--border-primary); border-radius: 3px; cursor: pointer; color: #4444ff;">Blue</button>
+                            </div>
+                            
+                            <!-- Curve canvas -->
+                            <canvas id="curvesCanvas" width="300" height="300" style="width: 100%; height: auto; background: var(--bg-tertiary); border: 1px solid var(--border-primary); border-radius: 4px; cursor: crosshair;"></canvas>
+                            
+                            <!-- Info text -->
+                            <div id="curvePointInfo" style="font-size: 10px; color: var(--text-tertiary); margin-top: 4px; text-align: center;">
+                                Click and drag to edit, double-click to remove points
+                            </div>
+                            
+                            <!-- Reset button -->
+                            <button id="resetCurvesBtn" style="width: 100%; margin-top: 8px; padding: 6px; font-size: 11px; background: var(--bg-tertiary); border: 1px solid var(--border-primary); border-radius: 3px; cursor: pointer; color: var(--text-primary);">
+                                Reset Curve
+                            </button>
+                        </div>
+                    </div>
 
-        // Initialize toggles
-        function initializeToggles() {
-            Object.keys(toggleStates).forEach(key => {
-                const toggle = document.getElementById(key + '_toggle');
-                if (toggle) {
-                    toggle.classList.toggle('active', toggleStates[key]);
-                }
-            });
-        }
+                    <!-- Film Base Correction Section (shown only in negative mode) -->
+                    <div class="control-section film-negative-only" id="filmCorrectionSection">
+                        <div class="section-header">
+                            <span class="section-title">🎞️ Film Negative Processing</span>
+                        </div>
+                        
+                        <div class="control-group">
+                            <div class="control-row">
+                                <span class="control-label">Film Base Correction</span>
+                                <div class="control-wrapper">
+                                    <div class="pro-toggle active" id="film_correction_basic" onclick="toggleControl('film_correction_basic')"></div>
+                                </div>
+                            </div>
+                            <div style="font-size: 11px; color: var(--text-tertiary); margin-top: 8px; line-height: 1.4;">
+                                Automatically removes the orange/brown film base color cast. Essential for proper color reproduction from film negative scans.
+                            </div>
+                        </div>
+                    </div>
+                </div>
 
-        // Update value displays
-        function updateValueDisplay(sliderId, value) {
-            const display = document.getElementById(sliderId + '_value');
-            if (display) {
-                display.textContent = parseFloat(value).toFixed(2);
-            }
-        }
+                <!-- Film Effects Panel -->
+                <div id="filmPanel" class="tab-panel">
+                    <!-- This tab is hidden - no film emulation needed for real film scans -->
+                </div>
+            </div>
+        </div>
 
-        // Get all parameter values
-        function getParameters() {
-            const params = {};
-            const sliders = document.querySelectorAll('.slider');
+        <!-- Center Area - Image Preview -->
+        <div class="center-area">
+            <!-- Image toolbar -->
+            <div class="image-toolbar">
+                <button id="zoomOutBtn" class="toolbar-btn" title="Zoom Out (-)">
+                    🔍−
+                </button>
+                <span id="zoomLevel" style="font-size: 12px; color: var(--text-secondary); min-width: 50px; text-align: center;">100%</span>
+                <button id="zoomInBtn" class="toolbar-btn" title="Zoom In (+)">
+                    🔍+
+                </button>
+                <button id="zoomFitBtn" class="toolbar-btn" title="Fit to Screen (0)">
+                    Fit
+                </button>
+                <button id="zoom100Btn" class="toolbar-btn" title="100% (1)">
+                    1:1
+                </button>
+                <div style="width: 1px; height: 20px; background: var(--border-primary); margin: 0 8px;"></div>
+                <button id="rotateLeftBtn" class="toolbar-btn" title="Rotate Left">
+                    ↶
+                </button>
+                <button id="rotateRightBtn" class="toolbar-btn" title="Rotate Right">
+                    ↷
+                </button>
+                <div style="width: 1px; height: 20px; background: var(--border-primary); margin: 0 8px;"></div>
+                <button id="cropBtn" class="toolbar-btn" title="Crop Tool (C)">
+                    ✂️ Crop
+                </button>
+                <button id="applyCropBtn" class="toolbar-btn" style="display: none; background: var(--gradient-blue); color: white;">
+                    ✓ Apply Crop
+                </button>
+                <button id="cancelCropBtn" class="toolbar-btn" style="display: none;">
+                    ✕ Cancel
+                </button>
+            </div>
             
-            sliders.forEach(slider => {
-                params[slider.id] = parseFloat(slider.value);
-            });
+            <div class="image-container" id="imageContainer">
+                <div class="loading-overlay" id="loadingOverlay">
+                    <div class="loading-spinner"></div>
+                </div>
+                <div class="image-wrapper" id="imageWrapper">
+                    <img id="previewImage" class="image-canvas" style="display: none;">
+                    <div id="cropOverlay" class="crop-overlay" style="display: none;">
+                        <div class="crop-area" id="cropArea">
+                            <div class="crop-handle nw"></div>
+                            <div class="crop-handle ne"></div>
+                            <div class="crop-handle sw"></div>
+                            <div class="crop-handle se"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
 
-            // Add toggle states
-            params.film_correction = toggleStates.film_correction ? 1.0 : 0.0;
-            params.auto_levels = toggleStates.auto_levels ? 1.0 : 0.0;
-            params.auto_white_balance = toggleStates.auto_white_balance ? 1.0 : 0.0;
-            
-            // Debug logging
-            console.log('Toggle states:', toggleStates);
-            console.log('Parameters being sent:', params);
-            
-            return params;
-        }
-
-        // Smooth image update without flickering
-        async function updateImage() {
-            if (!currentImage || isProcessing) return;
-            
-            isProcessing = true;
-            const loadingIndicator = document.getElementById('loadingIndicator');
-            const previewImage = document.getElementById('previewImage');
-            
-            // Show loading indicator but keep image visible
-            loadingIndicator.style.display = 'block';
-            previewImage.style.opacity = '0.7';
-            
-            try {
-                const params = getParameters();
-                params.show_analysis = showAnalysis;
+        <!-- Right Panel - Info -->
+        <div class="right-panel">
+            <div class="control-section">
+                <div class="section-header">
+                    <span class="section-title">Processing Status</span>
+                </div>
                 
-                const response = await fetch('/adjust', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify(params)
-                });
-                
-                if (response.ok) {
-                    const result = await response.json();
-                    if (result.success) {
-                        // Smooth transition to new image
-                        const newImage = new Image();
-                        newImage.onload = () => {
-                            previewImage.src = 'data:image/jpeg;base64,' + result.image;
-                            previewImage.style.opacity = '1';
-                            loadingIndicator.style.display = 'none';
-                        };
-                        newImage.src = 'data:image/jpeg;base64,' + result.image;
-                    }
-                }
-            } catch (error) {
-                console.error('Error updating image:', error);
-                previewImage.style.opacity = '1';
-                loadingIndicator.style.display = 'none';
-            }
-            
-            isProcessing = false;
-        }
+                <div class="control-group">
+                    <div id="processingStatus" class="status-text">
+                        Ready
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 
-        // Debounced update for smooth real-time adjustments
-        const debouncedUpdateImage = debounce(updateImage, 150);
-
-        // File upload handling
-        function handleFileUpload(file) {
-            if (!file) return;
-            
-            const formData = new FormData();
-            formData.append('image', file);
-            
-            const loadingIndicator = document.getElementById('loadingIndicator');
-            const previewImage = document.getElementById('previewImage');
-            const imageInfo = document.getElementById('imageInfo');
-            const imageSize = document.getElementById('imageSize');
-            
-            loadingIndicator.style.display = 'block';
-            previewImage.style.display = 'none';
-            imageInfo.style.display = 'none';
-            
-            fetch('/upload', {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => response.json())
-            .then(result => {
-                if (result.success) {
-                    currentImage = result.image;
-                    previewImage.src = 'data:image/jpeg;base64,' + result.image;
-                    previewImage.style.display = 'block';
-                    previewImage.style.opacity = '1';
-                    
-                    // Show image info
-                    const img = new Image();
-                    img.onload = () => {
-                        imageSize.textContent = `${img.width} × ${img.height}`;
-                        imageInfo.style.display = 'block';
-                    };
-                    img.src = 'data:image/jpeg;base64,' + result.image;
-                    
-                    loadingIndicator.style.display = 'none';
-                } else {
-                    alert('Error uploading image: ' + (result.error || 'Unknown error'));
-                    loadingIndicator.style.display = 'none';
-                }
-            })
-            .catch(error => {
-                console.error('Error:', error);
-                alert('Error uploading image');
-                loadingIndicator.style.display = 'none';
-            });
-        }
-
-        // Event listeners
-        document.addEventListener('DOMContentLoaded', function() {
-            initializeToggles();
-            
-            // File input
-            document.getElementById('fileInput').addEventListener('change', function(e) {
-                handleFileUpload(e.target.files[0]);
-            });
-            
-            // Drag and drop
-            const dropZone = document.getElementById('dropZone');
-            
-            dropZone.addEventListener('dragover', function(e) {
-                e.preventDefault();
-                dropZone.classList.add('dragover');
-            });
-            
-            dropZone.addEventListener('dragleave', function(e) {
-                e.preventDefault();
-                dropZone.classList.remove('dragover');
-            });
-            
-            dropZone.addEventListener('drop', function(e) {
-                e.preventDefault();
-                dropZone.classList.remove('dragover');
-                
-                const files = e.dataTransfer.files;
-                if (files.length > 0) {
-                    handleFileUpload(files[0]);
-                }
-            });
-            
-            dropZone.addEventListener('click', function() {
-                document.getElementById('fileInput').click();
-            });
-            
-            // Slider event listeners
-            document.querySelectorAll('.slider').forEach(slider => {
-                // Update display value on input
-                slider.addEventListener('input', function() {
-                    updateValueDisplay(slider.id, slider.value);
-                    debouncedUpdateImage();
-                });
-                
-                // Initialize display values
-                updateValueDisplay(slider.id, slider.value);
-            });
-        });
-    </script>
+    <script src="/static/app.js"></script>
 </body>
 </html>

@@ -3,18 +3,30 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "film-processing"
-version = "1.0.0"
-description = "A comprehensive tool for processing and correcting scanned film negatives"
+name = "professional-film-processor"
+version = "2.0.0"
+description = "Professional film negative processing tool with advanced color science - rivals Photoshop and Negative Lab Pro"
 authors = [
     {name = "Luke"},
 ]
 dependencies = [
+    # Web framework
     "flask>=2.0.0",
-    "numpy>=1.21.0", 
-    "pillow>=8.0.0",
-    "opencv-python>=4.5.0",
-    "matplotlib>=3.3.0",
+    
+    # Core scientific computing
+    "numpy>=1.21.0",
+    "scipy>=1.7.0",          # For advanced interpolation and signal processing
+    "opencv-python>=4.5.0",  # Computer vision and image processing
+    "pillow>=8.3.0",         # Advanced image I/O and processing
+    "tifffile>=2021.0.0",    # Proper 16-bit TIFF support
+    
+    # Color science and advanced features
+    "colour-science>=0.4.0", # Professional color science library
+    "imageio>=2.9.0",        # Advanced image I/O with color profile support
+    "scikit-image>=0.18.0",  # Advanced image processing algorithms
+    
+    # Optional for advanced features
+    "matplotlib>=3.3.0",     # For debugging and visualization
 ]
 requires-python = ">=3.8"
 readme = "README.md"
@@ -27,9 +39,14 @@ dev = [
     "isort>=5.0.0",
     "flake8>=4.0.0",
 ]
+ai = [
+    # AI-powered color correction dependencies
+    "openai>=1.0.0",         # OpenAI GPT-4V for vision analysis
+    "requests>=2.28.0",      # HTTP requests for AI APIs
+]
 
 [project.scripts]
-film-processing = "src.app:main"
+film-processor = "src.app:app.run"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]

@@ -1,8 +1,24 @@
-# Film Negative Processor
+# Professional Film Negative Processor
 
-A sophisticated web-based application for processing and correcting scanned film negatives with professional-grade controls and a modern interface.
+A sophisticated web-based application for processing and correcting scanned film negatives with professional-grade controls that rival Photoshop and Negative Lab Pro.
 
-## 🎯 Features
+## 🚀 Quick Start with UV
+
+This project uses [uv](https://github.com/astral-sh/uv) for fast Python package management.
+
+### Installation & Setup
+
+```bash
+# Install dependencies with uv
+uv sync
+
+# Run the application
+uv run python src/app.py
+```
+
+The application will be available at `http://localhost:5000`
+
+## 🎯 Professional Features
 
 ### **Core Processing Pipeline**
 - **Three-Stage Algorithm**: Film base removal → Auto levels → Auto white balance
