@@ -22,7 +22,7 @@ dependencies = [
     "tifffile>=2021.0.0",    # Proper 16-bit TIFF support
     
     # GPU acceleration
-    "cupy-cuda13x>=13.0.0",  # GPU-accelerated NumPy (100x+ speedup)
+    "cupy-cuda12x>=13.0.0",  # GPU-accelerated NumPy (100x+ speedup)
     
     # Color science and advanced features
     "colour-science>=0.4.0", # Professional color science library
