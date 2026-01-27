@@ -4,6 +4,7 @@ class ProfessionalFilmProcessor {
         this.currentImage = null;
         this.originalImage = null;
         this.isProcessing = false;
+        this.currentRequest = null; // Track current processing request
         this.eyedropperMode = null; // 'black', 'white', or 'gray'
         this.blackPoint = null;
         this.whitePoint = null;
@@ -34,8 +35,12 @@ class ProfessionalFilmProcessor {
                 this.setupEventListeners();
                 this.setupTabSystem();
                 this.setupCurves();
-                this.debouncedUpdateImage = this.debounce(() => this.updateImage(), 0);
-                console.log('Professional Film Processor initialized');
+                // PROXY RENDERING SYSTEM (like Photoshop)
+                // Track whether user is actively dragging a slider
+                this.isSliderActive = false;
+                // Instant update while dragging (uses proxy)
+                this.debouncedProxyUpdate = this.debounce(() => this.updateImage(true), 0);
+                console.log('Professional Film Processor initialized with proxy rendering');
             }
             
             setupEventListeners() {
@@ -90,16 +95,35 @@ class ProfessionalFilmProcessor {
                     });
                 }
                 
-                // Sliders with professional debouncing
+                // Sliders with PROXY RENDERING (like Photoshop)
                 document.querySelectorAll('.pro-slider').forEach(slider => {
                     slider.addEventListener('mousedown', () => {
                         // Save state before user starts changing a slider
                         this.saveHistory();
+                        // Mark slider as active (dragging)
+                        this.isSliderActive = true;
                     });
                     
                     slider.addEventListener('input', () => {
                         this.updateValueDisplay(slider.id, slider.value);
-                        this.debouncedUpdateImage();
+                        // While dragging: use low-res proxy (fast)
+                        if (this.isSliderActive) {
+                            this.debouncedProxyUpdate();
+                        }
+                    });
+                    
+                    slider.addEventListener('mouseup', () => {
+                        // Slider released: render high-res once
+                        this.isSliderActive = false;
+                        this.updateImage(false); // Full resolution
+                    });
+                    
+                    // Handle mouse leaving slider while dragging
+                    slider.addEventListener('mouseleave', () => {
+                        if (this.isSliderActive) {
+                            this.isSliderActive = false;
+                            this.updateImage(false); // Full resolution
+                        }
                     });
                     
                     // Initialize displays
@@ -1367,8 +1391,10 @@ class ProfessionalFilmProcessor {
                 };
             }
             
-            getParameters() {
+            getParameters(fullResolution = false) {
                 const params = {};
+                
+                // No preview mode - always full resolution
                 
                 // Get all slider values
                 document.querySelectorAll('.pro-slider').forEach(slider => {
@@ -1441,21 +1467,32 @@ class ProfessionalFilmProcessor {
                 }
             }
             
-            async updateImage() {
-                if (!this.currentImage || this.isProcessing) return;
+            async updateImage(useProxy = false) {
+                if (!this.currentImage) return;
+                
+                // Cancel any previous request
+                if (this.currentRequest) {
+                    this.currentRequest.abort();
+                }
+                
+                // Create new AbortController for this request
+                this.currentRequest = new AbortController();
                 
                 this.isProcessing = true;
-                this.updateProcessingStatus('Processing image...');
+                this.updateProcessingStatus(useProxy ? 'Proxy preview...' : 'Processing full-res...');
                 
                 try {
                     const params = this.getParameters();
+                    // PROXY FLAG: true = low-res proxy, false = full resolution
+                    params.use_proxy = useProxy;
                     
                     const response = await fetch('/process', {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json'
                         },
-                        body: JSON.stringify(params)
+                        body: JSON.stringify(params),
+                        signal: this.currentRequest.signal // Pass abort signal
                     });
                     
                     const result = await response.json();
@@ -1469,10 +1506,14 @@ class ProfessionalFilmProcessor {
                         console.error('Processing failed:', result.error);
                     }
                 } catch (error) {
-                    this.updateProcessingStatus('Processing failed: ' + error.message);
-                    console.error('Processing error:', error);
+                    // Don't show error if request was aborted (we cancelled it ourselves)
+                    if (error.name !== 'AbortError') {
+                        this.updateProcessingStatus('Processing failed: ' + error.message);
+                        console.error('Processing error:', error);
+                    }
                 } finally {
                     this.isProcessing = false;
+                    this.currentRequest = null;
                 }
             }
             

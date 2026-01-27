@@ -17,6 +17,13 @@ import logging
 import tifffile  # Proper 16-bit TIFF support
 import colour  # Professional color science for 16-bit color space conversion
 
+# GPU acceleration support
+try:
+    import cupy as cp
+    GPU_AVAILABLE = True
+except ImportError:
+    GPU_AVAILABLE = False
+
 # Try to import AI correction (optional)
 try:
     from ai_color_correction import AIColorCorrector
@@ -48,6 +55,28 @@ def process_image():
         
         if processor is None:
             return jsonify({'error': 'No image loaded'})
+        
+        # PROXY RENDERING SYSTEM (like Photoshop)
+        # Store both high-res and low-res versions (only once)
+        if not hasattr(processor, '_original_full_res_cache'):
+            processor._original_full_res_cache = processor.cached_stages['initial'].copy()
+            
+            # Create low-res proxy (30% scale) - CPU only for now
+            h_full, w_full = processor._original_full_res_cache.shape[:2]
+            proxy_h, proxy_w = int(h_full * 0.3), int(w_full * 0.3)
+            processor._low_res_proxy = cv2.resize(processor._original_full_res_cache, (proxy_w, proxy_h), interpolation=cv2.INTER_AREA)
+            logger.info(f"Created proxy: {w_full}x{h_full} → {proxy_w}x{proxy_h}")
+        
+        # Use proxy while dragging, full-res when released
+        use_proxy = params.pop('use_proxy', False)
+        if use_proxy:
+            processor.cached_stages['initial'] = processor._low_res_proxy.copy()
+            h, w = processor.cached_stages['initial'].shape[:2]
+            logger.info(f"Using PROXY: {w}x{h}")
+        else:
+            processor.cached_stages['initial'] = processor._original_full_res_cache.copy()
+            h, w = processor.cached_stages['initial'].shape[:2]
+            logger.info(f"Using FULL-RES: {w}x{h}")
         
         # DEBUG: Log incoming parameters
         logger.info(f"DEBUG: Received parameters: {list(params.keys())}")
@@ -204,6 +233,8 @@ def process_image():
         img_byte_arr = io.BytesIO()
         Image.fromarray(img_processed).save(img_byte_arr, format='PNG', compress_level=6)
         img_byte_arr = img_byte_arr.getvalue()
+        
+        # Cache is automatically restored at the start of next request
         
         return jsonify({
             'image': base64.b64encode(img_byte_arr).decode(),
@@ -384,27 +415,25 @@ def upload_file():
                         # This is what Photoshop does internally
                         profile_lower = profile_name.lower()
                         if 'adobe' in profile_lower and 'rgb' in profile_lower:
-                            logger.info("Converting Adobe RGB → sRGB (manual 16-bit conversion)")
+                            logger.info("Converting Adobe RGB → sRGB (fast matrix transform)")
                             
                             # Convert to float [0, 1]
-                            img_float = img_array.astype(np.float64) / 65535.0
+                            img_float = img_array.astype(np.float32) / 65535.0
                             
-                            # The TIFF already contains gamma-encoded Adobe RGB values
-                            # Photoshop keeps it in gamma space and just adjusts the primaries
-                            # Use colour-science but ONLY for the matrix, not gamma
+                            # Pre-computed transformation matrix: Adobe RGB → sRGB (gamma-encoded to gamma-encoded)
+                            # This is just a 3x3 matrix multiplication on the primaries
+                            # Computed from colour-science library, applied directly for speed
+                            matrix = np.array([
+                                [ 1.39822014, -0.39830039, -0.00006393],
+                                [ 0.00010625,  0.99991441,  0.00000183],
+                                [ 0.00003334, -0.04293803,  1.04296793],
+                            ], dtype=np.float32)
                             
-                            # Get the transformation matrix from Adobe RGB to sRGB (ignoring gamma)
-                            from colour.models import RGB_to_RGB
-                            
-                            # Transform WITHOUT touching gamma (data stays gamma-encoded)
-                            # We just change the color primaries/white point
-                            img_float = RGB_to_RGB(
-                                img_float,
-                                colour.RGB_COLOURSPACES['Adobe RGB (1998)'],
-                                colour.RGB_COLOURSPACES['sRGB'],
-                                apply_cctf_decoding=False,   # Don't decode - keep gamma as-is
-                                apply_cctf_encoding=False    # Don't encode - keep gamma as-is
-                            )
+                            # Fast matrix multiplication
+                            h, w = img_float.shape[:2]
+                            img_reshaped = img_float.reshape(-1, 3)
+                            img_transformed = img_reshaped @ matrix.T
+                            img_float = img_transformed.reshape(h, w, 3)
                             
                             # Clip any out-of-gamut values
                             img_float = np.clip(img_float, 0.0, 1.0)

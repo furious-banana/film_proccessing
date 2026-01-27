@@ -9,6 +9,7 @@ description = "Professional film negative processing tool with advanced color sc
 authors = [
     {name = "Luke"},
 ]
+requires-python = ">=3.9"
 dependencies = [
     # Web framework
     "flask>=2.0.0",
@@ -20,6 +21,9 @@ dependencies = [
     "pillow>=8.3.0",         # Advanced image I/O and processing
     "tifffile>=2021.0.0",    # Proper 16-bit TIFF support
     
+    # GPU acceleration
+    "cupy-cuda13x>=13.0.0",  # GPU-accelerated NumPy (100x+ speedup)
+    
     # Color science and advanced features
     "colour-science>=0.4.0", # Professional color science library
     "imageio>=2.9.0",        # Advanced image I/O with color profile support
@@ -28,7 +32,6 @@ dependencies = [
     # Optional for advanced features
     "matplotlib>=3.3.0",     # For debugging and visualization
 ]
-requires-python = ">=3.8"
 readme = "README.md"
 license = {text = "MIT"}
 
