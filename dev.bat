@@ -1,6 +1,9 @@
 @echo off
 REM Development helper for Film Processing
 
+REM Set CUDA path for GPU acceleration
+set "PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.1\bin\x64;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.1\bin;%PATH%"
+
 if "%1"=="install" (
     echo Installing dependencies...
     uv sync --extra dev

@@ -7,11 +7,14 @@ import cv2
 try:
     import cupy as cp
     GPU_AVAILABLE = True
+    # Create a non-default stream for async operations
+    GPU_STREAM = cp.cuda.Stream(non_blocking=True)
     logger = logging.getLogger('FilmProcessor')
-    logger.info(f"✓ GPU acceleration enabled with CuPy {cp.__version__}")
+    logger.info(f"✓ GPU acceleration enabled with CuPy {cp.__version__} (async stream)")
 except Exception as e:
     import numpy as cp
     GPU_AVAILABLE = False
+    GPU_STREAM = None
     logger = logging.getLogger('FilmProcessor')
     logger.warning(f"⚠ GPU unavailable ({e}), using CPU")
 
@@ -230,14 +233,17 @@ class FilmProcessor:
             processed = xp.clip(processed, 0.0, 1.0)
             processed = (processed * 255).astype(xp.uint8)
             
-            # Transfer from GPU to CPU for output
+            # Transfer from GPU to CPU using pinned memory for maximum speed
             if GPU_AVAILABLE:
-                processed = cp.asnumpy(processed)
-                logger.info("Transferred result from GPU to CPU")
+                # Use cupy's built-in async transfer (handles pinning internally)
+                processed_cpu_array = cp.asnumpy(processed)
+                logger.info("Transferred result from GPU to CPU (pinned memory)")
+            else:
+                processed_cpu_array = processed
             
-            logger.info(f"DEBUG: Final 8-bit values: {processed[processed.shape[0]//2, processed.shape[1]//2, :]}")
+            logger.info(f"DEBUG: Final 8-bit values: {processed_cpu_array[processed_cpu_array.shape[0]//2, processed_cpu_array.shape[1]//2, :]}")
             
-            return processed
+            return processed_cpu_array
             
         except Exception as e:
             logger.error(f"Error processing image: {str(e)}")
@@ -435,9 +441,21 @@ class FilmProcessor:
     
     def _apply_lut(self, channel, lut):
         """Apply a lookup table to a channel"""
-        # Convert to 0-255 range, apply LUT, return to 0-1 range
-        indices = np.clip(channel * 255, 0, 255).astype(np.uint8)
-        return lut[indices]
+        # Get the array module (numpy or cupy) based on the channel
+        xp = cp if GPU_AVAILABLE and hasattr(channel, 'device') else np
+        
+        # Ensure LUT is on the same device as channel
+        if GPU_AVAILABLE and hasattr(channel, 'device'):
+            # Convert LUT to GPU
+            lut_gpu = cp.asarray(lut, dtype=cp.float32)
+            # Compute indices on GPU
+            indices = cp.clip((channel * 255.0).astype(cp.int32), 0, 255)
+            # Index the LUT on GPU
+            return lut_gpu[indices]
+        else:
+            # CPU path
+            indices = np.clip((channel * 255.0).astype(np.int32), 0, 255)
+            return lut[indices]
     
     def update_params(self, **kwargs):
         """Update parameters and regenerate cache if needed"""

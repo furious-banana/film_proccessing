@@ -1,4 +1,4 @@
-from flask import Flask, send_file, request, render_template, jsonify
+from flask import Flask, send_file, request, render_template, jsonify, Response
 import sys
 import os
 
@@ -14,6 +14,7 @@ import cv2
 import io
 import base64
 import logging
+import time
 import tifffile  # Proper 16-bit TIFF support
 import colour  # Professional color science for 16-bit color space conversion
 
@@ -46,6 +47,46 @@ processor = None
 def index():
     return render_template('index.html')
 
+@app.route('/get_raw_image', methods=['GET'])
+def get_raw_image():
+    """Serve raw float32 image data for WebGL client-side processing"""
+    try:
+        global processor
+        if processor is None:
+            return jsonify({'error': 'No image loaded'}), 404
+        
+        # Get original image from cache
+        img = processor.cached_stages['initial']
+        
+        # Transfer from GPU if needed
+        if hasattr(img, 'get'):
+            img_cpu = img.get()  # CuPy → NumPy
+        else:
+            img_cpu = img.copy()
+        
+        # Image is already float32 [0.0, 1.0] sRGB gamma-encoded
+        h, w, c = img_cpu.shape
+        
+        # Convert to bytes (float32 little-endian)
+        img_bytes = img_cpu.tobytes()
+        
+        # Return raw data with metadata in headers
+        response = Response(img_bytes, mimetype='application/octet-stream')
+        response.headers['X-Image-Width'] = str(w)
+        response.headers['X-Image-Height'] = str(h)
+        response.headers['X-Image-Channels'] = str(c)
+        response.headers['X-Image-Type'] = 'float32'
+        response.headers['Access-Control-Expose-Headers'] = 'X-Image-Width,X-Image-Height,X-Image-Channels,X-Image-Type'
+        
+        logger.info(f"Serving raw image data: {w}x{h}x{c} float32 = {len(img_bytes)} bytes")
+        return response
+        
+    except Exception as e:
+        logger.error(f"Error serving raw image: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/process', methods=['POST'])
 @app.route('/adjust', methods=['POST'])
 def process_image():
@@ -59,13 +100,29 @@ def process_image():
         # PROXY RENDERING SYSTEM (like Photoshop)
         # Store both high-res and low-res versions (only once)
         if not hasattr(processor, '_original_full_res_cache'):
-            processor._original_full_res_cache = processor.cached_stages['initial'].copy()
+            from src.film_processing import GPU_AVAILABLE, cp
             
-            # Create low-res proxy (30% scale) - CPU only for now
-            h_full, w_full = processor._original_full_res_cache.shape[:2]
+            full_res_img = processor.cached_stages['initial']
+            processor._original_full_res_cache = full_res_img.copy()  # Keep on GPU if GPU enabled
+            
+            # Create low-res proxy (20% scale for faster response)
+            # Transfer to CPU only for resize, then back to GPU
+            if hasattr(full_res_img, 'get'):
+                full_res_cpu = full_res_img.get()  # CuPy → NumPy
+            else:
+                full_res_cpu = full_res_img.copy()
+            
+            h_full, w_full = full_res_cpu.shape[:2]
             proxy_h, proxy_w = int(h_full * 0.3), int(w_full * 0.3)
-            processor._low_res_proxy = cv2.resize(processor._original_full_res_cache, (proxy_w, proxy_h), interpolation=cv2.INTER_AREA)
-            logger.info(f"Created proxy: {w_full}x{h_full} → {proxy_w}x{proxy_h}")
+            proxy_cpu = cv2.resize(full_res_cpu, (proxy_w, proxy_h), interpolation=cv2.INTER_AREA)
+            
+            # Keep proxy on GPU if available (no transfer overhead on slider updates)
+            if GPU_AVAILABLE:
+                processor._low_res_proxy = cp.asarray(proxy_cpu)
+                logger.info(f"Created GPU proxy: {w_full}x{h_full} → {proxy_w}x{proxy_h} [GPU]")
+            else:
+                processor._low_res_proxy = proxy_cpu
+                logger.info(f"Created CPU proxy: {w_full}x{h_full} → {proxy_w}x{proxy_h}")
         
         # Use proxy while dragging, full-res when released
         use_proxy = params.pop('use_proxy', False)
@@ -199,6 +256,12 @@ def process_image():
         processor.update_params(**all_params)
         img_processed = processor.get_processed_image()
         
+        # Ensure it's a numpy array (convert from CuPy if needed)
+        if hasattr(img_processed, 'get'):  # CuPy array
+            img_processed = img_processed.get()
+        elif not isinstance(img_processed, np.ndarray):
+            img_processed = np.asarray(img_processed)
+        
         # Ensure we have a valid RGB image
         if len(img_processed.shape) != 3 or img_processed.shape[2] != 3:
             logger.warning(f"Invalid processed image shape: {img_processed.shape}, converting to RGB")
@@ -324,6 +387,73 @@ def crop_image():
     except Exception as e:
         logger.error(f"Error cropping image: {str(e)}")
         return jsonify({'error': str(e), 'success': False})
+
+@app.route('/export', methods=['POST'])
+def export_image():
+    """Export the processed image at full quality (16-bit TIFF)"""
+    try:
+        global processor
+        if processor is None:
+            return jsonify({'error': 'No image loaded'}), 404
+        
+        params = request.json
+        logger.info(f"Export request with parameters: {list(params.keys())}")
+        
+        # Ensure we're using full resolution
+        if hasattr(processor, '_original_full_res_cache'):
+            processor.cached_stages['initial'] = processor._original_full_res_cache.copy()
+            logger.info("Using full resolution for export")
+        
+        # Update all parameters
+        processor.update_params(
+            exposure=params.get('exposure', 0.0),
+            contrast=params.get('contrast', 0.0),
+            highlights=params.get('highlights', 0.0),
+            shadows=params.get('shadows', 0.0),
+            whites=params.get('whites', 0.0),
+            blacks=params.get('blacks', 0.0),
+            brightness=params.get('brightness', 0.0),
+            saturation=params.get('saturation', 1.0),
+            temperature=params.get('temperature', 0.0),
+            tint=params.get('tint', 0.0),
+            clarity=params.get('clarity', 0.0),
+            vibrance=params.get('vibrance', 0.0),
+            film_correction=params.get('film_correction', 0.0),
+            curves=params.get('curves')
+        )
+        
+        # Process at full resolution
+        img_processed = processor.get_processed_image()
+        
+        # Transfer from GPU if needed
+        if hasattr(img_processed, 'get'):
+            img_processed = img_processed.get()  # CuPy → NumPy
+        
+        # Convert float32 [0.0, 1.0] → uint16 [0, 65535]
+        img_uint16 = (np.clip(img_processed, 0.0, 1.0) * 65535).astype(np.uint16)
+        
+        logger.info(f"Preparing export: {img_uint16.shape}, dtype={img_uint16.dtype}, range=[{img_uint16.min()}, {img_uint16.max()}]")
+        
+        # Save as 16-bit TIFF to BytesIO
+        output = io.BytesIO()
+        tifffile.imwrite(output, img_uint16, photometric='rgb', compression=None)
+        file_size = output.tell()  # Get size before seeking
+        output.seek(0)
+        
+        logger.info(f"Exported 16-bit TIFF: {img_uint16.shape}, {file_size} bytes")
+        
+        return send_file(
+            output,
+            mimetype='image/tiff',
+            as_attachment=True,
+            download_name=f'processed_{int(time.time())}.tif'
+        )
+        
+    except Exception as e:
+        logger.error(f"Export error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/upload', methods=['POST'])
 def upload_file():

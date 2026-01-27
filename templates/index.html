@@ -70,8 +70,8 @@
                                 <span class="control-label">Exposure</span>
                                 <div class="control-wrapper">
                                     <input type="range" class="pro-slider" id="exposure" 
-                                           min="-1" max="1" step="0.001" value="0">
-                                    <span class="value-display" id="exposure_value">0.000</span>
+                                           min="-3" max="3" step="0.01" value="0">
+                                    <span class="value-display" id="exposure_value">0.00</span>
                                 </div>
                             </div>
                             
@@ -79,7 +79,7 @@
                                 <span class="control-label">Contrast</span>
                                 <div class="control-wrapper">
                                     <input type="range" class="pro-slider" id="contrast" 
-                                           min="-50" max="50" step="0.01" value="0">
+                                           min="-1" max="1" step="0.01" value="0">
                                     <span class="value-display" id="contrast_value">0.00</span>
                                 </div>
                             </div>
@@ -88,7 +88,7 @@
                                 <span class="control-label">Highlights</span>
                                 <div class="control-wrapper">
                                     <input type="range" class="pro-slider" id="highlights" 
-                                           min="-50" max="50" step="0.01" value="0">
+                                           min="-1" max="1" step="0.01" value="0">
                                     <span class="value-display" id="highlights_value">0.00</span>
                                 </div>
                             </div>
@@ -97,7 +97,7 @@
                                 <span class="control-label">Shadows</span>
                                 <div class="control-wrapper">
                                     <input type="range" class="pro-slider" id="shadows" 
-                                           min="-50" max="50" step="0.01" value="0">
+                                           min="-1" max="1" step="0.01" value="0">
                                     <span class="value-display" id="shadows_value">0.00</span>
                                 </div>
                             </div>
@@ -106,7 +106,7 @@
                                 <span class="control-label">Whites</span>
                                 <div class="control-wrapper">
                                     <input type="range" class="pro-slider" id="whites" 
-                                           min="-50" max="50" step="0.01" value="0">
+                                           min="-1" max="1" step="0.01" value="0">
                                     <span class="value-display" id="whites_value">0.00</span>
                                 </div>
                             </div>
@@ -115,7 +115,7 @@
                                 <span class="control-label">Blacks</span>
                                 <div class="control-wrapper">
                                     <input type="range" class="pro-slider" id="blacks" 
-                                           min="-50" max="50" step="0.01" value="0">
+                                           min="-1" max="1" step="0.01" value="0">
                                     <span class="value-display" id="blacks_value">0.00</span>
                                 </div>
                             </div>
@@ -216,6 +216,10 @@
                     1:1
                 </button>
                 <div style="width: 1px; height: 20px; background: var(--border-primary); margin: 0 8px;"></div>
+                <button id="exportBtn" class="toolbar-btn" title="Export Full Quality TIFF" style="background: var(--accent-green); color: white; font-weight: 600;">
+                    💾 Export
+                </button>
+                <div style="width: 1px; height: 20px; background: var(--border-primary); margin: 0 8px;"></div>
                 <button id="rotateLeftBtn" class="toolbar-btn" title="Rotate Left">
                     ↶
                 </button>
@@ -239,6 +243,9 @@
                     <div class="loading-spinner"></div>
                 </div>
                 <div class="image-wrapper" id="imageWrapper">
+                    <!-- WebGL Canvas for GPU-accelerated real-time rendering (zero CPU transfer!) -->
+                    <canvas id="webglCanvas" class="image-canvas" style="display: none;"></canvas>
+                    <!-- Fallback JPEG for initial display -->
                     <img id="previewImage" class="image-canvas" style="display: none;">
                     <div id="cropOverlay" class="crop-overlay" style="display: none;">
                         <div class="crop-area" id="cropArea">
@@ -268,6 +275,7 @@
         </div>
     </div>
 
+    <script src="/static/webgl-renderer.js"></script>
     <script src="/static/app.js"></script>
 </body>
 </html>

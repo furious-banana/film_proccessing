@@ -1,4 +1,4 @@
-// Professional Film Processor JavaScript
+// Professional Film Processor JavaScript with WebGL GPU Rendering
 class ProfessionalFilmProcessor {
     constructor() {
         this.currentImage = null;
@@ -15,6 +15,18 @@ class ProfessionalFilmProcessor {
         this.rotation = 0;
         this.cropMode = false;
         this.cropRect = null;
+        
+        // WebGL GPU Rendering (client-side, instant updates, zero transfer!)
+        this.webglRenderer = null;
+        this.webglEnabled = false;
+        
+        // WebGL GPU Rendering (client-side, zero transfer lag)
+        this.webglEnabled = false;
+        this.gl = null;
+        this.glProgram = null;
+        this.glTexture = null;
+        this.imageWidth = 0;
+        this.imageHeight = 0;
                 this.curves = { 
                     rgb: [{ x: 0, y: 0 }, { x: 1, y: 1 }],
                     red: [{ x: 0, y: 0 }, { x: 1, y: 1 }],
@@ -40,6 +52,8 @@ class ProfessionalFilmProcessor {
                 this.isSliderActive = false;
                 // Instant update while dragging (uses proxy)
                 this.debouncedProxyUpdate = this.debounce(() => this.updateImage(true), 0);
+                // Track pending debounce timer for cancellation
+                this.pendingProxyTimer = null;
                 console.log('Professional Film Processor initialized with proxy rendering');
             }
             
@@ -106,16 +120,23 @@ class ProfessionalFilmProcessor {
                     
                     slider.addEventListener('input', () => {
                         this.updateValueDisplay(slider.id, slider.value);
-                        // While dragging: use low-res proxy (fast)
-                        if (this.isSliderActive) {
-                            this.debouncedProxyUpdate();
+                        // INSTANT UPDATE: WebGL renders immediately, no debouncing needed
+                        if (this.webglEnabled) {
+                            this.updateImage(false); // Instant GPU render
+                        } else {
+                            // While dragging: use low-res proxy (fast)
+                            if (this.isSliderActive) {
+                                this.debouncedProxyUpdate();
+                            }
                         }
                     });
                     
                     slider.addEventListener('mouseup', () => {
-                        // Slider released: render high-res once
+                        // Slider released: render high-res once (only for CPU mode)
                         this.isSliderActive = false;
-                        this.updateImage(false); // Full resolution
+                        if (!this.webglEnabled) {
+                            this.updateImage(false); // Full resolution
+                        }
                     });
                     
                     // Handle mouse leaving slider while dragging
@@ -183,6 +204,7 @@ class ProfessionalFilmProcessor {
                 document.getElementById('zoomOutBtn')?.addEventListener('click', () => this.zoomOut());
                 document.getElementById('zoomFitBtn')?.addEventListener('click', () => this.zoomFit());
                 document.getElementById('zoom100Btn')?.addEventListener('click', () => this.zoom100());
+                document.getElementById('exportBtn')?.addEventListener('click', () => this.exportImage());
                 document.getElementById('rotateLeftBtn')?.addEventListener('click', () => this.rotateLeft());
                 document.getElementById('rotateRightBtn')?.addEventListener('click', () => this.rotateRight());
                 document.getElementById('cropBtn')?.addEventListener('click', () => this.toggleCropMode());
@@ -197,8 +219,12 @@ class ProfessionalFilmProcessor {
                             e.preventDefault();
                             
                             const wrapper = document.getElementById('imageWrapper');
+                            const canvas = document.getElementById('webglCanvas');
                             const img = document.getElementById('previewImage');
-                            if (!wrapper || !img) return;
+                            
+                            // Use active element (canvas or img)
+                            const activeElement = this.webglEnabled ? canvas : img;
+                            if (!wrapper || !activeElement) return;
                             
                             // Get container rect
                             const containerRect = imageContainer.getBoundingClientRect();
@@ -208,7 +234,7 @@ class ProfessionalFilmProcessor {
                             const mouseY = e.clientY - containerRect.top;
                             
                             // Get image rect before zoom
-                            const imgRect = img.getBoundingClientRect();
+                            const imgRect = activeElement.getBoundingClientRect();
                             
                             // Calculate mouse position relative to image
                             const imgMouseX = e.clientX - imgRect.left;
@@ -232,7 +258,7 @@ class ProfessionalFilmProcessor {
                             
                             // Wait for DOM update
                             setTimeout(() => {
-                                const newImgRect = img.getBoundingClientRect();
+                                const newImgRect = activeElement.getBoundingClientRect();
                                 
                                 // Calculate new position of the point that was under mouse
                                 const newPointX = relX * newImgRect.width;
@@ -853,27 +879,36 @@ class ProfessionalFilmProcessor {
             
             applyZoom(actualSize = false) {
                 const img = document.getElementById('previewImage');
+                const canvas = document.getElementById('webglCanvas');
                 const wrapper = document.getElementById('imageWrapper');
                 const container = document.getElementById('imageContainer');
-                if (!img || !wrapper || !container) return;
+                if (!wrapper || !container) return;
+                
+                // Get the active display element (canvas or img)
+                const activeElement = this.webglEnabled ? canvas : img;
+                if (!activeElement) return;
+                
+                // Get natural dimensions
+                const naturalWidth = this.webglEnabled ? this.webglRenderer.imageWidth : img.naturalWidth;
+                const naturalHeight = this.webglEnabled ? this.webglRenderer.imageHeight : img.naturalHeight;
                 
                 if (actualSize) {
                     // Show at actual pixel size
-                    img.style.width = img.naturalWidth + 'px';
-                    img.style.height = img.naturalHeight + 'px';
-                    img.style.maxWidth = 'none';
-                    img.style.maxHeight = 'none';
+                    activeElement.style.width = naturalWidth + 'px';
+                    activeElement.style.height = naturalHeight + 'px';
+                    activeElement.style.maxWidth = 'none';
+                    activeElement.style.maxHeight = 'none';
                 } else if (this.zoom === 1.0) {
                     // Fit to container
-                    img.style.width = '';
-                    img.style.height = '';
-                    img.style.maxWidth = '100%';
-                    img.style.maxHeight = '100%';
+                    activeElement.style.width = '';
+                    activeElement.style.height = '';
+                    activeElement.style.maxWidth = '100%';
+                    activeElement.style.maxHeight = '100%';
                 } else {
                     // Apply zoom - calculate based on fitted size
                     const containerWidth = container.clientWidth;
                     const containerHeight = container.clientHeight;
-                    const imgAspect = img.naturalWidth / img.naturalHeight;
+                    const imgAspect = naturalWidth / naturalHeight;
                     const containerAspect = containerWidth / containerHeight;
                     
                     let fittedWidth, fittedHeight;
@@ -887,10 +922,10 @@ class ProfessionalFilmProcessor {
                         fittedWidth = containerHeight * imgAspect;
                     }
                     
-                    img.style.width = (fittedWidth * this.zoom) + 'px';
-                    img.style.height = (fittedHeight * this.zoom) + 'px';
-                    img.style.maxWidth = 'none';
-                    img.style.maxHeight = 'none';
+                    activeElement.style.width = (fittedWidth * this.zoom) + 'px';
+                    activeElement.style.height = (fittedHeight * this.zoom) + 'px';
+                    activeElement.style.maxWidth = 'none';
+                    activeElement.style.maxHeight = 'none';
                 }
                 
                 wrapper.style.transform = `rotate(${this.rotation}deg)`;
@@ -910,6 +945,63 @@ class ProfessionalFilmProcessor {
                 this.saveHistory();
                 this.rotation = (this.rotation + 90) % 360;
                 this.applyZoom();
+            }
+            
+            async exportImage() {
+                try {
+                    // Show loading indicator
+                    const exportBtn = document.getElementById('exportBtn');
+                    if (exportBtn) {
+                        exportBtn.textContent = '⏳ Exporting...';
+                        exportBtn.disabled = true;
+                    }
+                    
+                    // Get current parameters
+                    const params = this.getParameters();
+                    
+                    // Request full-quality export from server
+                    const response = await fetch('/export', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            ...params,
+                            format: 'tiff',  // Request 16-bit TIFF
+                            quality: 100
+                        })
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`Export failed: ${response.status}`);
+                    }
+                    
+                    // Get the blob
+                    const blob = await response.blob();
+                    
+                    // Create download link
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `processed_image_${Date.now()}.tif`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url);
+                    
+                    console.log('Export completed successfully');
+                    
+                } catch (error) {
+                    console.error('Export error:', error);
+                    alert('Failed to export image: ' + error.message);
+                } finally {
+                    // Restore button
+                    const exportBtn = document.getElementById('exportBtn');
+                    if (exportBtn) {
+                        exportBtn.textContent = '💾 Export';
+                        exportBtn.disabled = false;
+                    }
+                }
             }
             
             setupCropTool() {
@@ -1380,14 +1472,16 @@ class ProfessionalFilmProcessor {
             
             // Professional debouncing for smooth performance
             debounce(func, wait) {
-                let timeout;
-                return function executedFunction(...args) {
-                    const later = () => {
-                        clearTimeout(timeout);
+                return (...args) => {
+                    // CANCEL any pending debounced call
+                    if (this.pendingProxyTimer) {
+                        clearTimeout(this.pendingProxyTimer);
+                    }
+                    // Schedule new call
+                    this.pendingProxyTimer = setTimeout(() => {
+                        this.pendingProxyTimer = null;
                         func(...args);
-                    };
-                    clearTimeout(timeout);
-                    timeout = setTimeout(later, wait);
+                    }, wait);
                 };
             }
             
@@ -1452,8 +1546,17 @@ class ProfessionalFilmProcessor {
                     if (result.success) {
                         this.currentImage = result.image;
                         this.originalImage = result.image; // Store original
-                        this.displayImage(result.image);
-                        this.updateProcessingStatus('Image uploaded successfully');
+                        
+                        // Try to initialize WebGL renderer for instant updates
+                        await this.initializeWebGL();
+                        
+                        // If WebGL succeeded, use it; otherwise fall back to JPEG
+                        if (!this.webglEnabled) {
+                            this.displayImage(result.image);
+                        }
+                        
+                        this.updateProcessingStatus('Image uploaded successfully' + 
+                            (this.webglEnabled ? ' [WebGL GPU]' : ' [CPU]'));
                         
                         // Initialize film type dropdown
                         this.initializeFilmTypes();
@@ -1467,12 +1570,81 @@ class ProfessionalFilmProcessor {
                 }
             }
             
+            async initializeWebGL() {
+                try {
+                    // Create WebGL renderer if not already created
+                    if (!this.webglRenderer) {
+                        console.log('Initializing WebGL GPU renderer...');
+                        this.webglRenderer = new WebGLRenderer('webglCanvas');
+                    }
+                    
+                    // Load raw image data into GPU
+                    const success = await this.webglRenderer.loadImage('/get_raw_image');
+                    
+                    if (success) {
+                        this.webglEnabled = true;
+                        
+                        // Show WebGL canvas, hide JPEG image
+                        document.getElementById('webglCanvas').style.display = 'block';
+                        document.getElementById('previewImage').style.display = 'none';
+                        
+                        console.log('WebGL GPU rendering enabled - instant slider updates!');
+                        return true;
+                    } else {
+                        throw new Error('WebGL initialization failed');
+                    }
+                } catch (e) {
+                    console.warn('WebGL not available, falling back to server-side rendering:', e);
+                    this.webglEnabled = false;
+                    
+                    // Show JPEG image, hide WebGL canvas
+                    document.getElementById('webglCanvas').style.display = 'none';
+                    document.getElementById('previewImage').style.display = 'block';
+                    
+                    return false;
+                }
+            }
+            
             async updateImage(useProxy = false) {
                 if (!this.currentImage) return;
                 
-                // Cancel any previous request
+                // INSTANT WebGL UPDATE (if enabled)
+                if (this.webglEnabled && this.webglRenderer) {
+                    // Get current parameters
+                    const params = this.getParameters();
+                    
+                    // Update WebGL shader uniforms (instant, no server round-trip!)
+                    // NOTE: Slider values are already in correct range, no division needed!
+                    this.webglRenderer.updateParams({
+                        exposure: params.exposure || 0,
+                        contrast: params.contrast || 0,
+                        brightness: params.brightness || 0,
+                        saturation: params.saturation || 0,
+                        temperature: params.temperature || 0,
+                        tint: params.tint || 0,
+                        highlights: params.highlights || 0,
+                        shadows: params.shadows || 0,
+                        whites: params.whites || 0,
+                        blacks: params.blacks || 0,
+                        clarity: params.clarity || 0,
+                        vibrance: params.vibrance || 0
+                    });
+                    
+                    this.updateProcessingStatus('GPU Rendering [WebGL]');
+                    return;
+                }
+                
+                // FALLBACK: Server-side rendering (old way)
+                // KILL any old processing - always process the latest slider position!
+                if (this.pendingProxyTimer) {
+                    clearTimeout(this.pendingProxyTimer);
+                    this.pendingProxyTimer = null;
+                }
                 if (this.currentRequest) {
-                    this.currentRequest.abort();
+                    this.currentRequest.abort();  // Kill in-progress request
+                }
+                if (this.isProcessing) {
+                    console.log('Aborting old request, processing latest position');
                 }
                 
                 // Create new AbortController for this request

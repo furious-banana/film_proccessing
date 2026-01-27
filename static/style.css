@@ -537,10 +537,8 @@
             max-height: 100%;
             height: auto;
             width: auto;
-            /* Disable smoothing for crisp pixels when zoomed */
-            image-rendering: pixelated;
-            image-rendering: -moz-crisp-edges;
-            image-rendering: crisp-edges;
+            /* Smooth scaling for high-quality display */
+            image-rendering: auto;
         }
         
         .image-toolbar {
