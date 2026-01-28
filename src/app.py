@@ -422,21 +422,174 @@ def export_image():
             curves=params.get('curves')
         )
         
-        # Process at full resolution
-        img_processed = processor.get_processed_image()
-        
-        # Transfer from GPU if needed
-        if hasattr(img_processed, 'get'):
-            img_processed = img_processed.get()  # CuPy → NumPy
+        # For lossless export: use ORIGINAL uint16 data, apply adjustments, export as uint16
+        # This preserves the original color space and bit depth
+        if hasattr(processor, 'original_uint16_data') and processor.original_uint16_data is not None:
+            logger.info("=" * 80)
+            
+            # Check if user made ANY edits
+            has_edits = (
+                processor.params['exposure'] != 0 or
+                processor.params['contrast'] != 0 or
+                processor.params['highlights'] != 0 or
+                processor.params['shadows'] != 0 or
+                processor.params['whites'] != 0 or
+                processor.params['blacks'] != 0
+            )
+            
+            if not has_edits:
+                # ZERO EDITS: Just write original data directly (truly lossless)
+                logger.info("EXPORT: Zero edits detected - using original uint16 data directly (100% lossless)")
+                original_uint16 = processor.original_uint16_data
+                img_processed = original_uint16.astype(np.float32) / 65535.0
+                logger.info(f"EXPORT: Direct passthrough - shape: {img_processed.shape}, preserving exact pixel values")
+            else:
+                # HAS EDITS: Process the data
+                logger.info("EXPORT: Edits detected - processing original uint16 data")
+                original_uint16 = processor.original_uint16_data
+                logger.info(f"EXPORT: Original data shape: {original_uint16.shape}, dtype: {original_uint16.dtype}")
+                logger.info(f"EXPORT: Original data range: [{original_uint16.min()}, {original_uint16.max()}]")
+                logger.info(f"EXPORT: Original data sample pixel: {original_uint16[original_uint16.shape[0]//2, original_uint16.shape[1]//2, :]}")
+                
+                # Normalize to float32 for processing
+                img_float = original_uint16.astype(np.float32) / 65535.0
+                logger.info(f"EXPORT: Normalized to float32, shape: {img_float.shape}, range: [{img_float.min():.4f}, {img_float.max():.4f}]")
+            
+            # Apply user's adjustments if any
+            from src.film_processing import GPU_AVAILABLE, cp
+            xp = cp if GPU_AVAILABLE else np
+            
+            if has_edits:
+                # Transfer to GPU if available
+                if GPU_AVAILABLE:
+                    processed = cp.asarray(img_float)
+                else:
+                    processed = img_float
+            
+            if has_edits:
+                # Apply all adjustments (same as get_processed_image but on original data)
+                processed = processor._apply_levels_adjustment(processed)
+                
+                if processor.params['exposure'] != 0:
+                    processed *= 2 ** processor.params['exposure']
+                
+                if processor.params['contrast'] != 0:
+                    contrast_factor = 1.0 + (processor.params['contrast'] / 100.0)
+                    processed = (processed - 0.5) * contrast_factor + 0.5
+                
+                luminance = 0.299 * processed[:, :, 0] + 0.587 * processed[:, :, 1] + 0.114 * processed[:, :, 2]
+                
+                if processor.params['highlights'] != 0:
+                    highlight_mask = xp.power(luminance, 4)
+                    adjustment = processor.params['highlights'] / 50.0
+                    for c in range(3):
+                        processed[:, :, c] += highlight_mask * adjustment
+                
+                if processor.params['shadows'] != 0:
+                    shadow_mask = xp.power(1.0 - luminance, 4)
+                    adjustment = processor.params['shadows'] / 50.0
+                    for c in range(3):
+                        processed[:, :, c] += shadow_mask * adjustment
+                
+                if processor.params['whites'] != 0:
+                    white_adjust = processor.params['whites'] / 100.0
+                    mask = xp.power(luminance, 3)
+                    for c in range(3):
+                        processed[:, :, c] += mask * white_adjust
+                
+                if processor.params['blacks'] != 0:
+                    black_adjust = processor.params['blacks'] / 100.0
+                    mask = xp.power(1.0 - luminance, 3)
+                    for c in range(3):
+                        processed[:, :, c] += mask * black_adjust
+                
+                processed = processor._apply_curves(processed)
+                
+                processed = xp.clip(processed, 0.0, 1.0)
+                
+                # Transfer from GPU if needed
+                if hasattr(processed, 'get'):
+                    img_processed = processed.get()
+                else:
+                    img_processed = processed
+                
+                logger.info(f"EXPORT: After processing - shape: {img_processed.shape}, dtype: {img_processed.dtype}, range: [{img_processed.min():.4f}, {img_processed.max():.4f}]")
+                logger.info(f"EXPORT: Sample pixel after processing: {img_processed[img_processed.shape[0]//2, img_processed.shape[1]//2, :]}")
+            
+            logger.info("=" * 80)
+        else:
+            # Fallback: use sRGB display data (will lose original color space)
+            logger.warning("=" * 80)
+            logger.warning("EXPORT: No original uint16 data found, using sRGB display data for export")
+            logger.warning("=" * 80)
+            
+            from src.film_processing import GPU_AVAILABLE, cp
+            xp = cp if GPU_AVAILABLE else np
+            
+            processed = processor.cached_stages.get('initial', processor.cached_stages.get('inverted'))
+            processed = processor._apply_levels_adjustment(processed)
+            
+            if processor.params['exposure'] != 0:
+                processed *= 2 ** processor.params['exposure']
+            
+            if processor.params['contrast'] != 0:
+                contrast_factor = 1.0 + (processor.params['contrast'] / 100.0)
+                processed = (processed - 0.5) * contrast_factor + 0.5
+            
+            luminance = 0.299 * processed[:, :, 0] + 0.587 * processed[:, :, 1] + 0.114 * processed[:, :, 2]
+            
+            if processor.params['highlights'] != 0:
+                highlight_mask = xp.power(luminance, 4)
+                adjustment = processor.params['highlights'] / 50.0
+                for c in range(3):
+                    processed[:, :, c] += highlight_mask * adjustment
+            
+            if processor.params['shadows'] != 0:
+                shadow_mask = xp.power(1.0 - luminance, 4)
+                adjustment = processor.params['shadows'] / 50.0
+                for c in range(3):
+                    processed[:, :, c] += shadow_mask * adjustment
+            
+            if processor.params['whites'] != 0:
+                white_adjust = processor.params['whites'] / 100.0
+                mask = xp.power(luminance, 3)
+                for c in range(3):
+                    processed[:, :, c] += mask * white_adjust
+            
+            if processor.params['blacks'] != 0:
+                black_adjust = processor.params['blacks'] / 100.0
+                mask = xp.power(1.0 - luminance, 3)
+                for c in range(3):
+                    processed[:, :, c] += mask * black_adjust
+            
+            processed = processor._apply_curves(processed)
+            processed = xp.clip(processed, 0.0, 1.0)
+            
+            if hasattr(processed, 'get'):
+                img_processed = processed.get()
+            else:
+                img_processed = processed
         
         # Convert float32 [0.0, 1.0] → uint16 [0, 65535]
         img_uint16 = (np.clip(img_processed, 0.0, 1.0) * 65535).astype(np.uint16)
         
-        logger.info(f"Preparing export: {img_uint16.shape}, dtype={img_uint16.dtype}, range=[{img_uint16.min()}, {img_uint16.max()}]")
+        logger.info(f"Preparing export: shape={img_uint16.shape} (H×W×C), dtype={img_uint16.dtype}, range=[{img_uint16.min()}, {img_uint16.max()}]")
+        
+        # DEBUG: Check if dimensions match original
+        if hasattr(processor, 'original_uint16_data') and processor.original_uint16_data is not None:
+            orig_shape = processor.original_uint16_data.shape
+            logger.info(f"Original data shape: {orig_shape}, Export shape: {img_uint16.shape}")
+            if orig_shape != img_uint16.shape:
+                logger.error(f"SHAPE MISMATCH! Original: {orig_shape}, Export: {img_uint16.shape}")
         
         # Save as 16-bit TIFF to BytesIO
         output = io.BytesIO()
+        
+        # DON'T embed ICC profile - the data is already in sRGB despite the Adobe RGB profile tag
+        # Embedding the Adobe RGB profile causes viewers to misinterpret the sRGB data
         tifffile.imwrite(output, img_uint16, photometric='rgb', compression=None)
+        logger.info("Saved as untagged TIFF (no ICC profile)")
+        
         file_size = output.tell()  # Get size before seeking
         output.seek(0)
         
@@ -486,6 +639,10 @@ def upload_file():
         try:
             image_bytes = file.read()
             
+            # Initialize these early to avoid scoping issues
+            original_uint16_data = None
+            original_icc_profile = None
+            
             # Also get metadata from PIL for detailed TIFF inspection
             pil_image = Image.open(io.BytesIO(image_bytes))
             original_format = pil_image.format
@@ -529,7 +686,12 @@ def upload_file():
                 logger.info(f"DEBUG: Value distribution: {hist}")
                 logger.info(f"DEBUG: 10th percentile: {np.percentile(img_array, 10):.0f}, 50th: {np.percentile(img_array, 50):.0f}, 90th: {np.percentile(img_array, 90):.0f}")
                 
-                # Apply ICC color profile if present (convert to sRGB)
+                # ALWAYS store original uint16 data BEFORE any modifications (for lossless export)
+                # But we need to store it AFTER color space conversion since adjustments are in sRGB space
+                original_uint16_before_conversion = img_array.copy()
+                logger.info(f"Stored pre-conversion uint16 data: shape={original_uint16_before_conversion.shape}")
+                
+                # Apply ICC color profile if present (convert to sRGB for display)
                 if icc_profile:
                     try:
                         # Get profile info
@@ -537,51 +699,51 @@ def upload_file():
                         profile_name = ImageCms.getProfileName(input_profile)
                         logger.info(f"Detected ICC profile: {profile_name}")
                         
-                        # DEBUG: Sample before conversion
-                        sample_before = img_array[img_array.shape[0]//2, img_array.shape[1]//2, :]
-                        logger.info(f"DEBUG: Raw TIFF pixel values (uint16): {sample_before}")
+                        # Store original ICC profile for export
+                        original_icc_profile = icc_profile
                         
-                        # Manual Adobe RGB → sRGB conversion preserving 16-bit
-                        # This is what Photoshop does internally
+                        # Convert Adobe RGB → sRGB for proper browser display
                         profile_lower = profile_name.lower()
                         if 'adobe' in profile_lower and 'rgb' in profile_lower:
-                            logger.info("Converting Adobe RGB → sRGB (fast matrix transform)")
+                            logger.info("Converting Adobe RGB → sRGB (for display)")
                             
                             # Convert to float [0, 1]
                             img_float = img_array.astype(np.float32) / 65535.0
                             
-                            # Pre-computed transformation matrix: Adobe RGB → sRGB (gamma-encoded to gamma-encoded)
-                            # This is just a 3x3 matrix multiplication on the primaries
-                            # Computed from colour-science library, applied directly for speed
+                            # Adobe RGB → sRGB transformation matrix
                             matrix = np.array([
                                 [ 1.39822014, -0.39830039, -0.00006393],
                                 [ 0.00010625,  0.99991441,  0.00000183],
                                 [ 0.00003334, -0.04293803,  1.04296793],
                             ], dtype=np.float32)
                             
-                            # Fast matrix multiplication
                             h, w = img_float.shape[:2]
                             img_reshaped = img_float.reshape(-1, 3)
                             img_transformed = img_reshaped @ matrix.T
                             img_float = img_transformed.reshape(h, w, 3)
-                            
-                            # Clip any out-of-gamut values
                             img_float = np.clip(img_float, 0.0, 1.0)
                             
-                            # Convert back to uint16
                             img_array = (img_float * 65535).astype(np.uint16)
+                            logger.info("Converted Adobe RGB → sRGB")
                             
-                            # DEBUG: Sample after conversion
-                            sample_after = img_array[h//2, w//2, :]
-                            logger.info(f"DEBUG: After manual conversion (uint16): {sample_after}")
-                            logger.info(f"Converted Adobe RGB → sRGB (16-bit precision preserved)")
+                            # Store the sRGB-converted uint16 data for export
+                            original_uint16_data = img_array.copy()
+                            logger.info(f"Stored sRGB-converted uint16 data for export: shape={original_uint16_data.shape}")
                         else:
-                            logger.info(f"Unknown color space '{profile_name}', using raw data")
+                            # Not Adobe RGB, store as-is
+                            original_uint16_data = img_array.copy()
+                            logger.info(f"Stored uint16 data (no conversion): shape={original_uint16_data.shape}")
                         
                     except Exception as e:
-                        logger.warning(f"Color space conversion failed: {str(e)}, using raw data")
+                        logger.warning(f"Color profile reading failed: {str(e)}, using raw data")
                         import traceback
                         logger.warning(traceback.format_exc())
+                        # No conversion, store as-is
+                        original_uint16_data = img_array.copy()
+                else:
+                    # No ICC profile, store as-is
+                    original_uint16_data = img_array.copy()
+                    logger.info(f"No ICC profile, stored uint16 data as-is: shape={original_uint16_data.shape}")
             else:
                 # For non-TIFF formats, use PIL
                 img_array = np.array(pil_image)
@@ -644,6 +806,15 @@ def upload_file():
             logger.info(f"Final image array shape before FilmProcessor: {img_array.shape}")
             global processor
             processor = FilmProcessor(img_array, is_negative=is_negative)
+            
+            # Store ICC profile AND original uint16 data for export (already initialized)
+            processor.original_icc_profile = original_icc_profile
+            processor.original_uint16_data = original_uint16_data
+            
+            if processor.original_icc_profile:
+                logger.info(f"Processor has ICC profile: {len(processor.original_icc_profile)} bytes")
+            if processor.original_uint16_data is not None:
+                logger.info(f"Processor has original uint16 data: shape={processor.original_uint16_data.shape}")
             
             # Process with default settings and return initial image
             img_processed = processor.get_processed_image()
