@@ -3,6 +3,7 @@ class ProfessionalFilmProcessor {
     constructor() {
         this.currentImage = null;
         this.originalImage = null;
+        this.showingOriginal = false;  // Track if we're showing before/after
         this.isProcessing = false;
         this.currentRequest = null; // Track current processing request
         this.eyedropperMode = null; // 'black', 'white', or 'gray'
@@ -52,6 +53,8 @@ class ProfessionalFilmProcessor {
                 this.isSliderActive = false;
                 // Instant update while dragging (uses proxy)
                 this.debouncedProxyUpdate = this.debounce(() => this.updateImage(true), 0);
+                // Debounced update for non-slider interactions (curves, eyedropper, etc.)
+                this.debouncedUpdateImage = this.debounce(() => this.updateImage(), 50);
                 // Track pending debounce timer for cancellation
                 this.pendingProxyTimer = null;
                 console.log('Professional Film Processor initialized with proxy rendering');
@@ -84,29 +87,14 @@ class ProfessionalFilmProcessor {
                 
                 uploadZone.addEventListener('click', () => fileInput.click());
                 
-                // Preview image click to show original
+                // Preview image - attach to img element now, canvas will be attached after WebGL init
                 const previewImage = document.getElementById('previewImage');
+                
                 if (previewImage) {
-                    // Click to show original (only when not in eyedropper mode)
-                    previewImage.addEventListener('mousedown', (e) => {
-                        if (this.eyedropperMode) {
-                            this.handleEyedropperClick(e);
-                        } else if (this.originalImage) {
-                            this.displayImage(this.originalImage);
-                        }
-                    });
-                    
-                    previewImage.addEventListener('mouseup', () => {
-                        if (!this.eyedropperMode && this.currentImage) {
-                            this.displayImage(this.currentImage);
-                        }
-                    });
-                    
-                    previewImage.addEventListener('mouseleave', () => {
-                        if (!this.eyedropperMode && this.currentImage) {
-                            this.displayImage(this.currentImage);
-                        }
-                    });
+                    console.log('Attaching mouse handlers to previewImage');
+                    previewImage.addEventListener('mousedown', this.handlePreviewMouseDown.bind(this));
+                    previewImage.addEventListener('mouseup', this.handlePreviewMouseUp.bind(this));
+                    previewImage.addEventListener('mouseleave', this.handlePreviewMouseLeave.bind(this));
                 }
                 
                 // Sliders with PROXY RENDERING (like Photoshop)
@@ -448,10 +436,18 @@ class ProfessionalFilmProcessor {
             }
             
             endCurveEdit() {
+                const wasDragging = this.isDragging;
+                console.log('endCurveEdit called, wasDragging:', wasDragging);
                 this.isDragging = false;
                 this.selectedPoint = -1;
                 this.curvesCtx.canvas.style.cursor = 'crosshair';
                 document.getElementById('curvePointInfo').textContent = 'Click and drag to edit, double-click to remove points';
+                
+                // Update image if we were dragging (curve was modified)
+                if (wasDragging) {
+                    console.log('Curve was modified, calling updateImage()');
+                    this.updateImage();
+                }
             }
             
             addCurvePoint(e) {
@@ -1236,22 +1232,95 @@ class ProfessionalFilmProcessor {
                 }
             }
             
+            attachCanvasEventListeners() {
+                const canvas = document.getElementById('webglCanvas');
+                if (canvas) {
+                    console.log('Attaching mouse handlers to WebGL canvas');
+                    canvas.addEventListener('mousedown', this.handlePreviewMouseDown.bind(this));
+                    canvas.addEventListener('mouseup', this.handlePreviewMouseUp.bind(this));
+                    canvas.addEventListener('mouseleave', this.handlePreviewMouseLeave.bind(this));
+                } else {
+                    console.warn('WebGL canvas not found!');
+                }
+            }
+            
+            handlePreviewMouseDown(e) {
+                console.log('handlePreviewMouseDown called, eyedropperMode:', this.eyedropperMode, 'webglEnabled:', this.webglEnabled);
+                if (this.eyedropperMode) {
+                    this.handleEyedropperClick(e);
+                } else {
+                    // Show original (before)
+                    this.showingOriginal = true;
+                    if (this.webglEnabled && this.webglRenderer) {
+                        console.log('Showing original with zero adjustments');
+                        this.webglRenderer.updateParams({
+                            exposure: 0, 
+                            contrast: 0, 
+                            brightness: 0,
+                            saturation: 0,
+                            temperature: 0, 
+                            tint: 0,
+                            highlights: 0, 
+                            shadows: 0, 
+                            whites: 0, 
+                            blacks: 0,
+                            clarity: 0,
+                            vibrance: 0
+                        });
+                    } else if (this.originalImage) {
+                        this.displayImage(this.originalImage);
+                    }
+                }
+            }
+            
+            handlePreviewMouseUp() {
+                if (!this.eyedropperMode && this.showingOriginal) {
+                    this.showingOriginal = false;
+                    if (this.webglEnabled && this.webglRenderer) {
+                        this.updateImage();
+                    } else if (this.currentImage) {
+                        this.displayImage(this.currentImage);
+                    }
+                }
+            }
+            
+            handlePreviewMouseLeave() {
+                if (!this.eyedropperMode && this.showingOriginal) {
+                    this.showingOriginal = false;
+                    if (this.webglEnabled && this.webglRenderer) {
+                        this.updateImage();
+                    } else if (this.currentImage) {
+                        this.displayImage(this.currentImage);
+                    }
+                }
+            }
+            
             async handleEyedropperClick(event) {
+                console.log('handleEyedropperClick called, mode:', this.eyedropperMode);
                 if (!this.eyedropperMode || !this.currentImage) return;
+                
+                // Don't process if already processing eyedropper (prevents spam clicks)
+                if (this.isProcessing) {
+                    console.log('Already processing, ignoring click');
+                    return;
+                }
                 
                 // Save history before making change
                 this.saveHistory();
                 
-                const img = event.target;
-                const rect = img.getBoundingClientRect();
+                const target = event.target;
+                const rect = target.getBoundingClientRect();
                 
                 // Get click coordinates relative to the image
                 const x = event.clientX - rect.left;
                 const y = event.clientY - rect.top;
                 
                 // Calculate the position in the original image
-                const scaleX = img.naturalWidth / rect.width;
-                const scaleY = img.naturalHeight / rect.height;
+                // For canvas, use width/height properties; for img, use naturalWidth/naturalHeight
+                const naturalWidth = target.naturalWidth || target.width;
+                const naturalHeight = target.naturalHeight || target.height;
+                const scaleX = naturalWidth / rect.width;
+                const scaleY = naturalHeight / rect.height;
                 const imageX = Math.floor(x * scaleX);
                 const imageY = Math.floor(y * scaleY);
                 
@@ -1485,6 +1554,16 @@ class ProfessionalFilmProcessor {
                 };
             }
             
+            hasCurveEdits() {
+                // Check if any curve has been modified from default (straight line with just 2 points)
+                return this.curves && (
+                    this.curves.rgb.length > 2 || 
+                    this.curves.red.length > 2 || 
+                    this.curves.green.length > 2 || 
+                    this.curves.blue.length > 2
+                );
+            }
+            
             getParameters(fullResolution = false) {
                 const params = {};
                 
@@ -1588,6 +1667,9 @@ class ProfessionalFilmProcessor {
                         document.getElementById('webglCanvas').style.display = 'block';
                         document.getElementById('previewImage').style.display = 'none';
                         
+                        // NOW attach event listeners to the WebGL canvas (it exists now!)
+                        this.attachCanvasEventListeners();
+                        
                         console.log('WebGL GPU rendering enabled - instant slider updates!');
                         return true;
                     } else {
@@ -1608,10 +1690,15 @@ class ProfessionalFilmProcessor {
             async updateImage(useProxy = false) {
                 if (!this.currentImage) return;
                 
-                // INSTANT WebGL UPDATE (if enabled)
-                if (this.webglEnabled && this.webglRenderer) {
+                // Check if we need server-side processing (eyedropper points or custom curves)
+                const needsServerProcessing = this.blackPoint || this.whitePoint || this.grayPoint || this.hasCurveEdits();
+                
+                // INSTANT WebGL UPDATE (if enabled AND no server-only features)
+                if (this.webglEnabled && this.webglRenderer && !needsServerProcessing) {
                     // Get current parameters
                     const params = this.getParameters();
+                    
+                    console.log('WebGL update with params:', params);
                     
                     // Update WebGL shader uniforms (instant, no server round-trip!)
                     // NOTE: Slider values are already in correct range, no division needed!
@@ -1630,8 +1717,20 @@ class ProfessionalFilmProcessor {
                         vibrance: params.vibrance || 0
                     });
                     
+                    // Hide the regular img element, show WebGL canvas
+                    const previewImage = document.getElementById('previewImage');
+                    const webglCanvas = document.getElementById('webglCanvas');
+                    if (previewImage) previewImage.style.display = 'none';
+                    if (webglCanvas) webglCanvas.style.display = 'block';
+                    
                     this.updateProcessingStatus('GPU Rendering [WebGL]');
                     return;
+                }
+                
+                // FALLBACK: Server-side rendering (for eyedropper, curves, or when WebGL disabled)
+                if (needsServerProcessing) {
+                    console.log('Falling back to server-side rendering (eyedropper/curves active)');
+                    this.updateProcessingStatus('Server-side rendering (eyedropper/curves)...');
                 }
                 
                 // FALLBACK: Server-side rendering (old way)
@@ -1691,6 +1790,8 @@ class ProfessionalFilmProcessor {
             
             displayImage(base64Image) {
                 const previewImage = document.getElementById('previewImage');
+                const webglCanvas = document.getElementById('webglCanvas');
+                
                 if (previewImage) {
                     const newSrc = 'data:image/jpeg;base64,' + base64Image;
                     
@@ -1699,6 +1800,8 @@ class ProfessionalFilmProcessor {
                     tempImg.onload = () => {
                         previewImage.src = newSrc;
                         previewImage.style.display = 'block';
+                        // Hide WebGL canvas when showing server-rendered image
+                        if (webglCanvas) webglCanvas.style.display = 'none';
                     };
                     tempImg.src = newSrc;
                 }

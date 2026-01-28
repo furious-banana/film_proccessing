@@ -486,6 +486,7 @@ class WebGLRenderer {
     
     // Update adjustment parameters and re-render
     updateParams(newParams) {
+        console.log('WebGL updateParams called with:', newParams);
         Object.assign(this.params, newParams);
         this.render();
     }

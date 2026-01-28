@@ -523,9 +523,12 @@
         
         .image-wrapper {
             position: relative;
-            display: block;
+            display: flex;
+            align-items: center;
+            justify-content: center;
             transition: transform 0.2s ease;
-            margin: auto;
+            width: 100%;
+            height: 100%;
         }
 
         .image-canvas {
@@ -537,6 +540,7 @@
             max-height: 100%;
             height: auto;
             width: auto;
+            object-fit: contain;
             /* Smooth scaling for high-quality display */
             image-rendering: auto;
         }

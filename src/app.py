@@ -331,9 +331,9 @@ def get_pixel():
         if x < 0 or x >= width or y < 0 or y >= height:
             return jsonify({'error': 'Coordinates out of bounds', 'success': False})
         
-        # Get RGB values (OpenCV uses BGR, so we reverse it)
+        # Get RGB values - original_image is float32 (0.0-1.0), convert to 0-255
         pixel = img[y, x]
-        rgb = [int(pixel[2]), int(pixel[1]), int(pixel[0])]  # BGR to RGB
+        rgb = [int(pixel[0] * 255), int(pixel[1] * 255), int(pixel[2] * 255)]
         
         return jsonify({
             'rgb': rgb,
