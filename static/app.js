@@ -17,6 +17,10 @@ class ProfessionalFilmProcessor {
         this.cropMode = false;
         this.cropRect = null;
         
+        // Loupe update throttling
+        this.loupeUpdateScheduled = false;
+        this.lastLoupeEvent = null;
+        
         // WebGL GPU Rendering (client-side, instant updates, zero transfer!)
         this.webglRenderer = null;
         this.webglEnabled = false;
@@ -95,6 +99,7 @@ class ProfessionalFilmProcessor {
                     previewImage.addEventListener('mousedown', this.handlePreviewMouseDown.bind(this));
                     previewImage.addEventListener('mouseup', this.handlePreviewMouseUp.bind(this));
                     previewImage.addEventListener('mouseleave', this.handlePreviewMouseLeave.bind(this));
+                    previewImage.addEventListener('mousemove', this.handlePreviewMouseMove.bind(this));
                 }
                 
                 // Sliders with PROXY RENDERING (like Photoshop)
@@ -1285,14 +1290,18 @@ class ProfessionalFilmProcessor {
                 // Deactivate all buttons first
                 document.querySelectorAll('.eyedropper-btn').forEach(btn => btn.classList.remove('active'));
                 
+                const loupe = document.getElementById('eyedropperLoupe');
+                
                 // If clicking the same mode, deactivate
                 if (this.eyedropperMode === mode) {
                     this.eyedropperMode = null;
                     document.getElementById('previewImage').style.cursor = 'pointer';
+                    if (loupe) loupe.style.display = 'none';
                 } else {
                     this.eyedropperMode = mode;
                     document.getElementById(mode + 'PointBtn').classList.add('active');
                     document.getElementById('previewImage').style.cursor = 'crosshair';
+                    // Loupe will show on mousemove
                 }
             }
             
@@ -1303,6 +1312,7 @@ class ProfessionalFilmProcessor {
                     canvas.addEventListener('mousedown', this.handlePreviewMouseDown.bind(this));
                     canvas.addEventListener('mouseup', this.handlePreviewMouseUp.bind(this));
                     canvas.addEventListener('mouseleave', this.handlePreviewMouseLeave.bind(this));
+                    canvas.addEventListener('mousemove', this.handlePreviewMouseMove.bind(this));
                 } else {
                     console.warn('WebGL canvas not found!');
                 }
@@ -1340,6 +1350,10 @@ class ProfessionalFilmProcessor {
             }
             
             handlePreviewMouseLeave() {
+                // Hide loupe
+                const loupe = document.getElementById('eyedropperLoupe');
+                if (loupe) loupe.style.display = 'none';
+                
                 if (!this.eyedropperMode && this.showingOriginal) {
                     this.showingOriginal = false;
                     if (this.webglEnabled && this.webglRenderer) {
@@ -1349,6 +1363,84 @@ class ProfessionalFilmProcessor {
                     } else if (this.currentImage) {
                         this.displayImage(this.currentImage);
                     }
+                }
+            }
+            
+            handlePreviewMouseMove(e) {
+                // Update eyedropper loupe directly (fast path)
+                if (this.eyedropperMode) {
+                    this.updateEyedropperLoupe(e);
+                }
+            }
+            
+            updateEyedropperLoupe(e) {
+                const loupe = document.getElementById('eyedropperLoupe');
+                if (!loupe) return;
+                
+                // Show loupe
+                loupe.style.display = 'block';
+                
+                // Position loupe near cursor (offset so it doesn't block the pixel we're selecting)
+                const offset = 80; // Distance from cursor
+                loupe.style.left = (e.clientX + offset) + 'px';
+                loupe.style.top = (e.clientY - offset) + 'px';
+                
+                // Get the image element (WebGL canvas or regular image)
+                const canvas = document.getElementById('webglCanvas');
+                const imgElement = canvas && canvas.style.display !== 'none' ? canvas : document.getElementById('previewImage');
+                if (!imgElement) return;
+                
+                // Get mouse position relative to image viewport (displayed size)
+                const rect = imgElement.getBoundingClientRect();
+                const mouseXDisplay = e.clientX - rect.left;
+                const mouseYDisplay = e.clientY - rect.top;
+                
+                // Check if mouse is within image bounds
+                if (mouseXDisplay < 0 || mouseYDisplay < 0 || mouseXDisplay >= rect.width || mouseYDisplay >= rect.height) {
+                    loupe.style.display = 'none';
+                    return;
+                }
+                
+                // Scale mouse position from display size to actual canvas size
+                const scaleX = imgElement.width / rect.width;
+                const scaleY = imgElement.height / rect.height;
+                const mouseX = mouseXDisplay * scaleX;
+                const mouseY = mouseYDisplay * scaleY;
+                
+                // Draw magnified view
+                const loupeCanvas = document.getElementById('loupeCanvas');
+                const loupeCtx = loupeCanvas.getContext('2d', { willReadFrequently: true });
+                
+                // Zoom factor (how much to magnify)
+                const loupeSize = 120;
+                const zoomFactor = 6;
+                const sourceSize = loupeSize / zoomFactor; // Size of area to capture from source (in canvas pixels)
+                
+                // Clear
+                loupeCtx.fillStyle = '#000';
+                loupeCtx.fillRect(0, 0, loupeSize, loupeSize);
+                
+                // Calculate source rectangle on actual canvas
+                const srcX = mouseX - sourceSize / 2;
+                const srcY = mouseY - sourceSize / 2;
+                
+                // Draw magnified portion (from canvas to loupe)
+                loupeCtx.imageSmoothingEnabled = false; // Pixelated zoom for precise pixel viewing
+                try {
+                    loupeCtx.drawImage(
+                        imgElement,
+                        srcX, srcY, sourceSize, sourceSize,  // Source rect in canvas pixels
+                        0, 0, loupeSize, loupeSize  // Destination (fill loupe)
+                    );
+                    
+                    // Get pixel color at exact center of loupe
+                    const centerPixel = loupeCtx.getImageData(loupeSize / 2, loupeSize / 2, 1, 1).data;
+                    const rgbText = document.getElementById('loupeRGB');
+                    if (rgbText) {
+                        rgbText.textContent = `RGB: ${centerPixel[0]}, ${centerPixel[1]}, ${centerPixel[2]}`;
+                    }
+                } catch (err) {
+                    console.warn('Could not read pixel data for loupe:', err);
                 }
             }
             
@@ -1365,50 +1457,37 @@ class ProfessionalFilmProcessor {
                 // Save history before making change
                 this.saveHistory();
                 
-                const target = event.target;
-                const rect = target.getBoundingClientRect();
+                // Get pixel color from the loupe (more accurate than trying to read from canvas)
+                const loupeCanvas = document.getElementById('loupeCanvas');
+                if (!loupeCanvas) {
+                    console.warn('Loupe canvas not found');
+                    return;
+                }
                 
-                // Get click coordinates relative to the image
-                const x = event.clientX - rect.left;
-                const y = event.clientY - rect.top;
-                
-                // Calculate the position in the original image
-                // For canvas, use width/height properties; for img, use naturalWidth/naturalHeight
-                const naturalWidth = target.naturalWidth || target.width;
-                const naturalHeight = target.naturalHeight || target.height;
-                const scaleX = naturalWidth / rect.width;
-                const scaleY = naturalHeight / rect.height;
-                const imageX = Math.floor(x * scaleX);
-                const imageY = Math.floor(y * scaleY);
+                const loupeCtx = loupeCanvas.getContext('2d', { willReadFrequently: true });
+                const loupeSize = 120;
                 
                 try {
-                    // Get the pixel color at this position
-                    const response = await fetch('/get_pixel', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ x: imageX, y: imageY })
-                    });
+                    // Read the exact center pixel of the loupe (what the user sees)
+                    const centerPixel = loupeCtx.getImageData(loupeSize / 2, loupeSize / 2, 1, 1).data;
+                    const rgb = [centerPixel[0], centerPixel[1], centerPixel[2]];
                     
-                    const data = await response.json();
+                    console.log('Eyedropper sampled RGB:', rgb);
                     
-                    if (data.success) {
-                        // Store the point
-                        const rgb = data.rgb;
-                        
-                        if (this.eyedropperMode === 'black') {
-                            this.blackPoint = rgb;
-                            console.log('Black point set to:', rgb);
-                        } else if (this.eyedropperMode === 'white') {
-                            this.whitePoint = rgb;
-                            console.log('White point set to:', rgb);
-                        } else if (this.eyedropperMode === 'gray') {
-                            this.grayPoint = rgb;
-                            console.log('Gray point set to:', rgb);
-                        }
-                        
-                        // Keep eyedropper mode active for multiple clicks
-                        await this.updateImage();
+                    // Store the point
+                    if (this.eyedropperMode === 'black') {
+                        this.blackPoint = rgb;
+                        console.log('Black point set to:', rgb);
+                    } else if (this.eyedropperMode === 'white') {
+                        this.whitePoint = rgb;
+                        console.log('White point set to:', rgb);
+                    } else if (this.eyedropperMode === 'gray') {
+                        this.grayPoint = rgb;
+                        console.log('Gray point set to:', rgb);
                     }
+                    
+                    // Keep eyedropper mode active for multiple clicks
+                    await this.updateImage();
                 } catch (error) {
                     console.error('Error getting pixel value:', error);
                 }

@@ -64,8 +64,21 @@ def get_raw_image():
         else:
             img_cpu = img.copy()
         
-        # Image is already float32 [0.0, 1.0] sRGB gamma-encoded
+        # Downsample for display (like Photoshop's adaptive quality)
+        # Max 5000px on longest side for editing performance
         h, w, c = img_cpu.shape
+        max_display_size = 5000
+        
+        if max(h, w) > max_display_size:
+            scale = max_display_size / max(h, w)
+            new_w = int(w * scale)
+            new_h = int(h * scale)
+            logger.info(f"Downsampling for display: {w}x{h} -> {new_w}x{new_h} ({scale:.1%})")
+            # Use INTER_NEAREST for sharp pixels (no smoothing, like Photoshop)
+            img_cpu = cv2.resize(img_cpu, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+            h, w = new_h, new_w
+        
+        # Image is already float32 [0.0, 1.0] sRGB gamma-encoded
         
         # Convert to bytes (float32 little-endian)
         img_bytes = img_cpu.tobytes()
@@ -398,6 +411,7 @@ def export_image():
         
         params = request.json
         logger.info(f"Export request with parameters: {list(params.keys())}")
+        logger.info(f"Export curves data: {params.get('curves', 'NOT PROVIDED')}")
         
         # Ensure we're using full resolution
         if hasattr(processor, '_original_full_res_cache'):
@@ -419,7 +433,17 @@ def export_image():
             clarity=params.get('clarity', 0.0),
             vibrance=params.get('vibrance', 0.0),
             film_correction=params.get('film_correction', 0.0),
-            curves=params.get('curves')
+            curves=params.get('curves'),
+            # Eyedropper points
+            black_point_r=params.get('black_point_r'),
+            black_point_g=params.get('black_point_g'),
+            black_point_b=params.get('black_point_b'),
+            white_point_r=params.get('white_point_r'),
+            white_point_g=params.get('white_point_g'),
+            white_point_b=params.get('white_point_b'),
+            gray_point_r=params.get('gray_point_r'),
+            gray_point_g=params.get('gray_point_g'),
+            gray_point_b=params.get('gray_point_b')
         )
         
         # For lossless export: use ORIGINAL uint16 data, apply adjustments, export as uint16

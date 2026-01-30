@@ -538,8 +538,10 @@
             height: auto;
             width: auto;
             object-fit: contain;
-            /* Smooth scaling for high-quality display */
-            image-rendering: auto;
+            /* Sharp pixel rendering (no smoothing) */
+            image-rendering: pixelated;
+            image-rendering: -moz-crisp-edges;
+            image-rendering: crisp-edges;
         }
         
         .image-toolbar {
