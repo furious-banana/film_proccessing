@@ -217,25 +217,39 @@ class ProfessionalFilmProcessor {
                             const activeElement = canvasVisible ? canvas : (imgVisible ? img : null);
                             if (!wrapper || !activeElement) return;
                             
+                            console.log('=== ZOOM DEBUG ===');
+                            
                             // Get current scroll position
                             const oldScrollX = imageContainer.scrollLeft;
                             const oldScrollY = imageContainer.scrollTop;
+                            console.log('Before zoom - Scroll:', oldScrollX, oldScrollY);
                             
                             // Get container position
                             const containerRect = imageContainer.getBoundingClientRect();
-                            
-                            // Get mouse position in container coordinates (accounting for scroll)
-                            const mouseContainerX = e.clientX - containerRect.left + oldScrollX;
-                            const mouseContainerY = e.clientY - containerRect.top + oldScrollY;
+                            console.log('Container rect:', containerRect);
                             
                             // Get image position and size BEFORE zoom
                             const oldRect = activeElement.getBoundingClientRect();
-                            const oldImgContainerX = oldRect.left - containerRect.left + oldScrollX;
-                            const oldImgContainerY = oldRect.top - containerRect.top + oldScrollY;
+                            console.log('Image rect BEFORE zoom:', oldRect);
+                            console.log('Image size BEFORE:', oldRect.width, 'x', oldRect.height);
+                            
+                            // Mouse position in viewport
+                            console.log('Mouse viewport pos:', e.clientX, e.clientY);
+                            
+                            // Mouse position relative to container viewport
+                            const mouseViewportX = e.clientX - containerRect.left;
+                            const mouseViewportY = e.clientY - containerRect.top;
+                            console.log('Mouse in container viewport:', mouseViewportX, mouseViewportY);
+                            
+                            // Mouse position relative to image viewport
+                            const mouseImgViewportX = e.clientX - oldRect.left;
+                            const mouseImgViewportY = e.clientY - oldRect.top;
+                            console.log('Mouse in image viewport:', mouseImgViewportX, mouseImgViewportY);
                             
                             // Mouse position within image (0-1 range)
-                            const relX = (mouseContainerX - oldImgContainerX) / oldRect.width;
-                            const relY = (mouseContainerY - oldImgContainerY) / oldRect.height;
+                            const relX = mouseImgViewportX / oldRect.width;
+                            const relY = mouseImgViewportY / oldRect.height;
+                            console.log('Mouse relative (0-1):', relX, relY);
                             
                             // Apply zoom
                             const oldZoom = this.zoom;
@@ -245,6 +259,8 @@ class ProfessionalFilmProcessor {
                                 this.zoom = Math.max(this.zoom / 1.1, 0.1);
                             }
                             
+                            console.log('Zoom:', oldZoom, '->', this.zoom);
+                            
                             // Only adjust scroll if zoom actually changed
                             if (this.zoom === oldZoom) return;
                             
@@ -252,18 +268,34 @@ class ProfessionalFilmProcessor {
                             
                             // Wait for layout update
                             requestAnimationFrame(() => {
+                                console.log('--- AFTER ZOOM ---');
+                                
                                 // Get image position and size AFTER zoom  
                                 const newRect = activeElement.getBoundingClientRect();
-                                const newImgContainerX = newRect.left - containerRect.left + imageContainer.scrollLeft;
-                                const newImgContainerY = newRect.top - containerRect.top + imageContainer.scrollTop;
+                                console.log('Image rect AFTER zoom:', newRect);
+                                console.log('Image size AFTER:', newRect.width, 'x', newRect.height);
                                 
-                                // Where the point under cursor is now (in container coordinates)
-                                const newPointX = newImgContainerX + relX * newRect.width;
-                                const newPointY = newImgContainerY + relY * newRect.height;
+                                // Get wrapper size (might have grown)
+                                const wrapperRect = wrapper.getBoundingClientRect();
+                                console.log('Wrapper rect AFTER zoom:', wrapperRect);
                                 
-                                // Adjust scroll to keep point under cursor
-                                imageContainer.scrollLeft = newPointX - (e.clientX - containerRect.left);
-                                imageContainer.scrollTop = newPointY - (e.clientY - containerRect.top);
+                                console.log('Scroll AFTER applyZoom (before adjustment):', imageContainer.scrollLeft, imageContainer.scrollTop);
+                                
+                                // Where the point is now in the zoomed image (viewport coords)
+                                const newPointViewportX = newRect.left + relX * newRect.width;
+                                const newPointViewportY = newRect.top + relY * newRect.height;
+                                console.log('Point viewport pos AFTER zoom:', newPointViewportX, newPointViewportY);
+                                console.log('Target viewport pos (mouse):', e.clientX, e.clientY);
+                                
+                                // How much to scroll to align point with mouse
+                                const scrollDeltaX = newPointViewportX - e.clientX;
+                                const scrollDeltaY = newPointViewportY - e.clientY;
+                                console.log('Scroll delta needed:', scrollDeltaX, scrollDeltaY);
+                                
+                                imageContainer.scrollLeft += scrollDeltaX;
+                                imageContainer.scrollTop += scrollDeltaY;
+                                
+                                console.log('Final scroll:', imageContainer.scrollLeft, imageContainer.scrollTop);
                             });
                         }
                     }, { passive: false });
@@ -913,18 +945,18 @@ class ProfessionalFilmProcessor {
                     activeElement.style.height = naturalHeight + 'px';
                     activeElement.style.maxWidth = 'none';
                     activeElement.style.maxHeight = 'none';
-                    // Top-left align for scrolling
-                    wrapper.style.alignItems = 'flex-start';
-                    wrapper.style.justifyContent = 'flex-start';
+                    // Make wrapper 3x image size for scroll room
+                    wrapper.style.width = (naturalWidth * 3) + 'px';
+                    wrapper.style.height = (naturalHeight * 3) + 'px';
                 } else if (this.zoom === 1.0) {
                     // Fit to container
                     activeElement.style.width = '';
                     activeElement.style.height = '';
                     activeElement.style.maxWidth = '100%';
                     activeElement.style.maxHeight = '100%';
-                    // Center when fitted
-                    wrapper.style.alignItems = 'center';
-                    wrapper.style.justifyContent = 'center';
+                    // Wrapper fills container
+                    wrapper.style.width = '100%';
+                    wrapper.style.height = '100%';
                 } else {
                     // Apply zoom - calculate based on fitted size
                     const containerWidth = container.clientWidth;
@@ -951,14 +983,9 @@ class ProfessionalFilmProcessor {
                     activeElement.style.maxWidth = 'none';
                     activeElement.style.maxHeight = 'none';
                     
-                    // Center if image fits in container, otherwise top-left for scrolling
-                    if (zoomedWidth <= containerWidth && zoomedHeight <= containerHeight) {
-                        wrapper.style.alignItems = 'center';
-                        wrapper.style.justifyContent = 'center';
-                    } else {
-                        wrapper.style.alignItems = 'flex-start';
-                        wrapper.style.justifyContent = 'flex-start';
-                    }
+                    // Make wrapper 3x zoomed image size to allow scrolling in all directions
+                    wrapper.style.width = (zoomedWidth * 3) + 'px';
+                    wrapper.style.height = (zoomedHeight * 3) + 'px';
                 }
                 
                 wrapper.style.transform = `rotate(${this.rotation}deg)`;
@@ -1286,23 +1313,12 @@ class ProfessionalFilmProcessor {
                 if (this.eyedropperMode) {
                     this.handleEyedropperClick(e);
                 } else {
-                    // Show original (before)
+                    // Show original (before) - just set flag to bypass all adjustments
                     this.showingOriginal = true;
                     if (this.webglEnabled && this.webglRenderer) {
-                        console.log('Showing original with zero adjustments');
+                        console.log('Showing original (bypassing all adjustments)');
                         this.webglRenderer.updateParams({
-                            exposure: 0, 
-                            contrast: 0, 
-                            brightness: 0,
-                            saturation: 0,
-                            temperature: 0, 
-                            tint: 0,
-                            highlights: 0, 
-                            shadows: 0, 
-                            whites: 0, 
-                            blacks: 0,
-                            clarity: 0,
-                            vibrance: 0
+                            showOriginal: true
                         });
                     } else if (this.originalImage) {
                         this.displayImage(this.originalImage);
@@ -1314,6 +1330,8 @@ class ProfessionalFilmProcessor {
                 if (!this.eyedropperMode && this.showingOriginal) {
                     this.showingOriginal = false;
                     if (this.webglEnabled && this.webglRenderer) {
+                        // Re-enable adjustments and update
+                        this.webglRenderer.updateParams({ showOriginal: false });
                         this.updateImage();
                     } else if (this.currentImage) {
                         this.displayImage(this.currentImage);
@@ -1325,6 +1343,8 @@ class ProfessionalFilmProcessor {
                 if (!this.eyedropperMode && this.showingOriginal) {
                     this.showingOriginal = false;
                     if (this.webglEnabled && this.webglRenderer) {
+                        // Re-enable adjustments and update
+                        this.webglRenderer.updateParams({ showOriginal: false });
                         this.updateImage();
                     } else if (this.currentImage) {
                         this.displayImage(this.currentImage);

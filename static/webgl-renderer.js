@@ -23,6 +23,7 @@ class WebGLRenderer {
         
         // Adjustment parameters (passed as uniforms to shader)
         this.params = {
+            showOriginal: false,  // Bypass all adjustments when true
             exposure: 0.0,
             contrast: 0.0,
             brightness: 0.0,
@@ -140,6 +141,7 @@ class WebGLRenderer {
             precision highp float;
             
             uniform sampler2D u_image;
+            uniform float u_showOriginal;  // Bypass all adjustments when 1.0
             uniform float u_exposure;
             uniform float u_contrast;
             uniform float u_brightness;
@@ -295,6 +297,12 @@ class WebGLRenderer {
             void main() {
                 // Sample input texture
                 vec3 color = texture2D(u_image, v_texCoord).rgb;
+                
+                // If showing original, skip all adjustments
+                if (u_showOriginal > 0.5) {
+                    gl_FragColor = vec4(color, 1.0);
+                    return;
+                }
                 
                 // Apply adjustments in proper order (like Photoshop/Lightroom)
                 
@@ -656,6 +664,9 @@ class WebGLRenderer {
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this.texture);
         gl.uniform1i(gl.getUniformLocation(this.program, 'u_image'), 0);
+        
+        // Upload show original flag (bypasses all adjustments)
+        gl.uniform1f(gl.getUniformLocation(this.program, 'u_showOriginal'), this.params.showOriginal ? 1.0 : 0.0);
         
         // Upload all uniform parameters
         gl.uniform1f(gl.getUniformLocation(this.program, 'u_exposure'), this.params.exposure || 0.0);
