@@ -12,9 +12,14 @@ class WebGLRenderer {
         this.gl = null;
         this.program = null;
         this.texture = null;
+        this.curveTextureRgb = null;
+        this.curveTextureRed = null;
+        this.curveTextureGreen = null;
+        this.curveTextureBlue = null;
         this.imageWidth = 0;
         this.imageHeight = 0;
         this.imageData = null;
+        this.lastCurvesJSON = null; // Cache for curve change detection
         
         // Adjustment parameters (passed as uniforms to shader)
         this.params = {
@@ -30,6 +35,13 @@ class WebGLRenderer {
             blacks: 0.0,
             clarity: 0.0,
             vibrance: 0.0,
+            // Eyedropper levels
+            blackPoint: [0, 0, 0],
+            whitePoint: [1, 1, 1],
+            grayPoint: [0.5, 0.5, 0.5],
+            hasBlackPoint: false,
+            hasWhitePoint: false,
+            hasGrayPoint: false,
             // Curves (will be uploaded as 1D textures)
             curvesRgb: null,
             curvesRed: null,
@@ -141,6 +153,21 @@ class WebGLRenderer {
             uniform float u_clarity;
             uniform float u_vibrance;
             
+            // Eyedropper levels adjustment
+            uniform vec3 u_blackPoint;   // RGB black point (0-1)
+            uniform vec3 u_whitePoint;   // RGB white point (0-1)
+            uniform vec3 u_grayPoint;    // RGB gray point (0-1)
+            uniform float u_hasBlackPoint;
+            uniform float u_hasWhitePoint;
+            uniform float u_hasGrayPoint;
+            
+            // Curve lookup textures (1D textures, 256 samples each)
+            uniform sampler2D u_curveRgb;
+            uniform sampler2D u_curveRed;
+            uniform sampler2D u_curveGreen;
+            uniform sampler2D u_curveBlue;
+            uniform float u_hasCurves;
+            
             varying highp vec2 v_texCoord;  // Match vertex shader precision
             
             // Color space conversions
@@ -217,11 +244,63 @@ class WebGLRenderer {
                 return color;
             }
             
+            // Apply levels adjustment (eyedropper black/white/gray points)
+            vec3 applyLevels(vec3 color, vec3 blackPt, vec3 whitePt, vec3 grayPt, 
+                            float hasBlack, float hasWhite, float hasGray) {
+                // Apply black point - remap black point to 0
+                if (hasBlack > 0.5) {
+                    color = (color - blackPt) / (1.0 - blackPt);
+                    color = max(color, vec3(0.0));
+                }
+                
+                // Apply white point - remap white point to 1
+                if (hasWhite > 0.5) {
+                    color = color / whitePt;
+                    color = min(color, vec3(1.0));
+                }
+                
+                // Apply gray point - removes color casts
+                if (hasGray > 0.5) {
+                    // Calculate gray point average
+                    float grayAvg = (grayPt.r + grayPt.g + grayPt.b) / 3.0;
+                    // Apply per-channel correction to make gray point neutral
+                    color.r *= grayAvg / max(grayPt.r, 0.001);
+                    color.g *= grayAvg / max(grayPt.g, 0.001);
+                    color.b *= grayAvg / max(grayPt.b, 0.001);
+                }
+                
+                return clamp(color, 0.0, 1.0);
+            }
+            
+            // Apply curves using lookup textures
+            vec3 applyCurves(vec3 color) {
+                if (u_hasCurves < 0.5) return color;
+                
+                // Sample curve textures (1D lookup, stored as 1-pixel-high 2D texture)
+                float r = texture2D(u_curveRgb, vec2(color.r, 0.5)).r;
+                float g = texture2D(u_curveRgb, vec2(color.g, 0.5)).g;
+                float b = texture2D(u_curveRgb, vec2(color.b, 0.5)).b;
+                
+                // Apply RGB curve
+                color = vec3(r, g, b);
+                
+                // Apply per-channel curves
+                color.r = texture2D(u_curveRed, vec2(color.r, 0.5)).r;
+                color.g = texture2D(u_curveGreen, vec2(color.g, 0.5)).g;
+                color.b = texture2D(u_curveBlue, vec2(color.b, 0.5)).b;
+                
+                return clamp(color, 0.0, 1.0);
+            }
+            
             void main() {
                 // Sample input texture
                 vec3 color = texture2D(u_image, v_texCoord).rgb;
                 
                 // Apply adjustments in proper order (like Photoshop/Lightroom)
+                
+                // 0. Levels adjustment first (eyedropper points)
+                color = applyLevels(color, u_blackPoint, u_whitePoint, u_grayPoint,
+                                   u_hasBlackPoint, u_hasWhitePoint, u_hasGrayPoint);
                 
                 // 1. Exposure (affects overall brightness)
                 color = applyExposure(color, u_exposure);
@@ -241,6 +320,9 @@ class WebGLRenderer {
                 
                 // 6. Saturation
                 color = applySaturation(color, u_saturation);
+                
+                // 7. Custom curves (after other adjustments)
+                color = applyCurves(color);
                 
                 // Clamp to valid range
                 color = clamp(color, 0.0, 1.0);
@@ -484,10 +566,77 @@ class WebGLRenderer {
         console.log(`Canvas: ${this.imageWidth}x${this.imageHeight} rendered, displayed at ${displayWidth.toFixed(0)}x${displayHeight.toFixed(0)}`);
     }
     
+    // Create 1D curve lookup texture from curve points
+    createCurveTexture(curvePoints) {
+        const gl = this.gl;
+        const LUT_SIZE = 256;
+        
+        // Build lookup table (256 samples from curve)
+        const lut = new Uint8Array(LUT_SIZE * 4); // RGBA
+        
+        for (let i = 0; i < LUT_SIZE; i++) {
+            const x = i / (LUT_SIZE - 1); // 0 to 1
+            
+            // Evaluate curve at x (linear interpolation between points)
+            let y = x; // Default: straight line
+            
+            for (let j = 0; j < curvePoints.length - 1; j++) {
+                const p0 = curvePoints[j];
+                const p1 = curvePoints[j + 1];
+                
+                if (x >= p0.x && x <= p1.x) {
+                    // Linear interpolation
+                    const t = (x - p0.x) / (p1.x - p0.x);
+                    y = p0.y + t * (p1.y - p0.y);
+                    break;
+                }
+            }
+            
+            // Store in all RGB channels (makes lookup simpler)
+            const value = Math.round(y * 255);
+            lut[i * 4 + 0] = value; // R
+            lut[i * 4 + 1] = value; // G
+            lut[i * 4 + 2] = value; // B
+            lut[i * 4 + 3] = 255;   // A
+        }
+        
+        // Create and upload texture
+        const texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, LUT_SIZE, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, lut);
+        
+        // Linear filtering for smooth curve lookups
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        
+        return texture;
+    }
+    
     // Update adjustment parameters and re-render
     updateParams(newParams) {
-        console.log('WebGL updateParams called with:', newParams);
         Object.assign(this.params, newParams);
+        
+        // Rebuild curve textures if curves provided (GPU is fast enough for real-time)
+        if (newParams.curves) {
+            try {
+                const curvesData = typeof newParams.curves === 'string' ? 
+                    JSON.parse(newParams.curves) : newParams.curves;
+                
+                // Create/update curve textures
+                if (curvesData.rgb) this.curveTextureRgb = this.createCurveTexture(curvesData.rgb);
+                if (curvesData.red) this.curveTextureRed = this.createCurveTexture(curvesData.red);
+                if (curvesData.green) this.curveTextureGreen = this.createCurveTexture(curvesData.green);
+                if (curvesData.blue) this.curveTextureBlue = this.createCurveTexture(curvesData.blue);
+                
+                this.params.hasCurves = true;
+            } catch (e) {
+                console.warn('Failed to parse curves:', e);
+                this.params.hasCurves = false;
+            }
+        }
+        
         this.render();
     }
     
@@ -521,6 +670,37 @@ class WebGLRenderer {
         gl.uniform1f(gl.getUniformLocation(this.program, 'u_blacks'), this.params.blacks || 0.0);
         gl.uniform1f(gl.getUniformLocation(this.program, 'u_clarity'), this.params.clarity || 0.0);
         gl.uniform1f(gl.getUniformLocation(this.program, 'u_vibrance'), this.params.vibrance || 0.0);
+        
+        // Upload eyedropper levels uniforms
+        gl.uniform3fv(gl.getUniformLocation(this.program, 'u_blackPoint'), this.params.blackPoint || [0, 0, 0]);
+        gl.uniform3fv(gl.getUniformLocation(this.program, 'u_whitePoint'), this.params.whitePoint || [1, 1, 1]);
+        gl.uniform3fv(gl.getUniformLocation(this.program, 'u_grayPoint'), this.params.grayPoint || [0.5, 0.5, 0.5]);
+        gl.uniform1f(gl.getUniformLocation(this.program, 'u_hasBlackPoint'), this.params.hasBlackPoint ? 1.0 : 0.0);
+        gl.uniform1f(gl.getUniformLocation(this.program, 'u_hasWhitePoint'), this.params.hasWhitePoint ? 1.0 : 0.0);
+        gl.uniform1f(gl.getUniformLocation(this.program, 'u_hasGrayPoint'), this.params.hasGrayPoint ? 1.0 : 0.0);
+        
+        // Bind curve textures
+        if (this.curveTextureRgb) {
+            gl.activeTexture(gl.TEXTURE1);
+            gl.bindTexture(gl.TEXTURE_2D, this.curveTextureRgb);
+            gl.uniform1i(gl.getUniformLocation(this.program, 'u_curveRgb'), 1);
+        }
+        if (this.curveTextureRed) {
+            gl.activeTexture(gl.TEXTURE2);
+            gl.bindTexture(gl.TEXTURE_2D, this.curveTextureRed);
+            gl.uniform1i(gl.getUniformLocation(this.program, 'u_curveRed'), 2);
+        }
+        if (this.curveTextureGreen) {
+            gl.activeTexture(gl.TEXTURE3);
+            gl.bindTexture(gl.TEXTURE_2D, this.curveTextureGreen);
+            gl.uniform1i(gl.getUniformLocation(this.program, 'u_curveGreen'), 3);
+        }
+        if (this.curveTextureBlue) {
+            gl.activeTexture(gl.TEXTURE4);
+            gl.bindTexture(gl.TEXTURE_2D, this.curveTextureBlue);
+            gl.uniform1i(gl.getUniformLocation(this.program, 'u_curveBlue'), 4);
+        }
+        gl.uniform1f(gl.getUniformLocation(this.program, 'u_hasCurves'), this.params.hasCurves ? 1.0 : 0.0);
         
         // Clear and render
         gl.clearColor(0, 0, 0, 1);

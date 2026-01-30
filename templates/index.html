@@ -123,8 +123,9 @@
                         
                         <!-- Eyedropper Tools -->
                         <div class="control-group" style="margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border-color);">
-                            <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px; font-weight: 500;">
-                                COLOR CORRECTION EYEDROPPERS
+                            <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px; font-weight: 500; display: flex; justify-content: space-between; align-items: center;">
+                                <span>COLOR CORRECTION EYEDROPPERS</span>
+                                <button id="resetEyedroppersBtn" style="font-size: 10px; padding: 2px 8px; background: var(--bg-tertiary); border: 1px solid var(--border-primary); border-radius: 3px; color: var(--text-secondary); cursor: pointer;" title="Clear all eyedropper points">Reset</button>
                             </div>
                             <div style="display: flex; gap: 8px;">
                                 <button class="eyedropper-btn" id="blackPointBtn" title="Click, then click on image to set black point">
@@ -275,7 +276,7 @@
         </div>
     </div>
 
-    <script src="/static/webgl-renderer.js?v=10"></script>
-    <script src="/static/app.js?v=10"></script>
+    <script src="/static/webgl-renderer.js?v=27"></script>
+    <script src="/static/app.js?v=27"></script>
 </body>
 </html>

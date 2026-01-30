@@ -150,6 +150,7 @@ class ProfessionalFilmProcessor {
                 document.getElementById('blackPointBtn')?.addEventListener('click', () => this.activateEyedropper('black'));
                 document.getElementById('grayPointBtn')?.addEventListener('click', () => this.activateEyedropper('gray'));
                 document.getElementById('whitePointBtn')?.addEventListener('click', () => this.activateEyedropper('white'));
+                document.getElementById('resetEyedroppersBtn')?.addEventListener('click', () => this.resetEyedroppers());
                 
                 // Reset curves button
                 document.getElementById('resetCurvesBtn')?.addEventListener('click', () => this.resetCurves());
@@ -210,56 +211,60 @@ class ProfessionalFilmProcessor {
                             const canvas = document.getElementById('webglCanvas');
                             const img = document.getElementById('previewImage');
                             
-                            // Use active element (canvas or img)
-                            const activeElement = this.webglEnabled ? canvas : img;
+                            // Determine which element is currently visible
+                            const canvasVisible = canvas && canvas.style.display !== 'none';
+                            const imgVisible = img && img.style.display !== 'none';
+                            const activeElement = canvasVisible ? canvas : (imgVisible ? img : null);
                             if (!wrapper || !activeElement) return;
                             
-                            // Get container rect
+                            // Get current scroll position
+                            const oldScrollX = imageContainer.scrollLeft;
+                            const oldScrollY = imageContainer.scrollTop;
+                            
+                            // Get container position
                             const containerRect = imageContainer.getBoundingClientRect();
                             
-                            // Get mouse position relative to container
-                            const mouseX = e.clientX - containerRect.left;
-                            const mouseY = e.clientY - containerRect.top;
+                            // Get mouse position in container coordinates (accounting for scroll)
+                            const mouseContainerX = e.clientX - containerRect.left + oldScrollX;
+                            const mouseContainerY = e.clientY - containerRect.top + oldScrollY;
                             
-                            // Get image rect before zoom
-                            const imgRect = activeElement.getBoundingClientRect();
+                            // Get image position and size BEFORE zoom
+                            const oldRect = activeElement.getBoundingClientRect();
+                            const oldImgContainerX = oldRect.left - containerRect.left + oldScrollX;
+                            const oldImgContainerY = oldRect.top - containerRect.top + oldScrollY;
                             
-                            // Calculate mouse position relative to image
-                            const imgMouseX = e.clientX - imgRect.left;
-                            const imgMouseY = e.clientY - imgRect.top;
+                            // Mouse position within image (0-1 range)
+                            const relX = (mouseContainerX - oldImgContainerX) / oldRect.width;
+                            const relY = (mouseContainerY - oldImgContainerY) / oldRect.height;
                             
-                            // Calculate relative position (0-1) within image
-                            const relX = imgMouseX / imgRect.width;
-                            const relY = imgMouseY / imgRect.height;
-                            
-                            // Store old zoom
+                            // Apply zoom
                             const oldZoom = this.zoom;
-                            
-                            // Apply zoom with finer increments
                             if (e.deltaY < 0) {
-                                this.zoom = Math.min(this.zoom * 1.05, 20);
+                                this.zoom = Math.min(this.zoom * 1.1, 20);
                             } else {
-                                this.zoom = Math.max(this.zoom / 1.05, 0.1);
+                                this.zoom = Math.max(this.zoom / 1.1, 0.1);
                             }
+                            
+                            // Only adjust scroll if zoom actually changed
+                            if (this.zoom === oldZoom) return;
                             
                             this.applyZoom();
                             
-                            // Wait for DOM update
-                            setTimeout(() => {
-                                const newImgRect = activeElement.getBoundingClientRect();
+                            // Wait for layout update
+                            requestAnimationFrame(() => {
+                                // Get image position and size AFTER zoom  
+                                const newRect = activeElement.getBoundingClientRect();
+                                const newImgContainerX = newRect.left - containerRect.left + imageContainer.scrollLeft;
+                                const newImgContainerY = newRect.top - containerRect.top + imageContainer.scrollTop;
                                 
-                                // Calculate new position of the point that was under mouse
-                                const newPointX = relX * newImgRect.width;
-                                const newPointY = relY * newImgRect.height;
+                                // Where the point under cursor is now (in container coordinates)
+                                const newPointX = newImgContainerX + relX * newRect.width;
+                                const newPointY = newImgContainerY + relY * newRect.height;
                                 
-                                // Calculate where that point is now relative to container
-                                const pointScreenX = newImgRect.left - containerRect.left + newPointX;
-                                const pointScreenY = newImgRect.top - containerRect.top + newPointY;
-                                
-                                // Adjust scroll to center that point where mouse was
-                                imageContainer.scrollLeft += pointScreenX - mouseX;
-                                imageContainer.scrollTop += pointScreenY - mouseY;
-                            }, 0);
+                                // Adjust scroll to keep point under cursor
+                                imageContainer.scrollLeft = newPointX - (e.clientX - containerRect.left);
+                                imageContainer.scrollTop = newPointY - (e.clientY - containerRect.top);
+                            });
                         }
                     }, { passive: false });
                 }
@@ -432,12 +437,20 @@ class ProfessionalFilmProcessor {
                 
                 this.drawCurves();
                 this.updateCurvePointInfo(x, y);
-                this.debouncedUpdateImage();
+                // Update image in real-time (no debounce for smooth dragging)
+                this.updateImage();
             }
             
             endCurveEdit() {
                 const wasDragging = this.isDragging;
                 console.log('endCurveEdit called, wasDragging:', wasDragging);
+                
+                // Prevent duplicate calls from mouseup+mouseleave
+                if (!this.isDragging && !wasDragging) {
+                    console.log('Already ended, ignoring duplicate call');
+                    return;
+                }
+                
                 this.isDragging = false;
                 this.selectedPoint = -1;
                 this.curvesCtx.canvas.style.cursor = 'crosshair';
@@ -880,13 +893,19 @@ class ProfessionalFilmProcessor {
                 const container = document.getElementById('imageContainer');
                 if (!wrapper || !container) return;
                 
-                // Get the active display element (canvas or img)
-                const activeElement = this.webglEnabled ? canvas : img;
+                // Determine which element is currently visible (check display style)
+                const canvasVisible = canvas && canvas.style.display !== 'none';
+                const imgVisible = img && img.style.display !== 'none';
+                
+                // Get the active display element based on what's actually visible
+                const activeElement = canvasVisible ? canvas : (imgVisible ? img : null);
                 if (!activeElement) return;
                 
-                // Get natural dimensions
-                const naturalWidth = this.webglEnabled ? this.webglRenderer.imageWidth : img.naturalWidth;
-                const naturalHeight = this.webglEnabled ? this.webglRenderer.imageHeight : img.naturalHeight;
+                // Get natural dimensions from the visible element
+                const naturalWidth = canvasVisible && this.webglRenderer ? this.webglRenderer.imageWidth : 
+                                    (img && img.naturalWidth ? img.naturalWidth : 1);
+                const naturalHeight = canvasVisible && this.webglRenderer ? this.webglRenderer.imageHeight : 
+                                     (img && img.naturalHeight ? img.naturalHeight : 1);
                 
                 if (actualSize) {
                     // Show at actual pixel size
@@ -894,12 +913,18 @@ class ProfessionalFilmProcessor {
                     activeElement.style.height = naturalHeight + 'px';
                     activeElement.style.maxWidth = 'none';
                     activeElement.style.maxHeight = 'none';
+                    // Top-left align for scrolling
+                    wrapper.style.alignItems = 'flex-start';
+                    wrapper.style.justifyContent = 'flex-start';
                 } else if (this.zoom === 1.0) {
                     // Fit to container
                     activeElement.style.width = '';
                     activeElement.style.height = '';
                     activeElement.style.maxWidth = '100%';
                     activeElement.style.maxHeight = '100%';
+                    // Center when fitted
+                    wrapper.style.alignItems = 'center';
+                    wrapper.style.justifyContent = 'center';
                 } else {
                     // Apply zoom - calculate based on fitted size
                     const containerWidth = container.clientWidth;
@@ -918,10 +943,22 @@ class ProfessionalFilmProcessor {
                         fittedWidth = containerHeight * imgAspect;
                     }
                     
-                    activeElement.style.width = (fittedWidth * this.zoom) + 'px';
-                    activeElement.style.height = (fittedHeight * this.zoom) + 'px';
+                    const zoomedWidth = fittedWidth * this.zoom;
+                    const zoomedHeight = fittedHeight * this.zoom;
+                    
+                    activeElement.style.width = zoomedWidth + 'px';
+                    activeElement.style.height = zoomedHeight + 'px';
                     activeElement.style.maxWidth = 'none';
                     activeElement.style.maxHeight = 'none';
+                    
+                    // Center if image fits in container, otherwise top-left for scrolling
+                    if (zoomedWidth <= containerWidth && zoomedHeight <= containerHeight) {
+                        wrapper.style.alignItems = 'center';
+                        wrapper.style.justifyContent = 'center';
+                    } else {
+                        wrapper.style.alignItems = 'flex-start';
+                        wrapper.style.justifyContent = 'flex-start';
+                    }
                 }
                 
                 wrapper.style.transform = `rotate(${this.rotation}deg)`;
@@ -1690,18 +1727,14 @@ class ProfessionalFilmProcessor {
             async updateImage(useProxy = false) {
                 if (!this.currentImage) return;
                 
-                // Check if we need server-side processing (eyedropper points or custom curves)
-                const needsServerProcessing = this.blackPoint || this.whitePoint || this.grayPoint || this.hasCurveEdits();
-                
-                // INSTANT WebGL UPDATE (if enabled AND no server-only features)
-                if (this.webglEnabled && this.webglRenderer && !needsServerProcessing) {
+                // INSTANT WebGL UPDATE - now supports eyedropper AND sliders!
+                if (this.webglEnabled && this.webglRenderer) {
                     // Get current parameters
                     const params = this.getParameters();
                     
                     console.log('WebGL update with params:', params);
                     
                     // Update WebGL shader uniforms (instant, no server round-trip!)
-                    // NOTE: Slider values are already in correct range, no division needed!
                     this.webglRenderer.updateParams({
                         exposure: params.exposure || 0,
                         contrast: params.contrast || 0,
@@ -1714,7 +1747,28 @@ class ProfessionalFilmProcessor {
                         whites: params.whites || 0,
                         blacks: params.blacks || 0,
                         clarity: params.clarity || 0,
-                        vibrance: params.vibrance || 0
+                        vibrance: params.vibrance || 0,
+                        // Eyedropper points (convert from 0-255 to 0-1)
+                        blackPoint: this.blackPoint ? [
+                            this.blackPoint[0] / 255.0,
+                            this.blackPoint[1] / 255.0,
+                            this.blackPoint[2] / 255.0
+                        ] : [0, 0, 0],
+                        whitePoint: this.whitePoint ? [
+                            this.whitePoint[0] / 255.0,
+                            this.whitePoint[1] / 255.0,
+                            this.whitePoint[2] / 255.0
+                        ] : [1, 1, 1],
+                        grayPoint: this.grayPoint ? [
+                            this.grayPoint[0] / 255.0,
+                            this.grayPoint[1] / 255.0,
+                            this.grayPoint[2] / 255.0
+                        ] : [0.5, 0.5, 0.5],
+                        hasBlackPoint: !!this.blackPoint,
+                        hasWhitePoint: !!this.whitePoint,
+                        hasGrayPoint: !!this.grayPoint,
+                        // Curves data (pass as JSON string for caching)
+                        curves: params.curves
                     });
                     
                     // Hide the regular img element, show WebGL canvas
@@ -1724,13 +1778,9 @@ class ProfessionalFilmProcessor {
                     if (webglCanvas) webglCanvas.style.display = 'block';
                     
                     this.updateProcessingStatus('GPU Rendering [WebGL]');
+                    
+                    // Everything is now instant on GPU - no server needed!
                     return;
-                }
-                
-                // FALLBACK: Server-side rendering (for eyedropper, curves, or when WebGL disabled)
-                if (needsServerProcessing) {
-                    console.log('Falling back to server-side rendering (eyedropper/curves active)');
-                    this.updateProcessingStatus('Server-side rendering (eyedropper/curves)...');
                 }
                 
                 // FALLBACK: Server-side rendering (old way)
