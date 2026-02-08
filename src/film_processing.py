@@ -218,6 +218,17 @@ class FilmProcessor:
                     processed[:, :, c] += mask * black_adjust
                 logger.info(f"Applied blacks: {self.params['blacks']:.1f}")
             
+            # Apply RGB adjustments (independent channel shifts)
+            if self.params.get('red', 0) != 0:
+                processed[:, :, 0] += self.params['red']
+                logger.info(f"Applied red: {self.params['red']:.2f}")
+            if self.params.get('green', 0) != 0:
+                processed[:, :, 1] += self.params['green']
+                logger.info(f"Applied green: {self.params['green']:.2f}")
+            if self.params.get('blue', 0) != 0:
+                processed[:, :, 2] += self.params['blue']
+                logger.info(f"Applied blue: {self.params['blue']:.2f}")
+            
             # Apply tone curves LAST (after all tone adjustments)
             processed = self._apply_curves(processed)
             

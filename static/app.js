@@ -199,6 +199,8 @@ class ProfessionalFilmProcessor {
                 document.getElementById('zoomFitBtn')?.addEventListener('click', () => this.zoomFit());
                 document.getElementById('zoom100Btn')?.addEventListener('click', () => this.zoom100());
                 document.getElementById('exportBtn')?.addEventListener('click', () => this.exportImage());
+                document.getElementById('saveSettingsBtn')?.addEventListener('click', () => this.saveSettings());
+                document.getElementById('loadSettingsBtn')?.addEventListener('click', () => this.loadSettings());
                 document.getElementById('rotateLeftBtn')?.addEventListener('click', () => this.rotateLeft());
                 document.getElementById('rotateRightBtn')?.addEventListener('click', () => this.rotateRight());
                 document.getElementById('cropBtn')?.addEventListener('click', () => this.toggleCropMode());
@@ -1043,18 +1045,45 @@ class ProfessionalFilmProcessor {
                     
                     // Get the blob
                     const blob = await response.blob();
+                    const arrayBuffer = await blob.arrayBuffer();
                     
-                    // Create download link
-                    const url = window.URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `processed_image_${Date.now()}.tif`;
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    window.URL.revokeObjectURL(url);
-                    
-                    console.log('Export completed successfully');
+                    // Check if running in Electron
+                    if (window.electronAPI) {
+                        // Use Electron file save dialog
+                        let defaultName = 'processed_image.tif';
+                        
+                        // If we have original file path, use same directory and name
+                        if (this.originalFilePath) {
+                            const pathParts = this.originalFilePath.split(/[\\/]/);
+                            const fileName = pathParts[pathParts.length - 1];
+                            const nameParts = fileName.split('.');
+                            nameParts.pop(); // Remove extension
+                            defaultName = nameParts.join('.') + '_processed.tif';
+                        }
+                        
+                        const savePath = await window.electronAPI.saveFileDialog(defaultName);
+                        
+                        if (savePath) {
+                            const result = await window.electronAPI.writeFile(savePath, arrayBuffer);
+                            if (result.success) {
+                                console.log('Export completed successfully to:', savePath);
+                                alert('Image exported successfully!');
+                            } else {
+                                throw new Error(result.error);
+                            }
+                        }
+                    } else {
+                        // Fallback to browser download
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `processed_image_${Date.now()}.tif`;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        window.URL.revokeObjectURL(url);
+                        console.log('Export completed successfully');
+                    }
                     
                 } catch (error) {
                     console.error('Export error:', error);
@@ -1740,11 +1769,166 @@ class ProfessionalFilmProcessor {
                 return params;
             }
             
+            async saveSettings() {
+                if (!this.currentImage) {
+                    alert('No image loaded');
+                    return;
+                }
+                
+                const params = this.getParameters();
+                const json = JSON.stringify(params, null, 2);
+                
+                // Generate default filename
+                let defaultName = 'image_settings.json';
+                if (this.originalFilePath) {
+                    const pathParts = this.originalFilePath.replace(/\\/g, '/').split('/');
+                    const filename = pathParts[pathParts.length - 1];
+                    const baseName = filename.substring(0, filename.lastIndexOf('.')) || filename;
+                    defaultName = baseName + '_settings.json';
+                }
+                
+                if (window.electronAPI) {
+                    const savePath = await window.electronAPI.saveFileDialog(defaultName);
+                    if (savePath) {
+                        const buffer = new TextEncoder().encode(json);
+                        const result = await window.electronAPI.writeFile(savePath, buffer);
+                        if (result.success) {
+                            this.updateProcessingStatus('Settings saved');
+                            setTimeout(() => this.updateProcessingStatus(''), 2000);
+                        } else {
+                            alert('Failed to save settings: ' + result.error);
+                        }
+                    }
+                } else {
+                    // Browser fallback - download as file
+                    const blob = new Blob([json], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = defaultName;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                }
+            }
+            
+            async autoLoadSettings(imagePath) {
+                try {
+                    // Generate settings file path (same directory, _settings.json suffix)
+                    const pathParts = imagePath.replace(/\\/g, '/').split('/');
+                    const filename = pathParts[pathParts.length - 1];
+                    const baseName = filename.substring(0, filename.lastIndexOf('.')) || filename;
+                    const directory = pathParts.slice(0, -1).join('/');
+                    const settingsPath = directory + '/' + baseName + '_settings.json';
+                    
+                    // Try to read settings file
+                    const jsonData = await window.electronAPI.readFile(settingsPath);
+                    if (jsonData.success) {
+                        const params = JSON.parse(jsonData.content);
+                        this.applySettings(params);
+                        this.updateProcessingStatus('Settings auto-loaded');
+                        setTimeout(() => this.updateProcessingStatus(''), 2000);
+                        console.log('Auto-loaded settings from:', settingsPath);
+                    }
+                } catch (e) {
+                    // Settings file doesn't exist or couldn't be read - that's fine
+                    console.log('No settings file found (this is normal for new images)');
+                }
+            }
+            
+            async loadSettings() {
+                if (window.electronAPI) {
+                    const result = await window.electronAPI.openFileDialog();
+                    if (result && result.filePath) {
+                        const jsonData = await window.electronAPI.readFile(result.filePath);
+                        if (jsonData.success) {
+                            const params = JSON.parse(jsonData.content);
+                            this.applySettings(params);
+                            this.updateProcessingStatus('Settings loaded');
+                            setTimeout(() => this.updateProcessingStatus(''), 2000);
+                        } else {
+                            alert('Failed to load settings: ' + jsonData.error);
+                        }
+                    }
+                } else {
+                    // Browser fallback - file input
+                    const input = document.createElement('input');
+                    input.type = 'file';
+                    input.accept = '.json';
+                    input.onchange = async (e) => {
+                        const file = e.target.files[0];
+                        if (file) {
+                            const text = await file.text();
+                            const params = JSON.parse(text);
+                            this.applySettings(params);
+                        }
+                    };
+                    input.click();
+                }
+            }
+            
+            applySettings(params) {
+                console.log('Applying settings:', params);
+                
+                // Apply slider values (sliders use id, not data-param)
+                Object.keys(params).forEach(key => {
+                    const slider = document.getElementById(key);
+                    if (slider && slider.classList.contains('pro-slider')) {
+                        slider.value = params[key];
+                        // Update value display
+                        const valueDisplay = document.getElementById(key + '_value');
+                        if (valueDisplay) {
+                            valueDisplay.textContent = parseFloat(params[key]).toFixed(2);
+                        }
+                    }
+                });
+                
+                // Apply film correction toggle
+                if (params.hasOwnProperty('film_correction')) {
+                    const toggle = document.getElementById('filmCorrectionToggle');
+                    if (toggle) {
+                        toggle.checked = params.film_correction === 1.0;
+                    }
+                }
+                
+                // Apply eyedropper points (reconstruct arrays from individual r/g/b values)
+                if (params.black_point_r !== undefined && params.black_point_g !== undefined && params.black_point_b !== undefined) {
+                    this.blackPoint = [params.black_point_r, params.black_point_g, params.black_point_b];
+                }
+                if (params.white_point_r !== undefined && params.white_point_g !== undefined && params.white_point_b !== undefined) {
+                    this.whitePoint = [params.white_point_r, params.white_point_g, params.white_point_b];
+                }
+                if (params.gray_point_r !== undefined && params.gray_point_g !== undefined && params.gray_point_b !== undefined) {
+                    this.grayPoint = [params.gray_point_r, params.gray_point_g, params.gray_point_b];
+                }
+                
+                // Apply curves
+                if (params.curves) {
+                    try {
+                        const curvesData = typeof params.curves === 'string' ? 
+                            JSON.parse(params.curves) : params.curves;
+                        this.curves = curvesData;
+                        
+                        // Redraw curve UI
+                        this.drawCurves();
+                    } catch (e) {
+                        console.error('Failed to parse curves:', e);
+                    }
+                }
+                
+                // Update image with new settings
+                this.updateImage();
+            }
+            
             // Essential missing methods for file upload and image processing
             async handleFileUpload(file) {
                 if (!file) return;
                 
                 this.updateProcessingStatus('Uploading image...');
+                
+                // Store file path if running in Electron
+                if (file.path) {
+                    this.originalFilePath = file.path;
+                }
                 
                 const formData = new FormData();
                 formData.append('image', file);
@@ -1775,6 +1959,11 @@ class ProfessionalFilmProcessor {
                         
                         // Initialize film type dropdown
                         this.initializeFilmTypes();
+                        
+                        // Auto-load settings if they exist
+                        if (file.path && window.electronAPI) {
+                            await this.autoLoadSettings(file.path);
+                        }
                     } else {
                         this.updateProcessingStatus('Upload failed: ' + result.error);
                         console.error('Upload failed:', result.error);
@@ -1845,6 +2034,9 @@ class ProfessionalFilmProcessor {
                         shadows: params.shadows || 0,
                         whites: params.whites || 0,
                         blacks: params.blacks || 0,
+                        red: params.red || 0,
+                        green: params.green || 0,
+                        blue: params.blue || 0,
                         clarity: params.clarity || 0,
                         vibrance: params.vibrance || 0,
                         // Eyedropper points (convert from 0-255 to 0-1)

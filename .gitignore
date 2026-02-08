@@ -30,6 +30,15 @@ venv/
 ENV/
 env/
 
+# Node.js / Electron
+node_modules/
+package-lock.json
+
+# Build/Distribution outputs
+FilmProcessor-Release/
+FilmProcessor-Release.zip
+dist/
+
 # IDE
 .vscode/settings.json
 .idea/

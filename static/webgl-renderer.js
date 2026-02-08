@@ -34,6 +34,9 @@ class WebGLRenderer {
             shadows: 0.0,
             whites: 0.0,
             blacks: 0.0,
+            red: 0.0,
+            green: 0.0,
+            blue: 0.0,
             clarity: 0.0,
             vibrance: 0.0,
             // Eyedropper levels
@@ -152,6 +155,9 @@ class WebGLRenderer {
             uniform float u_shadows;
             uniform float u_whites;
             uniform float u_blacks;
+            uniform float u_red;
+            uniform float u_green;
+            uniform float u_blue;
             uniform float u_clarity;
             uniform float u_vibrance;
             
@@ -326,10 +332,15 @@ class WebGLRenderer {
                 color = applyTemperature(color, u_temperature);
                 color = applyTint(color, u_tint);
                 
-                // 6. Saturation
+                // 6. RGB adjustments
+                color.r += u_red;
+                color.g += u_green;
+                color.b += u_blue;
+                
+                // 7. Saturation
                 color = applySaturation(color, u_saturation);
                 
-                // 7. Custom curves (after other adjustments)
+                // 8. Custom curves (after other adjustments)
                 color = applyCurves(color);
                 
                 // Clamp to valid range
@@ -679,6 +690,9 @@ class WebGLRenderer {
         gl.uniform1f(gl.getUniformLocation(this.program, 'u_shadows'), this.params.shadows || 0.0);
         gl.uniform1f(gl.getUniformLocation(this.program, 'u_whites'), this.params.whites || 0.0);
         gl.uniform1f(gl.getUniformLocation(this.program, 'u_blacks'), this.params.blacks || 0.0);
+        gl.uniform1f(gl.getUniformLocation(this.program, 'u_red'), this.params.red || 0.0);
+        gl.uniform1f(gl.getUniformLocation(this.program, 'u_green'), this.params.green || 0.0);
+        gl.uniform1f(gl.getUniformLocation(this.program, 'u_blue'), this.params.blue || 0.0);
         gl.uniform1f(gl.getUniformLocation(this.program, 'u_clarity'), this.params.clarity || 0.0);
         gl.uniform1f(gl.getUniformLocation(this.program, 'u_vibrance'), this.params.vibrance || 0.0);
         
