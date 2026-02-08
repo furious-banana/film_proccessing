@@ -124,6 +124,13 @@ class ProfessionalFilmProcessor {
                         }
                     });
                     
+                    slider.addEventListener('dblclick', () => {
+                        // Double-click to reset slider to default (0)
+                        slider.value = 0;
+                        this.updateValueDisplay(slider.id, 0);
+                        this.updateImage();
+                    });
+                    
                     slider.addEventListener('mouseup', () => {
                         // Slider released: render high-res once (only for CPU mode)
                         this.isSliderActive = false;
