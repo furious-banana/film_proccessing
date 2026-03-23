@@ -43,6 +43,12 @@ static_dir = os.path.join(os.path.dirname(current_dir), 'static')
 app = Flask(__name__, template_folder=template_dir, static_folder=static_dir, static_url_path='/static')
 processor = None
 
+@app.after_request
+def no_cache(response):
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    return response
+
 @app.route('/')
 def index():
     return render_template('index.html')

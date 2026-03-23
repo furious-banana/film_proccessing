@@ -61,7 +61,16 @@ class ProfessionalFilmProcessor {
                 this.debouncedUpdateImage = this.debounce(() => this.updateImage(), 50);
                 // Track pending debounce timer for cancellation
                 this.pendingProxyTimer = null;
+                console.log('%c=== APP VERSION 47 LOADED ===', 'background:red;color:white;font-size:16px;padding:4px');
                 console.log('Professional Film Processor initialized with proxy rendering');
+                // Unconditional mousemove debug — fires regardless of eyedropperMode
+                let _docMoveCount = 0;
+                document.addEventListener('mousemove', (e) => {
+                    _docMoveCount++;
+                    if (_docMoveCount <= 5 || _docMoveCount % 100 === 0) {
+                        console.log(`[DOC MOUSEMOVE #${_docMoveCount}] eyedropperMode=${this.eyedropperMode} clientX=${e.clientX} clientY=${e.clientY}`);
+                    }
+                });
             }
             
             setupEventListeners() {
@@ -1337,6 +1346,9 @@ class ProfessionalFilmProcessor {
                     this.eyedropperMode = mode;
                     document.getElementById(mode + 'PointBtn').classList.add('active');
                     document.getElementById('previewImage').style.cursor = 'crosshair';
+                    const webglCanvas = document.getElementById('webglCanvas');
+                    if (webglCanvas) webglCanvas.style.cursor = 'crosshair';
+                    console.log('%c>>> eyedropperMode SET to:', 'color:lime;font-weight:bold', mode, '| webglCanvas cursor set');
                     // Loupe will show on mousemove
                 }
             }
@@ -1426,56 +1438,115 @@ class ProfessionalFilmProcessor {
                 const imgElement = canvas && canvas.style.display !== 'none' ? canvas : document.getElementById('previewImage');
                 if (!imgElement) return;
                 
-                // Get mouse position relative to image viewport (displayed size)
+                const normalizedRotation = ((this.rotation % 360) + 360) % 360;
+                const canvasW = imgElement.width;   // native drawing buffer width
+                const canvasH = imgElement.height;  // native drawing buffer height
+
+                // Use getBoundingClientRect on the canvas — this accounts for all parent CSS
+                // transforms (including the wrapper rotation) and gives the exact screen rect.
                 const rect = imgElement.getBoundingClientRect();
-                const mouseXDisplay = e.clientX - rect.left;
-                const mouseYDisplay = e.clientY - rect.top;
-                
-                // Check if mouse is within image bounds
-                if (mouseXDisplay < 0 || mouseYDisplay < 0 || mouseXDisplay >= rect.width || mouseYDisplay >= rect.height) {
+
+                // The canvas center in screen space is the rotation origin.
+                const centerX = rect.left + rect.width / 2;
+                const centerY = rect.top  + rect.height / 2;
+
+                // The canvas's CSS display size BEFORE rotation (from the style set by WebGL renderer
+                // or applyZoom). At 0°/180°: rect matches this. At 90°/270°: rect is the swapped.
+                // We derive these directly from rect based on rotation to avoid offsetWidth unreliability.
+                let cssW, cssH;
+                if (normalizedRotation === 90 || normalizedRotation === 270) {
+                    cssW = rect.height;  // after 90/270° rotation, rect width/height are swapped
+                    cssH = rect.width;
+                } else {
+                    cssW = rect.width;
+                    cssH = rect.height;
+                }
+
+                // Vector from canvas center to mouse in screen space
+                const dx = e.clientX - centerX;
+                const dy = e.clientY - centerY;
+
+                // Inverse-rotate to get back to unrotated canvas CSS space.
+                // Negate the rotation angle to invert the CSS transform
+                const radians = (-this.rotation * Math.PI) / 180;
+                const cosR = Math.cos(radians);
+                const sinR = Math.sin(radians);
+                const inv_x = dx * cosR - dy * sinR;
+                const inv_y = dx * sinR + dy * cosR;
+
+                // Convert from center-relative to canvas-origin-relative
+                const cssMx = inv_x + cssW / 2;
+                const cssMy = inv_y + cssH / 2;
+
+                const isWebGL = imgElement.id === 'webglCanvas';
+
+                // ── DEBUG (throttled: every 30 frames) ──────────────────────────────────
+                if (!this._loupeDebugCount) this._loupeDebugCount = 0;
+                this._loupeDebugCount++;
+                if (this._loupeDebugCount % 30 === 1) {
+                    console.log(
+                        `LOUPE rotation=${this.rotation} normRot=${normalizedRotation}`,
+                        `| mouse=(${e.clientX},${e.clientY})`,
+                        `| center=(${centerX.toFixed(0)},${centerY.toFixed(0)})`,
+                        `| cssW=${cssW.toFixed(0)} cssH=${cssH.toFixed(0)}`,
+                        `| cssMx=${cssMx.toFixed(0)}(${(cssMx/cssW*100).toFixed(0)}%) cssMy=${cssMy.toFixed(0)}(${(cssMy/cssH*100).toFixed(0)}%)`,
+                        `| native=(${Math.round((cssMx/cssW)*canvasW)},${Math.round((cssMy/cssH)*canvasH)})`
+                    );
+                }
+                // ── END DEBUG ───────────────────────────────────────────────────────────
+
+                // Bounds check in unrotated canvas CSS space
+                if (cssMx < 0 || cssMy < 0 || cssMx >= cssW || cssMy >= cssH) {
                     loupe.style.display = 'none';
                     return;
                 }
-                
-                // Scale mouse position from display size to actual canvas size
-                const scaleX = imgElement.width / rect.width;
-                const scaleY = imgElement.height / rect.height;
-                const mouseX = mouseXDisplay * scaleX;
-                const mouseY = mouseYDisplay * scaleY;
+
+                // Scale from CSS display pixels to native canvas pixels
+                const mouseX = (cssMx / cssW) * canvasW;
+                const mouseY = (cssMy / cssH) * canvasH;
                 
                 // Draw magnified view
                 const loupeCanvas = document.getElementById('loupeCanvas');
                 const loupeCtx = loupeCanvas.getContext('2d', { willReadFrequently: true });
                 
-                // Zoom factor (how much to magnify)
                 const loupeSize = 120;
                 const zoomFactor = 6;
-                const sourceSize = loupeSize / zoomFactor; // Size of area to capture from source (in canvas pixels)
+                const sourceSize = loupeSize / zoomFactor; // pixels on canvas to capture
                 
                 // Clear
                 loupeCtx.fillStyle = '#000';
                 loupeCtx.fillRect(0, 0, loupeSize, loupeSize);
                 
-                // Calculate source rectangle on actual canvas
+                // Source rect: centred on the correct canvas pixel
                 const srcX = mouseX - sourceSize / 2;
                 const srcY = mouseY - sourceSize / 2;
                 
-                // Draw magnified portion (from canvas to loupe)
-                loupeCtx.imageSmoothingEnabled = false; // Pixelated zoom for precise pixel viewing
+                loupeCtx.save();
+                loupeCtx.imageSmoothingEnabled = false;
+                
+                // Rotate the loupe patch to match what the user sees on screen
+                if (this.rotation !== 0) {
+                    loupeCtx.translate(loupeSize / 2, loupeSize / 2);
+                    loupeCtx.rotate((this.rotation * Math.PI) / 180);
+                    loupeCtx.translate(-loupeSize / 2, -loupeSize / 2);
+                }
+                
                 try {
                     loupeCtx.drawImage(
                         imgElement,
-                        srcX, srcY, sourceSize, sourceSize,  // Source rect in canvas pixels
-                        0, 0, loupeSize, loupeSize  // Destination (fill loupe)
+                        srcX, srcY, sourceSize, sourceSize,
+                        0, 0, loupeSize, loupeSize
                     );
+                    loupeCtx.restore();
                     
-                    // Get pixel color at exact center of loupe
+                    // Sample the centre pixel — after rotation it shows what the user sees
                     const centerPixel = loupeCtx.getImageData(loupeSize / 2, loupeSize / 2, 1, 1).data;
                     const rgbText = document.getElementById('loupeRGB');
                     if (rgbText) {
                         rgbText.textContent = `RGB: ${centerPixel[0]}, ${centerPixel[1]}, ${centerPixel[2]}`;
                     }
                 } catch (err) {
+                    loupeCtx.restore();
                     console.warn('Could not read pixel data for loupe:', err);
                 }
             }

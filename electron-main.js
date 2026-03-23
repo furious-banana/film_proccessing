@@ -11,8 +11,8 @@ let flaskProcess;
 // Get Python path
 function getPythonPath() {
     if (app.isPackaged) {
-        // In production, use bundled Python
-        return path.join(process.resourcesPath, 'python_runtime', 'python.exe');
+        // In production, use bundled Python from .venv structure
+        return path.join(process.resourcesPath, 'python_runtime', 'Scripts', 'python.exe');
     } else {
         // In development, use system Python
         return 'uv';
@@ -68,6 +68,9 @@ function createWindow() {
         },
         icon: path.join(__dirname, 'icon.ico')
     });
+    
+    // Disable disk cache so static file edits load immediately
+    mainWindow.webContents.session.clearCache();
     
     // Load Flask app
     mainWindow.loadURL('http://localhost:5000');

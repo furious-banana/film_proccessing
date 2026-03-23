@@ -4,6 +4,14 @@ echo Film Processor - Distribution Packager
 echo ========================================
 echo.
 
+REM Kill any running FilmProcessor instances
+echo Checking for running FilmProcessor instances...
+taskkill /F /IM FilmProcessor.exe 2>nul
+taskkill /F /IM electron.exe 2>nul
+echo Waiting for processes to fully terminate...
+timeout /t 5 /nobreak >nul
+echo.
+
 REM Skip electron-builder completely - manual packaging
 echo [1/4] Creating distribution folder...
 if exist "FilmProcessor-Release" rmdir /s /q "FilmProcessor-Release"
@@ -24,14 +32,27 @@ echo [3/4] Copying application files...
 xcopy /E /I /Y "src" "FilmProcessor-Release\resources\app\src"
 xcopy /E /I /Y "static" "FilmProcessor-Release\resources\app\static"
 xcopy /E /I /Y "templates" "FilmProcessor-Release\resources\app\templates"
-xcopy /E /I /Y ".venv" "FilmProcessor-Release\resources\app\.venv"
 copy /Y "pyproject.toml" "FilmProcessor-Release\resources\app\"
 copy /Y "electron-main.js" "FilmProcessor-Release\resources\app\"
 copy /Y "preload.js" "FilmProcessor-Release\resources\app\"
 copy /Y "package.json" "FilmProcessor-Release\resources\app\"
 
+REM Copy Python runtime to correct location
+echo Copying Python runtime...
+xcopy /E /I /Y ".venv" "FilmProcessor-Release\resources\python_runtime"
+echo ✓ Python runtime copied
+
+REM Install production dependencies
+echo Installing dependencies...
+cd "FilmProcessor-Release\resources\app"
+call npm install --production --omit=dev
+cd ..\..\..
+echo ✓ Dependencies installed
+
 REM Rename electron.exe to FilmProcessor.exe
-ren "FilmProcessor-Release\electron.exe" "FilmProcessor.exe"
+cd FilmProcessor-Release
+ren electron.exe FilmProcessor.exe
+cd ..
 echo ✓ Application files copied
 echo.
 
@@ -43,7 +64,7 @@ echo.
 echo INSTALLATION:
 echo 1. Extract this entire folder to your desired location
 echo 2. Double-click FilmProcessor.exe
-echo 3. Wait for the app to start (first launch may take 10-15 seconds)
+echo 3. Wait for the app to start ^(first launch may take 10-15 seconds^)
 echo.
 echo USAGE:
 echo - Click to select an image file
@@ -64,21 +85,35 @@ echo - For support, contact the developer
 echo.
 ) > "FilmProcessor-Release\README.txt"
 
-REM Create ZIP file
+REM Create ZIP file - Skip if files are locked
 echo Creating ZIP file...
-powershell -command "Compress-Archive -Path 'FilmProcessor-Release\*' -DestinationPath 'FilmProcessor-Release.zip' -Force"
-echo ✓ ZIP file created
+if exist "FilmProcessor-Release.zip" del "FilmProcessor-Release.zip" 2>nul
+tar -a -c -f FilmProcessor-Release.zip FilmProcessor-Release 2>nul
+if %errorlevel% neq 0 (
+    echo Warning: Could not create ZIP automatically ^(files may be in use^)
+    echo You can manually ZIP the FilmProcessor-Release folder
+) else (
+    echo ✓ ZIP file created
+)
 echo.
 
 echo ========================================
 echo BUILD COMPLETE!
 echo ========================================
 echo.
-echo Distribution package: FilmProcessor-Release.zip
-echo Size: 
-powershell -command "(Get-Item FilmProcessor-Release.zip).length / 1MB | ForEach-Object { '{0:N2} MB' -f $_ }"
-echo.
-echo Ready to distribute! Send FilmProcessor-Release.zip to users.
-echo They just need to extract and run FilmProcessor.exe
+if exist "FilmProcessor-Release.zip" (
+    echo Distribution package: FilmProcessor-Release.zip
+    echo Size: 
+    powershell -command "(Get-Item FilmProcessor-Release.zip).length / 1MB | ForEach-Object { '{0:N2} MB' -f $_ }"
+    echo.
+    echo Ready to distribute! Send FilmProcessor-Release.zip to users.
+    echo They just need to extract and run FilmProcessor.exe
+) else (
+    echo Distribution folder: FilmProcessor-Release\
+    echo.
+    echo ZIP creation failed. You can:
+    echo 1. Manually ZIP the FilmProcessor-Release folder
+    echo 2. Or distribute the FilmProcessor-Release folder directly
+)
 echo.
 pause
