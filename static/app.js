@@ -61,16 +61,7 @@ class ProfessionalFilmProcessor {
                 this.debouncedUpdateImage = this.debounce(() => this.updateImage(), 50);
                 // Track pending debounce timer for cancellation
                 this.pendingProxyTimer = null;
-                console.log('%c=== APP VERSION 47 LOADED ===', 'background:red;color:white;font-size:16px;padding:4px');
-                console.log('Professional Film Processor initialized with proxy rendering');
-                // Unconditional mousemove debug — fires regardless of eyedropperMode
-                let _docMoveCount = 0;
-                document.addEventListener('mousemove', (e) => {
-                    _docMoveCount++;
-                    if (_docMoveCount <= 5 || _docMoveCount % 100 === 0) {
-                        console.log(`[DOC MOUSEMOVE #${_docMoveCount}] eyedropperMode=${this.eyedropperMode} clientX=${e.clientX} clientY=${e.clientY}`);
-                    }
-                });
+
             }
             
             setupEventListeners() {
@@ -104,7 +95,6 @@ class ProfessionalFilmProcessor {
                 const previewImage = document.getElementById('previewImage');
                 
                 if (previewImage) {
-                    console.log('Attaching mouse handlers to previewImage');
                     previewImage.addEventListener('mousedown', this.handlePreviewMouseDown.bind(this));
                     previewImage.addEventListener('mouseup', this.handlePreviewMouseUp.bind(this));
                     previewImage.addEventListener('mouseleave', this.handlePreviewMouseLeave.bind(this));
@@ -240,39 +230,27 @@ class ProfessionalFilmProcessor {
                             const activeElement = canvasVisible ? canvas : (imgVisible ? img : null);
                             if (!wrapper || !activeElement) return;
                             
-                            console.log('=== ZOOM DEBUG ===');
-                            
                             // Get current scroll position
                             const oldScrollX = imageContainer.scrollLeft;
                             const oldScrollY = imageContainer.scrollTop;
-                            console.log('Before zoom - Scroll:', oldScrollX, oldScrollY);
                             
                             // Get container position
                             const containerRect = imageContainer.getBoundingClientRect();
-                            console.log('Container rect:', containerRect);
                             
                             // Get image position and size BEFORE zoom
                             const oldRect = activeElement.getBoundingClientRect();
-                            console.log('Image rect BEFORE zoom:', oldRect);
-                            console.log('Image size BEFORE:', oldRect.width, 'x', oldRect.height);
-                            
-                            // Mouse position in viewport
-                            console.log('Mouse viewport pos:', e.clientX, e.clientY);
                             
                             // Mouse position relative to container viewport
                             const mouseViewportX = e.clientX - containerRect.left;
                             const mouseViewportY = e.clientY - containerRect.top;
-                            console.log('Mouse in container viewport:', mouseViewportX, mouseViewportY);
                             
                             // Mouse position relative to image viewport
                             const mouseImgViewportX = e.clientX - oldRect.left;
                             const mouseImgViewportY = e.clientY - oldRect.top;
-                            console.log('Mouse in image viewport:', mouseImgViewportX, mouseImgViewportY);
                             
                             // Mouse position within image (0-1 range)
                             const relX = mouseImgViewportX / oldRect.width;
                             const relY = mouseImgViewportY / oldRect.height;
-                            console.log('Mouse relative (0-1):', relX, relY);
                             
                             // Apply zoom
                             const oldZoom = this.zoom;
@@ -282,8 +260,6 @@ class ProfessionalFilmProcessor {
                                 this.zoom = Math.max(this.zoom / 1.1, 0.1);
                             }
                             
-                            console.log('Zoom:', oldZoom, '->', this.zoom);
-                            
                             // Only adjust scroll if zoom actually changed
                             if (this.zoom === oldZoom) return;
                             
@@ -291,34 +267,22 @@ class ProfessionalFilmProcessor {
                             
                             // Wait for layout update
                             requestAnimationFrame(() => {
-                                console.log('--- AFTER ZOOM ---');
-                                
                                 // Get image position and size AFTER zoom  
                                 const newRect = activeElement.getBoundingClientRect();
-                                console.log('Image rect AFTER zoom:', newRect);
-                                console.log('Image size AFTER:', newRect.width, 'x', newRect.height);
                                 
                                 // Get wrapper size (might have grown)
                                 const wrapperRect = wrapper.getBoundingClientRect();
-                                console.log('Wrapper rect AFTER zoom:', wrapperRect);
-                                
-                                console.log('Scroll AFTER applyZoom (before adjustment):', imageContainer.scrollLeft, imageContainer.scrollTop);
                                 
                                 // Where the point is now in the zoomed image (viewport coords)
                                 const newPointViewportX = newRect.left + relX * newRect.width;
                                 const newPointViewportY = newRect.top + relY * newRect.height;
-                                console.log('Point viewport pos AFTER zoom:', newPointViewportX, newPointViewportY);
-                                console.log('Target viewport pos (mouse):', e.clientX, e.clientY);
                                 
                                 // How much to scroll to align point with mouse
                                 const scrollDeltaX = newPointViewportX - e.clientX;
                                 const scrollDeltaY = newPointViewportY - e.clientY;
-                                console.log('Scroll delta needed:', scrollDeltaX, scrollDeltaY);
                                 
                                 imageContainer.scrollLeft += scrollDeltaX;
                                 imageContainer.scrollTop += scrollDeltaY;
-                                
-                                console.log('Final scroll:', imageContainer.scrollLeft, imageContainer.scrollTop);
                             });
                         }
                     }, { passive: false });
@@ -942,6 +906,21 @@ class ProfessionalFilmProcessor {
             }
             
             applyZoom(actualSize = false) {
+                // Save crop area relative position if in crop mode
+                let cropRelative = null;
+                if (this.cropMode) {
+                    const cropArea = document.getElementById('cropArea');
+                    const cropOverlay = document.getElementById('cropOverlay');
+                    if (cropArea && cropOverlay && cropOverlay.offsetWidth > 0) {
+                        cropRelative = {
+                            left: parseFloat(cropArea.style.left) / cropOverlay.offsetWidth,
+                            top: parseFloat(cropArea.style.top) / cropOverlay.offsetHeight,
+                            width: cropArea.offsetWidth / cropOverlay.offsetWidth,
+                            height: cropArea.offsetHeight / cropOverlay.offsetHeight
+                        };
+                    }
+                }
+                
                 const img = document.getElementById('previewImage');
                 const canvas = document.getElementById('webglCanvas');
                 const wrapper = document.getElementById('imageWrapper');
@@ -1016,6 +995,35 @@ class ProfessionalFilmProcessor {
                 // Update zoom display
                 const zoomPercent = actualSize ? 100 : Math.round(this.zoom * 100);
                 document.getElementById('zoomLevel').textContent = zoomPercent + '%';
+                
+                // Restore crop overlay position if in crop mode
+                if (this.cropMode && cropRelative) {
+                    setTimeout(() => {
+                        const cropArea = document.getElementById('cropArea');
+                        const cropOverlay = document.getElementById('cropOverlay');
+                        const webglCanvas = document.getElementById('webglCanvas');
+                        const previewImage = document.getElementById('previewImage');
+                        const img = (webglCanvas && webglCanvas.style.display !== 'none') ? webglCanvas : previewImage;
+                        const container = document.getElementById('imageContainer');
+                        
+                        if (cropArea && cropOverlay && img && container) {
+                            // Reposition overlay to match new image screen position (with scroll offset)
+                            const imgRect = img.getBoundingClientRect();
+                            const containerRect = container.getBoundingClientRect();
+                            
+                            cropOverlay.style.left = (imgRect.left - containerRect.left + container.scrollLeft) + 'px';
+                            cropOverlay.style.top = (imgRect.top - containerRect.top + container.scrollTop) + 'px';
+                            cropOverlay.style.width = imgRect.width + 'px';
+                            cropOverlay.style.height = imgRect.height + 'px';
+                            
+                            // Restore crop area relative position
+                            cropArea.style.left = (cropRelative.left * imgRect.width) + 'px';
+                            cropArea.style.top = (cropRelative.top * imgRect.height) + 'px';
+                            cropArea.style.width = (cropRelative.width * imgRect.width) + 'px';
+                            cropArea.style.height = (cropRelative.height * imgRect.height) + 'px';
+                        }
+                    }, 0);
+                }
             }
             
             rotateLeft() {
@@ -1125,13 +1133,16 @@ class ProfessionalFilmProcessor {
                 let resizeHandle = null;
                 let startX, startY, startLeft, startTop, startWidth, startHeight;
                 
-                // Drag crop area
+                // Handle dragging and resizing
                 cropArea.addEventListener('mousedown', (e) => {
                     if (e.target.classList.contains('crop-handle')) {
                         isResizing = true;
                         resizeHandle = e.target.classList[1]; // nw, ne, sw, se
-                    } else {
+                    } else if (e.target === cropArea || e.target.parentElement === cropArea) {
+                        // Clicking on the crop area itself (not a handle) - drag it
                         isDragging = true;
+                    } else {
+                        return; // Allow passthrough for panning
                     }
                     
                     startX = e.clientX;
@@ -1142,6 +1153,7 @@ class ProfessionalFilmProcessor {
                     startHeight = cropArea.offsetHeight;
                     
                     e.preventDefault();
+                    e.stopPropagation();
                 });
                 
                 document.addEventListener('mousemove', (e) => {
@@ -1150,31 +1162,44 @@ class ProfessionalFilmProcessor {
                     const dx = e.clientX - startX;
                     const dy = e.clientY - startY;
                     
+                    // Get the crop overlay's dimensions (which match the image)
+                    const cropOverlay = document.getElementById('cropOverlay');
+                    const maxWidth = cropOverlay.offsetWidth;
+                    const maxHeight = cropOverlay.offsetHeight;
+                    
                     if (isDragging) {
-                        cropArea.style.left = (startLeft + dx) + 'px';
-                        cropArea.style.top = (startTop + dy) + 'px';
-                    } else if (isResizing) {
-                        const img = document.getElementById('previewImage');
-                        const maxWidth = img.offsetWidth;
-                        const maxHeight = img.offsetHeight;
+                        // Constrain dragging within overlay bounds
+                        const newLeft = Math.max(0, Math.min(startLeft + dx, maxWidth - startWidth));
+                        const newTop = Math.max(0, Math.min(startTop + dy, maxHeight - startHeight));
                         
+                        cropArea.style.left = newLeft + 'px';
+                        cropArea.style.top = newTop + 'px';
+                    } else if (isResizing) {
                         if (resizeHandle.includes('e')) {
-                            cropArea.style.width = Math.min(startWidth + dx, maxWidth - startLeft) + 'px';
+                            const newWidth = Math.max(50, Math.min(startWidth + dx, maxWidth - startLeft));
+                            cropArea.style.width = newWidth + 'px';
                         }
                         if (resizeHandle.includes('w')) {
                             const newWidth = Math.max(50, startWidth - dx);
-                            cropArea.style.left = (startLeft + dx) + 'px';
-                            cropArea.style.width = newWidth + 'px';
+                            const maxLeft = startLeft + startWidth - 50;
+                            const newLeft = Math.max(0, Math.min(startLeft + dx, maxLeft));
+                            cropArea.style.left = newLeft + 'px';
+                            cropArea.style.width = (startLeft + startWidth - newLeft) + 'px';
                         }
                         if (resizeHandle.includes('s')) {
-                            cropArea.style.height = Math.min(startHeight + dy, maxHeight - startTop) + 'px';
+                            const newHeight = Math.max(50, Math.min(startHeight + dy, maxHeight - startTop));
+                            cropArea.style.height = newHeight + 'px';
                         }
                         if (resizeHandle.includes('n')) {
                             const newHeight = Math.max(50, startHeight - dy);
-                            cropArea.style.top = (startTop + dy) + 'px';
-                            cropArea.style.height = newHeight + 'px';
+                            const maxTop = startTop + startHeight - 50;
+                            const newTop = Math.max(0, Math.min(startTop + dy, maxTop));
+                            cropArea.style.top = newTop + 'px';
+                            cropArea.style.height = (startTop + startHeight - newTop) + 'px';
                         }
                     }
+                    
+                    e.preventDefault();
                 });
                 
                 document.addEventListener('mouseup', () => {
@@ -1188,19 +1213,38 @@ class ProfessionalFilmProcessor {
                 this.cropMode = !this.cropMode;
                 const cropOverlay = document.getElementById('cropOverlay');
                 const cropArea = document.getElementById('cropArea');
-                const img = document.getElementById('previewImage');
                 
                 if (this.cropMode) {
+                    // Get the currently visible image element (WebGL canvas or regular image)
+                    const webglCanvas = document.getElementById('webglCanvas');
+                    const previewImage = document.getElementById('previewImage');
+                    const img = (webglCanvas && webglCanvas.style.display !== 'none') ? webglCanvas : previewImage;
+                    
                     // Show crop overlay
                     cropOverlay.style.display = 'block';
                     
-                    // Initialize crop area to center 80% of image
-                    const width = img.offsetWidth * 0.8;
-                    const height = img.offsetHeight * 0.8;
-                    cropArea.style.width = width + 'px';
-                    cropArea.style.height = height + 'px';
-                    cropArea.style.left = (img.offsetWidth - width) / 2 + 'px';
-                    cropArea.style.top = (img.offsetHeight - height) / 2 + 'px';
+                    // Use setTimeout to ensure layout is updated
+                    setTimeout(() => {
+                        const container = document.getElementById('imageContainer');
+                        
+                        // Get the image's actual screen position (accounts for rotation, zoom, etc)
+                        const imgRect = img.getBoundingClientRect();
+                        const containerRect = container.getBoundingClientRect();
+                        
+                        // Position overlay to match image in container's coordinate space (including scroll offset)
+                        cropOverlay.style.left = (imgRect.left - containerRect.left + container.scrollLeft) + 'px';
+                        cropOverlay.style.top = (imgRect.top - containerRect.top + container.scrollTop) + 'px';
+                        cropOverlay.style.width = imgRect.width + 'px';
+                        cropOverlay.style.height = imgRect.height + 'px';
+                        
+                        // Initialize crop area to center 80% of image
+                        const width = imgRect.width * 0.8;
+                        const height = imgRect.height * 0.8;
+                        cropArea.style.width = width + 'px';
+                        cropArea.style.height = height + 'px';
+                        cropArea.style.left = (imgRect.width - width) / 2 + 'px';
+                        cropArea.style.top = (imgRect.height - height) / 2 + 'px';
+                    }, 0);
                     
                     // Show crop buttons
                     document.getElementById('cropBtn').style.display = 'none';
@@ -1212,18 +1256,57 @@ class ProfessionalFilmProcessor {
             }
             
             async applyCrop() {
+                // Save history before cropping
+                this.saveHistory();
+                
                 const cropArea = document.getElementById('cropArea');
-                const img = document.getElementById('previewImage');
+                const cropOverlay = document.getElementById('cropOverlay');
                 
-                const scaleX = img.naturalWidth / img.offsetWidth;
-                const scaleY = img.naturalHeight / img.offsetHeight;
+                // Get the currently visible image element (WebGL canvas or regular image)
+                const webglCanvas = document.getElementById('webglCanvas');
+                const previewImage = document.getElementById('previewImage');
+                const img = (webglCanvas && webglCanvas.style.display !== 'none') ? webglCanvas : previewImage;
                 
+                // Get natural (unrotated) dimensions - these are what backend expects
+                let naturalWidth, naturalHeight;
+                if (webglCanvas && webglCanvas.style.display !== 'none') {
+                    naturalWidth = this.webglRenderer ? this.webglRenderer.imageWidth : webglCanvas.width;
+                    naturalHeight = this.webglRenderer ? this.webglRenderer.imageHeight : webglCanvas.height;
+                } else {
+                    naturalWidth = previewImage.naturalWidth;
+                    naturalHeight = previewImage.naturalHeight;
+                }
+                
+                // Get the image's current screen display size (this matches overlay size)
+                const imgRect = img.getBoundingClientRect();
+                const displayWidth = imgRect.width;
+                const displayHeight = imgRect.height;
+                
+                // Scale factors from displayed size to natural size
+                const scaleX = naturalWidth / displayWidth;
+                const scaleY = naturalHeight / displayHeight;
+                
+                // Crop coordinates from the crop box (relative to overlay)
+                const cropX = parseFloat(cropArea.style.left);
+                const cropY = parseFloat(cropArea.style.top);
+                const cropW = cropArea.offsetWidth;
+                const cropH = cropArea.offsetHeight;
+                
+                // Scale to native resolution
                 const cropData = {
-                    x: parseInt(cropArea.style.left) * scaleX,
-                    y: parseInt(cropArea.style.top) * scaleY,
-                    width: cropArea.offsetWidth * scaleX,
-                    height: cropArea.offsetHeight * scaleY
+                    x: Math.round(cropX * scaleX),
+                    y: Math.round(cropY * scaleY),
+                    width: Math.round(cropW * scaleX),
+                    height: Math.round(cropH * scaleY)
                 };
+                
+                console.log('Crop debug:', {
+                    natural: { width: naturalWidth, height: naturalHeight },
+                    display: { width: displayWidth, height: displayHeight },
+                    scale: { x: scaleX, y: scaleY },
+                    cropBox: { x: cropX, y: cropY, w: cropW, h: cropH },
+                    cropData
+                });
                 
                 try {
                     const response = await fetch('/crop', {
@@ -1237,7 +1320,16 @@ class ProfessionalFilmProcessor {
                     if (data.success) {
                         this.currentImage = data.image;
                         this.originalImage = data.image;
+                        
+                        // Preserve WebGL rendering state
+                        const wasWebGLEnabled = this.webglEnabled;
                         this.displayImage(data.image);
+                        
+                        // If WebGL was enabled, re-enable it after crop
+                        if (wasWebGLEnabled && this.webglRenderer) {
+                            await this.updateImage();
+                        }
+                        
                         this.cancelCrop();
                     }
                 } catch (error) {
@@ -1348,7 +1440,6 @@ class ProfessionalFilmProcessor {
                     document.getElementById('previewImage').style.cursor = 'crosshair';
                     const webglCanvas = document.getElementById('webglCanvas');
                     if (webglCanvas) webglCanvas.style.cursor = 'crosshair';
-                    console.log('%c>>> eyedropperMode SET to:', 'color:lime;font-weight:bold', mode, '| webglCanvas cursor set');
                     // Loupe will show on mousemove
                 }
             }
@@ -1356,7 +1447,6 @@ class ProfessionalFilmProcessor {
             attachCanvasEventListeners() {
                 const canvas = document.getElementById('webglCanvas');
                 if (canvas) {
-                    console.log('Attaching mouse handlers to WebGL canvas');
                     canvas.addEventListener('mousedown', this.handlePreviewMouseDown.bind(this));
                     canvas.addEventListener('mouseup', this.handlePreviewMouseUp.bind(this));
                     canvas.addEventListener('mouseleave', this.handlePreviewMouseLeave.bind(this));
@@ -1367,14 +1457,12 @@ class ProfessionalFilmProcessor {
             }
             
             handlePreviewMouseDown(e) {
-                console.log('handlePreviewMouseDown called, eyedropperMode:', this.eyedropperMode, 'webglEnabled:', this.webglEnabled);
                 if (this.eyedropperMode) {
                     this.handleEyedropperClick(e);
                 } else {
                     // Show original (before) - just set flag to bypass all adjustments
                     this.showingOriginal = true;
                     if (this.webglEnabled && this.webglRenderer) {
-                        console.log('Showing original (bypassing all adjustments)');
                         this.webglRenderer.updateParams({
                             showOriginal: true
                         });
@@ -1478,23 +1566,6 @@ class ProfessionalFilmProcessor {
                 const cssMx = inv_x + cssW / 2;
                 const cssMy = inv_y + cssH / 2;
 
-                const isWebGL = imgElement.id === 'webglCanvas';
-
-                // ── DEBUG (throttled: every 30 frames) ──────────────────────────────────
-                if (!this._loupeDebugCount) this._loupeDebugCount = 0;
-                this._loupeDebugCount++;
-                if (this._loupeDebugCount % 30 === 1) {
-                    console.log(
-                        `LOUPE rotation=${this.rotation} normRot=${normalizedRotation}`,
-                        `| mouse=(${e.clientX},${e.clientY})`,
-                        `| center=(${centerX.toFixed(0)},${centerY.toFixed(0)})`,
-                        `| cssW=${cssW.toFixed(0)} cssH=${cssH.toFixed(0)}`,
-                        `| cssMx=${cssMx.toFixed(0)}(${(cssMx/cssW*100).toFixed(0)}%) cssMy=${cssMy.toFixed(0)}(${(cssMy/cssH*100).toFixed(0)}%)`,
-                        `| native=(${Math.round((cssMx/cssW)*canvasW)},${Math.round((cssMy/cssH)*canvasH)})`
-                    );
-                }
-                // ── END DEBUG ───────────────────────────────────────────────────────────
-
                 // Bounds check in unrotated canvas CSS space
                 if (cssMx < 0 || cssMy < 0 || cssMx >= cssW || cssMy >= cssH) {
                     loupe.style.display = 'none';
@@ -1552,12 +1623,10 @@ class ProfessionalFilmProcessor {
             }
             
             async handleEyedropperClick(event) {
-                console.log('handleEyedropperClick called, mode:', this.eyedropperMode);
                 if (!this.eyedropperMode || !this.currentImage) return;
                 
                 // Don't process if already processing eyedropper (prevents spam clicks)
                 if (this.isProcessing) {
-                    console.log('Already processing, ignoring click');
                     return;
                 }
                 
@@ -1567,7 +1636,6 @@ class ProfessionalFilmProcessor {
                 // Get pixel color from the loupe (more accurate than trying to read from canvas)
                 const loupeCanvas = document.getElementById('loupeCanvas');
                 if (!loupeCanvas) {
-                    console.warn('Loupe canvas not found');
                     return;
                 }
                 
@@ -1579,18 +1647,13 @@ class ProfessionalFilmProcessor {
                     const centerPixel = loupeCtx.getImageData(loupeSize / 2, loupeSize / 2, 1, 1).data;
                     const rgb = [centerPixel[0], centerPixel[1], centerPixel[2]];
                     
-                    console.log('Eyedropper sampled RGB:', rgb);
-                    
                     // Store the point
                     if (this.eyedropperMode === 'black') {
                         this.blackPoint = rgb;
-                        console.log('Black point set to:', rgb);
                     } else if (this.eyedropperMode === 'white') {
                         this.whitePoint = rgb;
-                        console.log('White point set to:', rgb);
                     } else if (this.eyedropperMode === 'gray') {
                         this.grayPoint = rgb;
-                        console.log('Gray point set to:', rgb);
                     }
                     
                     // Keep eyedropper mode active for multiple clicks

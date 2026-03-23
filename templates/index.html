@@ -289,13 +289,14 @@
                     <canvas id="webglCanvas" class="image-canvas" style="display: none;"></canvas>
                     <!-- Fallback JPEG for initial display -->
                     <img id="previewImage" class="image-canvas" style="display: none;">
-                    <div id="cropOverlay" class="crop-overlay" style="display: none;">
-                        <div class="crop-area" id="cropArea">
-                            <div class="crop-handle nw"></div>
-                            <div class="crop-handle ne"></div>
-                            <div class="crop-handle sw"></div>
-                            <div class="crop-handle se"></div>
-                        </div>
+                </div>
+                <!-- Crop overlay outside rotated wrapper - positioned over actual image -->
+                <div id="cropOverlay" class="crop-overlay" style="display: none;">
+                    <div class="crop-area" id="cropArea">
+                        <div class="crop-handle nw"></div>
+                        <div class="crop-handle ne"></div>
+                        <div class="crop-handle sw"></div>
+                        <div class="crop-handle se"></div>
                     </div>
                 </div>
             </div>
