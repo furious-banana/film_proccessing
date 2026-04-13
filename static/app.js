@@ -462,11 +462,11 @@ class ProfessionalFilmProcessor {
             
             endCurveEdit() {
                 const wasDragging = this.isDragging;
-                console.log('endCurveEdit called, wasDragging:', wasDragging);
+
                 
                 // Prevent duplicate calls from mouseup+mouseleave
                 if (!this.isDragging && !wasDragging) {
-                    console.log('Already ended, ignoring duplicate call');
+
                     return;
                 }
                 
@@ -477,7 +477,7 @@ class ProfessionalFilmProcessor {
                 
                 // Update image if we were dragging (curve was modified)
                 if (wasDragging) {
-                    console.log('Curve was modified, calling updateImage()');
+
                     this.updateImage();
                 }
             }
@@ -867,20 +867,6 @@ class ProfessionalFilmProcessor {
                 }
             }
             
-            debugParams() {
-                const params = this.getParameters();
-                const colorParams = Object.keys(params).filter(k => 
-                    k.includes('shadows') || k.includes('midtones') || k.includes('highlights')
-                );
-                
-                console.log('=== DEBUG PARAMETERS ===');
-                console.log(`Total parameters: ${Object.keys(params).length}`);
-                console.log('Color parameters:');
-                colorParams.forEach(key => {
-                    console.log(`  ${key}: ${params[key]}`);
-                });
-            }
-            
             zoomIn() {
                 this.zoom = Math.min(this.zoom * 1.2, 20);
                 this.applyZoom();
@@ -996,7 +982,7 @@ class ProfessionalFilmProcessor {
                 const zoomPercent = actualSize ? 100 : Math.round(this.zoom * 100);
                 document.getElementById('zoomLevel').textContent = zoomPercent + '%';
                 
-                // Restore crop overlay position if in crop mode
+                // Reposition crop overlay if in crop mode
                 if (this.cropMode && cropRelative) {
                     setTimeout(() => {
                         const cropArea = document.getElementById('cropArea');
@@ -1007,20 +993,23 @@ class ProfessionalFilmProcessor {
                         const container = document.getElementById('imageContainer');
                         
                         if (cropArea && cropOverlay && img && container) {
-                            // Reposition overlay to match new image screen position (with scroll offset)
+                            // Reposition overlay to match new image position
                             const imgRect = img.getBoundingClientRect();
                             const containerRect = container.getBoundingClientRect();
                             
-                            cropOverlay.style.left = (imgRect.left - containerRect.left + container.scrollLeft) + 'px';
-                            cropOverlay.style.top = (imgRect.top - containerRect.top + container.scrollTop) + 'px';
-                            cropOverlay.style.width = imgRect.width + 'px';
-                            cropOverlay.style.height = imgRect.height + 'px';
+                            const left = imgRect.left - containerRect.left + container.scrollLeft;
+                            const top = imgRect.top - containerRect.top + container.scrollTop;
                             
-                            // Restore crop area relative position
-                            cropArea.style.left = (cropRelative.left * imgRect.width) + 'px';
-                            cropArea.style.top = (cropRelative.top * imgRect.height) + 'px';
-                            cropArea.style.width = (cropRelative.width * imgRect.width) + 'px';
-                            cropArea.style.height = (cropRelative.height * imgRect.height) + 'px';
+                            cropOverlay.style.left = left + 'px';
+                            cropOverlay.style.top = top + 'px';
+                            cropOverlay.style.width = img.offsetWidth + 'px';
+                            cropOverlay.style.height = img.offsetHeight + 'px';
+                            
+                            // Restore crop area position
+                            cropArea.style.left = (cropRelative.left * img.offsetWidth) + 'px';
+                            cropArea.style.top = (cropRelative.top * img.offsetHeight) + 'px';
+                            cropArea.style.width = (cropRelative.width * img.offsetWidth) + 'px';
+                            cropArea.style.height = (cropRelative.height * img.offsetHeight) + 'px';
                         }
                     }, 0);
                 }
@@ -1215,38 +1204,36 @@ class ProfessionalFilmProcessor {
                 const cropArea = document.getElementById('cropArea');
                 
                 if (this.cropMode) {
-                    // Get the currently visible image element (WebGL canvas or regular image)
                     const webglCanvas = document.getElementById('webglCanvas');
                     const previewImage = document.getElementById('previewImage');
                     const img = (webglCanvas && webglCanvas.style.display !== 'none') ? webglCanvas : previewImage;
+                    const container = document.getElementById('imageContainer');
                     
-                    // Show crop overlay
                     cropOverlay.style.display = 'block';
                     
-                    // Use setTimeout to ensure layout is updated
                     setTimeout(() => {
-                        const container = document.getElementById('imageContainer');
-                        
-                        // Get the image's actual screen position (accounts for rotation, zoom, etc)
+                        // Get where the image actually is on screen
                         const imgRect = img.getBoundingClientRect();
                         const containerRect = container.getBoundingClientRect();
                         
-                        // Position overlay to match image in container's coordinate space (including scroll offset)
-                        cropOverlay.style.left = (imgRect.left - containerRect.left + container.scrollLeft) + 'px';
-                        cropOverlay.style.top = (imgRect.top - containerRect.top + container.scrollTop) + 'px';
-                        cropOverlay.style.width = imgRect.width + 'px';
-                        cropOverlay.style.height = imgRect.height + 'px';
+                        // Position overlay to exactly match the image
+                        const left = imgRect.left - containerRect.left + container.scrollLeft;
+                        const top = imgRect.top - containerRect.top + container.scrollTop;
                         
-                        // Initialize crop area to center 80% of image
-                        const width = imgRect.width * 0.8;
-                        const height = imgRect.height * 0.8;
-                        cropArea.style.width = width + 'px';
-                        cropArea.style.height = height + 'px';
-                        cropArea.style.left = (imgRect.width - width) / 2 + 'px';
-                        cropArea.style.top = (imgRect.height - height) / 2 + 'px';
+                        cropOverlay.style.left = left + 'px';
+                        cropOverlay.style.top = top + 'px';
+                        cropOverlay.style.width = img.offsetWidth + 'px';
+                        cropOverlay.style.height = img.offsetHeight + 'px';
+                        
+                        // Default crop area: 80% centered
+                        const w = img.offsetWidth * 0.8;
+                        const h = img.offsetHeight * 0.8;
+                        cropArea.style.left = (img.offsetWidth - w) / 2 + 'px';
+                        cropArea.style.top = (img.offsetHeight - h) / 2 + 'px';
+                        cropArea.style.width = w + 'px';
+                        cropArea.style.height = h + 'px';
                     }, 0);
                     
-                    // Show crop buttons
                     document.getElementById('cropBtn').style.display = 'none';
                     document.getElementById('applyCropBtn').style.display = 'block';
                     document.getElementById('cancelCropBtn').style.display = 'block';
@@ -1256,57 +1243,85 @@ class ProfessionalFilmProcessor {
             }
             
             async applyCrop() {
-                // Save history before cropping
                 this.saveHistory();
                 
                 const cropArea = document.getElementById('cropArea');
                 const cropOverlay = document.getElementById('cropOverlay');
-                
-                // Get the currently visible image element (WebGL canvas or regular image)
                 const webglCanvas = document.getElementById('webglCanvas');
                 const previewImage = document.getElementById('previewImage');
                 const img = (webglCanvas && webglCanvas.style.display !== 'none') ? webglCanvas : previewImage;
+                if (!cropArea || !cropOverlay || !img) return;
                 
-                // Get natural (unrotated) dimensions - these are what backend expects
-                let naturalWidth, naturalHeight;
-                if (webglCanvas && webglCanvas.style.display !== 'none') {
-                    naturalWidth = this.webglRenderer ? this.webglRenderer.imageWidth : webglCanvas.width;
-                    naturalHeight = this.webglRenderer ? this.webglRenderer.imageHeight : webglCanvas.height;
-                } else {
-                    naturalWidth = previewImage.naturalWidth;
-                    naturalHeight = previewImage.naturalHeight;
-                }
-                
-                // Get the image's current screen display size (this matches overlay size)
+                // Get natural image dimensions
+                const naturalWidth = (webglCanvas && webglCanvas.style.display !== 'none') 
+                    ? (this.webglRenderer ? this.webglRenderer.imageWidth : webglCanvas.width)
+                    : previewImage.naturalWidth;
+                const naturalHeight = (webglCanvas && webglCanvas.style.display !== 'none')
+                    ? (this.webglRenderer ? this.webglRenderer.imageHeight : webglCanvas.height)
+                    : previewImage.naturalHeight;
+
                 const imgRect = img.getBoundingClientRect();
-                const displayWidth = imgRect.width;
-                const displayHeight = imgRect.height;
-                
-                // Scale factors from displayed size to natural size
-                const scaleX = naturalWidth / displayWidth;
-                const scaleY = naturalHeight / displayHeight;
-                
-                // Crop coordinates from the crop box (relative to overlay)
-                const cropX = parseFloat(cropArea.style.left);
-                const cropY = parseFloat(cropArea.style.top);
-                const cropW = cropArea.offsetWidth;
-                const cropH = cropArea.offsetHeight;
-                
-                // Scale to native resolution
+                const cropRect = cropArea.getBoundingClientRect();
+                const normalizedRotation = ((this.rotation % 360) + 360) % 360;
+
+                // Convert screen-space points into unrotated image CSS-space coordinates.
+                const screenToImageCss = (screenX, screenY) => {
+                    const centerX = imgRect.left + imgRect.width / 2;
+                    const centerY = imgRect.top + imgRect.height / 2;
+
+                    let cssW, cssH;
+                    if (normalizedRotation === 90 || normalizedRotation === 270) {
+                        cssW = imgRect.height;
+                        cssH = imgRect.width;
+                    } else {
+                        cssW = imgRect.width;
+                        cssH = imgRect.height;
+                    }
+
+                    const dx = screenX - centerX;
+                    const dy = screenY - centerY;
+
+                    const radians = (-this.rotation * Math.PI) / 180;
+                    const cosR = Math.cos(radians);
+                    const sinR = Math.sin(radians);
+                    const invX = dx * cosR - dy * sinR;
+                    const invY = dx * sinR + dy * cosR;
+
+                    return {
+                        x: invX + cssW / 2,
+                        y: invY + cssH / 2,
+                        cssW,
+                        cssH
+                    };
+                };
+
+                const corners = [
+                    screenToImageCss(cropRect.left, cropRect.top),
+                    screenToImageCss(cropRect.right, cropRect.top),
+                    screenToImageCss(cropRect.left, cropRect.bottom),
+                    screenToImageCss(cropRect.right, cropRect.bottom)
+                ];
+
+                const cssW = corners[0].cssW;
+                const cssH = corners[0].cssH;
+                const xs = corners.map(p => Math.max(0, Math.min(cssW, p.x)));
+                const ys = corners.map(p => Math.max(0, Math.min(cssH, p.y)));
+
+                const cropX = Math.min(...xs);
+                const cropY = Math.min(...ys);
+                const cropW = Math.max(1, Math.max(...xs) - cropX);
+                const cropH = Math.max(1, Math.max(...ys) - cropY);
+
+                const scaleX = naturalWidth / cssW;
+                const scaleY = naturalHeight / cssH;
+
+                // Scale to natural resolution.
                 const cropData = {
                     x: Math.round(cropX * scaleX),
                     y: Math.round(cropY * scaleY),
                     width: Math.round(cropW * scaleX),
                     height: Math.round(cropH * scaleY)
                 };
-                
-                console.log('Crop debug:', {
-                    natural: { width: naturalWidth, height: naturalHeight },
-                    display: { width: displayWidth, height: displayHeight },
-                    scale: { x: scaleX, y: scaleY },
-                    cropBox: { x: cropX, y: cropY, w: cropW, h: cropH },
-                    cropData
-                });
                 
                 try {
                     const response = await fetch('/crop', {
@@ -1321,11 +1336,9 @@ class ProfessionalFilmProcessor {
                         this.currentImage = data.image;
                         this.originalImage = data.image;
                         
-                        // Preserve WebGL rendering state
                         const wasWebGLEnabled = this.webglEnabled;
                         this.displayImage(data.image);
                         
-                        // If WebGL was enabled, re-enable it after crop
                         if (wasWebGLEnabled && this.webglRenderer) {
                             await this.updateImage();
                         }
@@ -1715,8 +1728,7 @@ class ProfessionalFilmProcessor {
                             this.updateProcessingStatus(`AI correction applied with ${(result.confidence * 100).toFixed(1)}% confidence`);
                         }
 
-                        console.log('AI Analysis:', result.analysis);
-                        console.log('AI Suggestions:', result.suggestions);
+
                     } else {
                         this.updateProcessingStatus(`AI correction failed: ${result.error}`);
                         alert(`AI correction failed: ${result.error}`);
@@ -1842,7 +1854,6 @@ class ProfessionalFilmProcessor {
                 
                 // Show in a modal or alert
                 alert(analysisText);
-                console.log('Full AI Analysis:', result);
             }
             
             // Professional debouncing for smooth performance
@@ -2008,8 +2019,6 @@ class ProfessionalFilmProcessor {
             }
             
             applySettings(params) {
-                console.log('Applying settings:', params);
-                
                 // Apply slider values (sliders use id, not data-param)
                 Object.keys(params).forEach(key => {
                     const slider = document.getElementById(key);
@@ -2161,8 +2170,6 @@ class ProfessionalFilmProcessor {
                     // Get current parameters
                     const params = this.getParameters();
                     
-                    console.log('WebGL update with params:', params);
-                    
                     // Update WebGL shader uniforms (instant, no server round-trip!)
                     this.webglRenderer.updateParams({
                         exposure: params.exposure || 0,
@@ -2225,7 +2232,7 @@ class ProfessionalFilmProcessor {
                     this.currentRequest.abort();  // Kill in-progress request
                 }
                 if (this.isProcessing) {
-                    console.log('Aborting old request, processing latest position');
+                    this.currentRequest.abort();
                 }
                 
                 // Create new AbortController for this request
@@ -2627,7 +2634,6 @@ function switchImageMode(mode) {
         processor.debouncedUpdateImage();
     }
     
-    console.log('Switched to ' + mode + ' mode');
 }
 
 // Initialize with negative mode on page load

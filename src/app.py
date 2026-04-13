@@ -154,16 +154,6 @@ def process_image():
             h, w = processor.cached_stages['initial'].shape[:2]
             logger.info(f"Using FULL-RES: {w}x{h}")
         
-        # DEBUG: Log incoming parameters
-        logger.info(f"DEBUG: Received parameters: {list(params.keys())}")
-        color_params = {k: v for k, v in params.items() if 'shadows' in k or 'midtones' in k or 'highlights' in k}
-        if color_params:
-            logger.info(f"DEBUG: Color grading parameters: {color_params}")
-        
-        advanced_params = {k: v for k, v in params.items() if 'film_profile' in k or 'orange_mask' in k or 'base_fog' in k}
-        if advanced_params:
-            logger.info(f"DEBUG: Advanced film parameters: {advanced_params}")
-        
         show_analysis = params.pop('show_analysis', False)
         
         # Extract all parameters with defaults
@@ -378,9 +368,29 @@ def crop_image():
         
         # Get the current processed image
         img = processor.get_processed_image()
+        img_height, img_width = img.shape[:2]
+        
+        # The frontend computes crop coordinates based on the display dimensions
+        # from /get_raw_image, which may be downsampled. Scale coordinates to
+        # match the full-resolution processed image.
+        display_h, display_w = img_height, img_width
+        initial = processor.cached_stages.get('initial')
+        if initial is not None:
+            full_h, full_w = initial.shape[:2]
+            max_display_size = 5000
+            if max(full_h, full_w) > max_display_size:
+                scale = max_display_size / max(full_h, full_w)
+                display_w = int(full_w * scale)
+                display_h = int(full_h * scale)
+                # Scale crop coordinates from display space to full resolution
+                scale_x = img_width / display_w
+                scale_y = img_height / display_h
+                x = int(x * scale_x)
+                y = int(y * scale_y)
+                width = int(width * scale_x)
+                height = int(height * scale_y)
         
         # Validate crop bounds
-        img_height, img_width = img.shape[:2]
         x = max(0, min(x, img_width - 1))
         y = max(0, min(y, img_height - 1))
         width = min(width, img_width - x)
@@ -390,8 +400,11 @@ def crop_image():
         cropped = img[y:y+height, x:x+width]
         
         # Update processor with cropped image
-        processor.original = cropped
-        processor.original_image = cropped
+        # Convert uint8 (0-255) back to float32 (0.0-1.0) since the processor
+        # and _initialize_cache expect float32 data
+        cropped_float = cropped.astype(np.float32) / 255.0
+        processor.original = cropped_float
+        processor.original_image = cropped_float
         processor._initialize_cache()
         
         # Return cropped image as PNG for lossless quality
@@ -605,13 +618,6 @@ def export_image():
         
         logger.info(f"Preparing export: shape={img_uint16.shape} (H×W×C), dtype={img_uint16.dtype}, range=[{img_uint16.min()}, {img_uint16.max()}]")
         
-        # DEBUG: Check if dimensions match original
-        if hasattr(processor, 'original_uint16_data') and processor.original_uint16_data is not None:
-            orig_shape = processor.original_uint16_data.shape
-            logger.info(f"Original data shape: {orig_shape}, Export shape: {img_uint16.shape}")
-            if orig_shape != img_uint16.shape:
-                logger.error(f"SHAPE MISMATCH! Original: {orig_shape}, Export: {img_uint16.shape}")
-        
         # Save as 16-bit TIFF to BytesIO
         output = io.BytesIO()
         
@@ -698,24 +704,6 @@ def upload_file():
                 img_array = tifffile.imread(io.BytesIO(image_bytes))
                 logger.info(f"Loaded with tifffile: shape={img_array.shape}, dtype={img_array.dtype}, range=[{img_array.min()}, {img_array.max()}]")
                 
-                # DEBUG: Sample multiple regions to understand dynamic range
-                h, w = img_array.shape[0], img_array.shape[1]
-                samples = {
-                    'top-left': img_array[h//4, w//4, :],
-                    'top-right': img_array[h//4, 3*w//4, :],
-                    'center': img_array[h//2, w//2, :],
-                    'bottom-left': img_array[3*h//4, w//4, :],
-                    'bottom-right': img_array[3*h//4, 3*w//4, :],
-                }
-                logger.info("DEBUG: Sample pixels across image (uint16):")
-                for location, pixel in samples.items():
-                    logger.info(f"  {location}: {pixel} (normalized: [{pixel[0]/65535:.4f}, {pixel[1]/65535:.4f}, {pixel[2]/65535:.4f}])")
-                
-                # Show histogram of values
-                hist, bins = np.histogram(img_array.flatten(), bins=10, range=(0, 65535))
-                logger.info(f"DEBUG: Value distribution: {hist}")
-                logger.info(f"DEBUG: 10th percentile: {np.percentile(img_array, 10):.0f}, 50th: {np.percentile(img_array, 50):.0f}, 90th: {np.percentile(img_array, 90):.0f}")
-                
                 # ALWAYS store original uint16 data BEFORE any modifications (for lossless export)
                 # But we need to store it AFTER color space conversion since adjustments are in sRGB space
                 original_uint16_before_conversion = img_array.copy()
@@ -778,20 +766,6 @@ def upload_file():
                 # For non-TIFF formats, use PIL
                 img_array = np.array(pil_image)
                 logger.info(f"Loaded with PIL: shape={img_array.shape}, dtype={img_array.dtype}, range=[{img_array.min()}, {img_array.max()}]")
-                
-                # DEBUG: Sample multiple regions for PNG too
-                if img_array.ndim == 3:
-                    h, w = img_array.shape[0], img_array.shape[1]
-                    samples = {
-                        'top-left': img_array[h//4, w//4, :] if img_array.shape[2] >= 3 else img_array[h//4, w//4],
-                        'center': img_array[h//2, w//2, :] if img_array.shape[2] >= 3 else img_array[h//2, w//2],
-                        'bottom-right': img_array[3*h//4, 3*w//4, :] if img_array.shape[2] >= 3 else img_array[3*h//4, 3*w//4],
-                    }
-                    logger.info(f"DEBUG: PNG sample pixels (uint8):")
-                    for location, pixel in samples.items():
-                        if hasattr(pixel, '__len__') and len(pixel) >= 3:
-                            logger.info(f"  {location}: {pixel[:3]} (normalized: [{pixel[0]/255:.4f}, {pixel[1]/255:.4f}, {pixel[2]/255:.4f}])")
-                    logger.info(f"DEBUG: PNG 10th percentile: {np.percentile(img_array, 10):.0f}, 50th: {np.percentile(img_array, 50):.0f}, 90th: {np.percentile(img_array, 90):.0f}")
             
             # NO RESIZING - preserve full resolution for maximum quality
             # Film scans can be 6000-10000px and we want every pixel

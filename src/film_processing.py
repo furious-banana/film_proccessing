@@ -232,10 +232,6 @@ class FilmProcessor:
             # Apply tone curves LAST (after all tone adjustments)
             processed = self._apply_curves(processed)
             
-            # DEBUG: Check final processed values
-            sample_final = processed[processed.shape[0]//2:processed.shape[0]//2+3, processed.shape[1]//2:processed.shape[1]//2+3, :]
-            logger.info(f"DEBUG: Final processed values (gamma-encoded): \n{sample_final[0, 0, :]}")
-            
             # Use appropriate array library
             xp = cp if GPU_AVAILABLE else np
             
@@ -251,8 +247,6 @@ class FilmProcessor:
                 logger.info("Transferred result from GPU to CPU (pinned memory)")
             else:
                 processed_cpu_array = processed
-            
-            logger.info(f"DEBUG: Final 8-bit values: {processed_cpu_array[processed_cpu_array.shape[0]//2, processed_cpu_array.shape[1]//2, :]}")
             
             return processed_cpu_array
             
