@@ -366,29 +366,29 @@ def crop_image():
         width = int(data.get('width', 100))
         height = int(data.get('height', 100))
         
-        # Get the current processed image
-        img = processor.get_processed_image()
+        # Crop the raw original image (not the processed one) so that
+        # adjustments can be re-applied non-destructively after cropping.
+        img = processor.original
+        if hasattr(img, 'get'):
+            img = img.get()  # GPU (CuPy) to CPU (NumPy)
+        
         img_height, img_width = img.shape[:2]
         
         # The frontend computes crop coordinates based on the display dimensions
         # from /get_raw_image, which may be downsampled. Scale coordinates to
-        # match the full-resolution processed image.
-        display_h, display_w = img_height, img_width
-        initial = processor.cached_stages.get('initial')
-        if initial is not None:
-            full_h, full_w = initial.shape[:2]
-            max_display_size = 5000
-            if max(full_h, full_w) > max_display_size:
-                scale = max_display_size / max(full_h, full_w)
-                display_w = int(full_w * scale)
-                display_h = int(full_h * scale)
-                # Scale crop coordinates from display space to full resolution
-                scale_x = img_width / display_w
-                scale_y = img_height / display_h
-                x = int(x * scale_x)
-                y = int(y * scale_y)
-                width = int(width * scale_x)
-                height = int(height * scale_y)
+        # match the full-resolution original image.
+        max_display_size = 5000
+        if max(img_height, img_width) > max_display_size:
+            scale = max_display_size / max(img_height, img_width)
+            display_w = int(img_width * scale)
+            display_h = int(img_height * scale)
+            # Scale crop coordinates from display space to full resolution
+            scale_x = img_width / display_w
+            scale_y = img_height / display_h
+            x = int(x * scale_x)
+            y = int(y * scale_y)
+            width = int(width * scale_x)
+            height = int(height * scale_y)
         
         # Validate crop bounds
         x = max(0, min(x, img_width - 1))
@@ -396,20 +396,23 @@ def crop_image():
         width = min(width, img_width - x)
         height = min(height, img_height - y)
         
-        # Crop the image
-        cropped = img[y:y+height, x:x+width]
+        # Crop the raw original (float32 [0,1])
+        cropped = img[y:y+height, x:x+width].copy()
         
-        # Update processor with cropped image
-        # Convert uint8 (0-255) back to float32 (0.0-1.0) since the processor
-        # and _initialize_cache expect float32 data
-        cropped_float = cropped.astype(np.float32) / 255.0
-        processor.original = cropped_float
-        processor.original_image = cropped_float
+        # Update processor with cropped raw original
+        processor.original = cropped
+        processor.original_image = cropped
+        processor.original_cpu = cropped
         processor._initialize_cache()
         
-        # Return cropped image as PNG for lossless quality
+        # Return the cropped initial stage (with negative inversion if applicable)
+        initial = processor.cached_stages.get('initial')
+        if hasattr(initial, 'get'):
+            initial = initial.get()  # GPU to CPU
+        display_img = (np.clip(initial, 0, 1) * 255).astype(np.uint8)
+        
         img_byte_arr = io.BytesIO()
-        Image.fromarray(cropped).save(img_byte_arr, format='PNG', compress_level=6)
+        Image.fromarray(display_img).save(img_byte_arr, format='PNG', compress_level=6)
         img_byte_arr = img_byte_arr.getvalue()
         
         return jsonify({

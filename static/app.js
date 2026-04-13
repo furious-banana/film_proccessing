@@ -1336,11 +1336,13 @@ class ProfessionalFilmProcessor {
                         this.currentImage = data.image;
                         this.originalImage = data.image;
                         
-                        const wasWebGLEnabled = this.webglEnabled;
-                        this.displayImage(data.image);
-                        
-                        if (wasWebGLEnabled && this.webglRenderer) {
+                        if (this.webglEnabled && this.webglRenderer) {
+                            // Reload WebGL texture with the cropped original
+                            // so adjustments are preserved and re-applied
+                            await this.webglRenderer.loadImage('/get_raw_image');
                             await this.updateImage();
+                        } else {
+                            this.displayImage(data.image);
                         }
                         
                         this.cancelCrop();
