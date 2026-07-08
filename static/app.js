@@ -28,6 +28,8 @@ class ProfessionalFilmProcessor {
         this.zoom = 1.0;
         this.rotation = 0;
         this.cropMode = false;
+        this._cropWatchRaf = null;    // overlay-follows-image watcher handle
+        this._cropScreenLock = null;  // screen rect the crop box is pinned to
 
         // WebGL GPU rendering (client-side, instant updates)
         this.webglRenderer = null;
@@ -561,12 +563,9 @@ class ProfessionalFilmProcessor {
         this.applyZoom(true); // actual 1:1 pixels
     }
 
-    applyZoom(actualSize = false, cropAnchor = 'relative') {
-        // Remember the crop area's position so it survives the resize:
-        // 'relative' keeps it glued to the image content (zooming),
-        // 'screen' keeps it fixed on screen (straightening behind it).
+    applyZoom(actualSize = false) {
+        // Remember crop area's relative position so it survives the resize
         let cropRelative = null;
-        let cropScreenRect = null;
         if (this.cropMode) {
             const cropArea = document.getElementById('cropArea');
             const cropOverlay = document.getElementById('cropOverlay');
@@ -577,7 +576,6 @@ class ProfessionalFilmProcessor {
                     width: cropArea.offsetWidth / cropOverlay.offsetWidth,
                     height: cropArea.offsetHeight / cropOverlay.offsetHeight
                 };
-                cropScreenRect = cropArea.getBoundingClientRect();
             }
         }
 
@@ -641,8 +639,7 @@ class ProfessionalFilmProcessor {
 
         // Reposition crop overlay after layout settles
         if (this.cropMode && cropRelative) {
-            const screenRect = cropAnchor === 'screen' ? cropScreenRect : null;
-            setTimeout(() => this.positionCropOverlay(cropRelative, screenRect), 0);
+            setTimeout(() => this.positionCropOverlay(cropRelative), 0);
         }
     }
 
@@ -750,6 +747,8 @@ class ProfessionalFilmProcessor {
         let startX, startY, startLeft, startTop, startWidth, startHeight;
 
         cropArea.addEventListener('mousedown', (e) => {
+            // The user takes over - stop pinning the box
+            this._cropScreenLock = null;
             if (e.target.classList.contains('crop-handle')) {
                 isResizing = true;
                 resizeHandle = e.target.classList[1]; // nw, ne, sw, se
@@ -817,7 +816,106 @@ class ProfessionalFilmProcessor {
         });
     }
 
-    positionCropOverlay(cropRelative = null, screenRect = null) {
+    // Keep the crop overlay glued to the image for as long as crop mode is
+    // active. The image's on-screen position/size can change after the
+    // overlay is first placed (straighten bar appearing, scrollbars,
+    // window resizes, texture reloads) - a one-shot positioning drifts,
+    // leaving parts of the image unreachable by the crop box.
+    startCropOverlayWatcher() {
+        if (this._cropWatchRaf) return;
+        const tick = () => {
+            if (!this.cropMode) {
+                this._cropWatchRaf = null;
+                return;
+            }
+            // While the straighten slider is mid-drag the image is CSS-rotated
+            // behind the (intentionally static) crop box - don't follow it
+            if (this.straightenDelta() === 0) {
+                this.syncCropOverlay();
+                // During/after a rotation rebake the box is locked to its
+                // screen position so the frame can be aligned against it
+                if (this._cropScreenLock) {
+                    this.applyCropScreenLock();
+                }
+            }
+            this._cropWatchRaf = requestAnimationFrame(tick);
+        };
+        this._cropWatchRaf = requestAnimationFrame(tick);
+    }
+
+    stopCropOverlayWatcher() {
+        if (this._cropWatchRaf) {
+            cancelAnimationFrame(this._cropWatchRaf);
+            this._cropWatchRaf = null;
+        }
+    }
+
+    // Realign the overlay with the image; if the image's displayed size
+    // changed, scale the crop box so it keeps covering the same content
+    syncCropOverlay() {
+        const cropArea = document.getElementById('cropArea');
+        const cropOverlay = document.getElementById('cropOverlay');
+        const container = document.getElementById('imageContainer');
+        const img = this.getActiveImageElement();
+        if (!cropArea || !cropOverlay || !img || !container) return;
+
+        const imgRect = img.getBoundingClientRect();
+        const containerRect = container.getBoundingClientRect();
+        const left = imgRect.left - containerRect.left + container.scrollLeft;
+        const top = imgRect.top - containerRect.top + container.scrollTop;
+        const w = img.offsetWidth;
+        const h = img.offsetHeight;
+        if (w === 0 || h === 0) return;
+
+        const oldLeft = parseFloat(cropOverlay.style.left) || 0;
+        const oldTop = parseFloat(cropOverlay.style.top) || 0;
+        const oldW = cropOverlay.offsetWidth;
+        const oldH = cropOverlay.offsetHeight;
+
+        if (Math.abs(oldLeft - left) < 0.5 && Math.abs(oldTop - top) < 0.5
+            && Math.abs(oldW - w) < 0.5 && Math.abs(oldH - h) < 0.5) {
+            return; // already aligned
+        }
+
+        cropOverlay.style.left = left + 'px';
+        cropOverlay.style.top = top + 'px';
+        cropOverlay.style.width = w + 'px';
+        cropOverlay.style.height = h + 'px';
+
+        // Keep the box covering the same image content when the displayed
+        // size changes - unless it's screen-locked (rotation alignment)
+        if (!this._cropScreenLock && oldW > 0 && oldH > 0 && (oldW !== w || oldH !== h)) {
+            const sx = w / oldW;
+            const sy = h / oldH;
+            cropArea.style.left = ((parseFloat(cropArea.style.left) || 0) * sx) + 'px';
+            cropArea.style.top = ((parseFloat(cropArea.style.top) || 0) * sy) + 'px';
+            cropArea.style.width = (cropArea.offsetWidth * sx) + 'px';
+            cropArea.style.height = (cropArea.offsetHeight * sy) + 'px';
+        }
+    }
+
+    // Pin the crop box to a saved screen rect (clamped to the image) while
+    // the image is rebaked/rotated underneath it
+    applyCropScreenLock() {
+        const cropArea = document.getElementById('cropArea');
+        const cropOverlay = document.getElementById('cropOverlay');
+        if (!cropArea || !cropOverlay || !this._cropScreenLock) return;
+
+        const screenRect = this._cropScreenLock;
+        const overlayRect = cropOverlay.getBoundingClientRect();
+        let w = Math.min(screenRect.width, overlayRect.width);
+        let h = Math.min(screenRect.height, overlayRect.height);
+        let left = screenRect.left - overlayRect.left;
+        let top = screenRect.top - overlayRect.top;
+        left = Math.max(0, Math.min(left, overlayRect.width - w));
+        top = Math.max(0, Math.min(top, overlayRect.height - h));
+        cropArea.style.left = left + 'px';
+        cropArea.style.top = top + 'px';
+        cropArea.style.width = w + 'px';
+        cropArea.style.height = h + 'px';
+    }
+
+    positionCropOverlay(cropRelative = null) {
         const cropArea = document.getElementById('cropArea');
         const cropOverlay = document.getElementById('cropOverlay');
         const container = document.getElementById('imageContainer');
@@ -832,23 +930,6 @@ class ProfessionalFilmProcessor {
         cropOverlay.style.width = img.offsetWidth + 'px';
         cropOverlay.style.height = img.offsetHeight + 'px';
 
-        if (screenRect) {
-            // Keep the crop box exactly where it was on screen (used when
-            // the image is straightened behind it), clamped to the image
-            const overlayRect = cropOverlay.getBoundingClientRect();
-            let w = Math.min(screenRect.width, overlayRect.width);
-            let h = Math.min(screenRect.height, overlayRect.height);
-            let left = screenRect.left - overlayRect.left;
-            let top = screenRect.top - overlayRect.top;
-            left = Math.max(0, Math.min(left, overlayRect.width - w));
-            top = Math.max(0, Math.min(top, overlayRect.height - h));
-            cropArea.style.left = left + 'px';
-            cropArea.style.top = top + 'px';
-            cropArea.style.width = w + 'px';
-            cropArea.style.height = h + 'px';
-            return;
-        }
-
         // Restore relative crop area, or default to 80% centered
         const rel = cropRelative || { left: 0.1, top: 0.1, width: 0.8, height: 0.8 };
         cropArea.style.left = (rel.left * img.offsetWidth) + 'px';
@@ -862,13 +943,17 @@ class ProfessionalFilmProcessor {
 
         if (this.cropMode) {
             document.getElementById('cropOverlay').style.display = 'block';
-            setTimeout(() => this.positionCropOverlay(), 0);
+            // Show the straighten bar first (it shifts layout), THEN place
+            // the overlay, and keep it glued from there on
+            const bar = document.getElementById('straightenBar');
+            if (bar) bar.style.display = 'flex';
+            setTimeout(() => {
+                this.positionCropOverlay();
+                this.startCropOverlayWatcher();
+            }, 0);
             document.getElementById('cropBtn').style.display = 'none';
             document.getElementById('applyCropBtn').style.display = 'block';
             document.getElementById('cancelCropBtn').style.display = 'block';
-            // Show the straighten bar: rotate the image behind the crop box
-            const bar = document.getElementById('straightenBar');
-            if (bar) bar.style.display = 'flex';
         } else {
             this.cancelCrop();
         }
@@ -991,6 +1076,8 @@ class ProfessionalFilmProcessor {
 
     cancelCrop() {
         this.cropMode = false;
+        this._cropScreenLock = null;
+        this.stopCropOverlayWatcher();
         document.getElementById('cropOverlay').style.display = 'none';
         document.getElementById('cropBtn').style.display = 'block';
         document.getElementById('applyCropBtn').style.display = 'none';
@@ -1779,19 +1866,32 @@ class ProfessionalFilmProcessor {
                 || baked.film_correction !== this.lastBaked.film_correction
                 || baked.straighten !== this.lastBaked.straighten) {
                 this.lastBaked = baked;
+
+                // While cropping, lock the crop box to its current screen
+                // position for the duration of the rebake, so the image
+                // rotates/resizes underneath a stationary box
+                if (this.cropMode) {
+                    const cropArea = document.getElementById('cropArea');
+                    if (cropArea) this._cropScreenLock = cropArea.getBoundingClientRect();
+                }
+
                 // Expose the rebake as a promise so applyCrop can wait for it
                 this.bakePromise = (async () => {
                     await this.syncSourceParams();
                     await this.webglRenderer.loadImage('/get_raw_image');
                     this.bakedStraighten = baked.straighten;
-                    // Reposition; while cropping, the crop box must stay
-                    // fixed on screen so it can be aligned with the frame
-                    this.applyZoom(false, this.cropMode ? 'screen' : 'relative');
+                    this.applyZoom(); // dims changed; clears the CSS preview angle
                 })();
                 try {
                     await this.bakePromise;
                 } finally {
                     this.bakePromise = null;
+                }
+
+                // Release the lock once layout has settled (the watcher
+                // holds the box in place until then)
+                if (this._cropScreenLock) {
+                    setTimeout(() => { this._cropScreenLock = null; }, 400);
                 }
             }
 
