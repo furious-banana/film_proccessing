@@ -36,6 +36,7 @@ class ProfessionalFilmProcessor {
         // server-side, so the WebGL texture must reload when they change.
         this.lastBaked = null;          // { film_correction, straighten }
         this.bakedStraighten = 0;       // angle already baked into the texture
+        this.bakePromise = null;        // in-flight rebake (crop waits on it)
 
         // Tone curves per channel, normalized [0,1] control points
         this.curves = this.defaultCurves();
@@ -108,9 +109,11 @@ class ProfessionalFilmProcessor {
             slider.addEventListener('input', () => {
                 this.updateValueDisplay(slider.id, slider.value);
                 if (slider.id === 'straighten') {
-                    // Instant CSS preview while dragging; the real (resampled)
-                    // rotation is baked server-side on release ('change')
-                    this.applyZoom();
+                    // Instant CSS preview while dragging: rotate the image
+                    // only - the crop box must NOT move, so the frame edge
+                    // can be aligned against it. The real (resampled)
+                    // rotation is baked server-side on release ('change').
+                    this.updateWrapperRotation();
                     return;
                 }
                 if (this.webglEnabled) {
@@ -208,6 +211,17 @@ class ProfessionalFilmProcessor {
         document.getElementById('applyCropBtn')?.addEventListener('click', () => this.applyCrop());
         document.getElementById('cancelCropBtn')?.addEventListener('click', () => this.cancelCrop());
         document.getElementById('undoCropBtn')?.addEventListener('click', () => this.undoCrop());
+
+        // Straighten bar reset button
+        document.getElementById('straightenResetBtn')?.addEventListener('click', () => {
+            this.saveHistory();
+            const s = document.getElementById('straighten');
+            if (s) {
+                s.value = 0;
+                this.updateValueDisplay('straighten', 0);
+            }
+            this.updateImage();
+        });
 
         // Presets
         document.getElementById('savePresetBtn')?.addEventListener('click', () => this.savePreset());
@@ -547,9 +561,12 @@ class ProfessionalFilmProcessor {
         this.applyZoom(true); // actual 1:1 pixels
     }
 
-    applyZoom(actualSize = false) {
-        // Remember crop area's relative position so it survives the resize
+    applyZoom(actualSize = false, cropAnchor = 'relative') {
+        // Remember the crop area's position so it survives the resize:
+        // 'relative' keeps it glued to the image content (zooming),
+        // 'screen' keeps it fixed on screen (straightening behind it).
         let cropRelative = null;
+        let cropScreenRect = null;
         if (this.cropMode) {
             const cropArea = document.getElementById('cropArea');
             const cropOverlay = document.getElementById('cropOverlay');
@@ -560,6 +577,7 @@ class ProfessionalFilmProcessor {
                     width: cropArea.offsetWidth / cropOverlay.offsetWidth,
                     height: cropArea.offsetHeight / cropOverlay.offsetHeight
                 };
+                cropScreenRect = cropArea.getBoundingClientRect();
             }
         }
 
@@ -623,7 +641,16 @@ class ProfessionalFilmProcessor {
 
         // Reposition crop overlay after layout settles
         if (this.cropMode && cropRelative) {
-            setTimeout(() => this.positionCropOverlay(cropRelative), 0);
+            const screenRect = cropAnchor === 'screen' ? cropScreenRect : null;
+            setTimeout(() => this.positionCropOverlay(cropRelative, screenRect), 0);
+        }
+    }
+
+    // Rotate the image via CSS only (crop overlay untouched)
+    updateWrapperRotation() {
+        const wrapper = document.getElementById('imageWrapper');
+        if (wrapper) {
+            wrapper.style.transform = `rotate(${this.rotation + this.straightenDelta()}deg)`;
         }
     }
 
@@ -790,7 +817,7 @@ class ProfessionalFilmProcessor {
         });
     }
 
-    positionCropOverlay(cropRelative = null) {
+    positionCropOverlay(cropRelative = null, screenRect = null) {
         const cropArea = document.getElementById('cropArea');
         const cropOverlay = document.getElementById('cropOverlay');
         const container = document.getElementById('imageContainer');
@@ -804,6 +831,23 @@ class ProfessionalFilmProcessor {
         cropOverlay.style.top = (imgRect.top - containerRect.top + container.scrollTop) + 'px';
         cropOverlay.style.width = img.offsetWidth + 'px';
         cropOverlay.style.height = img.offsetHeight + 'px';
+
+        if (screenRect) {
+            // Keep the crop box exactly where it was on screen (used when
+            // the image is straightened behind it), clamped to the image
+            const overlayRect = cropOverlay.getBoundingClientRect();
+            let w = Math.min(screenRect.width, overlayRect.width);
+            let h = Math.min(screenRect.height, overlayRect.height);
+            let left = screenRect.left - overlayRect.left;
+            let top = screenRect.top - overlayRect.top;
+            left = Math.max(0, Math.min(left, overlayRect.width - w));
+            top = Math.max(0, Math.min(top, overlayRect.height - h));
+            cropArea.style.left = left + 'px';
+            cropArea.style.top = top + 'px';
+            cropArea.style.width = w + 'px';
+            cropArea.style.height = h + 'px';
+            return;
+        }
 
         // Restore relative crop area, or default to 80% centered
         const rel = cropRelative || { left: 0.1, top: 0.1, width: 0.8, height: 0.8 };
@@ -822,12 +866,21 @@ class ProfessionalFilmProcessor {
             document.getElementById('cropBtn').style.display = 'none';
             document.getElementById('applyCropBtn').style.display = 'block';
             document.getElementById('cancelCropBtn').style.display = 'block';
+            // Show the straighten bar: rotate the image behind the crop box
+            const bar = document.getElementById('straightenBar');
+            if (bar) bar.style.display = 'flex';
         } else {
             this.cancelCrop();
         }
     }
 
     async applyCrop() {
+        // If a straighten rebake is still in flight, wait: the crop
+        // coordinates must be computed against the settled image
+        if (this.bakePromise) {
+            try { await this.bakePromise; } catch { /* proceed */ }
+        }
+
         this.saveHistory();
 
         const cropArea = document.getElementById('cropArea');
@@ -942,6 +995,8 @@ class ProfessionalFilmProcessor {
         document.getElementById('cropBtn').style.display = 'block';
         document.getElementById('applyCropBtn').style.display = 'none';
         document.getElementById('cancelCropBtn').style.display = 'none';
+        const bar = document.getElementById('straightenBar');
+        if (bar) bar.style.display = 'none';
     }
 
     async undoCrop() {
@@ -1724,10 +1779,20 @@ class ProfessionalFilmProcessor {
                 || baked.film_correction !== this.lastBaked.film_correction
                 || baked.straighten !== this.lastBaked.straighten) {
                 this.lastBaked = baked;
-                await this.syncSourceParams();
-                await this.webglRenderer.loadImage('/get_raw_image');
-                this.bakedStraighten = baked.straighten;
-                this.applyZoom(); // dims changed; also clears the CSS preview angle
+                // Expose the rebake as a promise so applyCrop can wait for it
+                this.bakePromise = (async () => {
+                    await this.syncSourceParams();
+                    await this.webglRenderer.loadImage('/get_raw_image');
+                    this.bakedStraighten = baked.straighten;
+                    // Reposition; while cropping, the crop box must stay
+                    // fixed on screen so it can be aligned with the frame
+                    this.applyZoom(false, this.cropMode ? 'screen' : 'relative');
+                })();
+                try {
+                    await this.bakePromise;
+                } finally {
+                    this.bakePromise = null;
+                }
             }
 
             this.webglRenderer.updateParams({

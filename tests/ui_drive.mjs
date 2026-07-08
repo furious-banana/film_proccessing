@@ -314,6 +314,38 @@ try {
     await page.waitForTimeout(400);
     check('crop mode opens (C key)', await page.evaluate(() =>
         processor.cropMode && document.getElementById('cropOverlay').style.display === 'block'));
+    check('straighten bar appears in crop mode', await page.evaluate(() =>
+        document.getElementById('straightenBar').style.display === 'flex'));
+
+    // Straighten while cropping: the image rotates behind a FIXED crop box
+    const cropRectBefore = await page.evaluate(() => {
+        const r = document.getElementById('cropArea').getBoundingClientRect();
+        return [r.left, r.top, r.width, r.height].map(Math.round);
+    });
+    await page.evaluate(() => {
+        const s = document.getElementById('straighten');
+        s.value = 3;
+        s.dispatchEvent(new Event('input', { bubbles: true }));
+        s.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await page.waitForFunction(() => processor.bakedStraighten === 3, null, { timeout: 120_000 });
+    await page.waitForTimeout(600); // overlay reposition settles
+    const cropRectAfter = await page.evaluate(() => {
+        const r = document.getElementById('cropArea').getBoundingClientRect();
+        return [r.left, r.top, r.width, r.height].map(Math.round);
+    });
+    check('crop box stays fixed while straightening',
+        cropRectBefore.every((v, i) => Math.abs(v - cropRectAfter[i]) <= 2),
+        `${cropRectBefore} vs ${cropRectAfter}`);
+    await page.evaluate(() => {
+        const s = document.getElementById('straighten');
+        s.value = 0;
+        s.dispatchEvent(new Event('input', { bubbles: true }));
+        s.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await page.waitForFunction(() => processor.bakedStraighten === 0, null, { timeout: 120_000 });
+    await page.waitForTimeout(600);
+
     await page.click('#applyCropBtn');
     await page.waitForFunction((prev) => {
         const r = processor.webglRenderer;

@@ -151,24 +151,6 @@
                             </div>
                         </div>
                         
-                        <!-- Geometry -->
-                        <div class="control-group" style="margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border-color);">
-                            <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px; font-weight: 500;">
-                                GEOMETRY
-                            </div>
-                            <div class="control-row">
-                                <span class="control-label">Straighten</span>
-                                <div class="control-wrapper">
-                                    <input type="range" class="pro-slider" id="straighten"
-                                           min="-45" max="45" step="0.1" value="0">
-                                    <span class="value-display" id="straighten_value">0.0°</span>
-                                </div>
-                            </div>
-                            <div style="font-size: 10px; color: var(--text-tertiary); margin-top: 4px;">
-                                Drag to rotate by degrees. Double-click to reset. Use ↶ ↷ for 90° turns.
-                            </div>
-                        </div>
-
                         <!-- Eyedropper Tools -->
                         <div class="control-group" style="margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border-color);">
                             <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px; font-weight: 500; display: flex; justify-content: space-between; align-items: center;">
@@ -324,6 +306,16 @@
                 </button>
             </div>
             
+            <!-- Straighten bar - appears in crop mode so the image can be
+                 rotated behind the (fixed) crop box to align with its edges -->
+            <div id="straightenBar" style="display: none; align-items: center; gap: 14px; padding: 10px 20px; background: var(--bg-secondary); border-bottom: 1px solid var(--border-primary);">
+                <span style="font-size: 12px; color: var(--text-secondary); white-space: nowrap; font-weight: 500;">📐 Straighten</span>
+                <input type="range" class="pro-slider" id="straighten"
+                       min="-45" max="45" step="0.1" value="0" style="max-width: none;">
+                <span class="value-display" id="straighten_value" style="min-width: 52px;">0.0°</span>
+                <button id="straightenResetBtn" class="toolbar-btn" title="Reset angle to 0">Reset</button>
+            </div>
+
             <div class="image-container" id="imageContainer">
                 <div class="loading-overlay" id="loadingOverlay">
                     <div class="loading-spinner"></div>
@@ -374,7 +366,7 @@
         <div style="position: absolute; bottom: 5px; left: 0; right: 0; text-align: center; color: #fff; font-size: 10px; text-shadow: 0 1px 3px rgba(0,0,0,0.8); font-family: monospace;"><span id="loupeRGB">RGB: ---</span></div>
     </div>
 
-    <script src="/static/webgl-renderer.js?v=53"></script>
-    <script src="/static/app.js?v=53"></script>
+    <script src="/static/webgl-renderer.js?v=54"></script>
+    <script src="/static/app.js?v=54"></script>
 </body>
 </html>
