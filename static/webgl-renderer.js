@@ -1,6 +1,90 @@
 // WebGL GPU Renderer for Real-Time Image Processing
 // Eliminates GPU→CPU transfer lag by processing entirely on client GPU
 
+// Monotone cubic Hermite spline (Fritsch-Carlson). This is the single curve
+// interpolation used everywhere: the curve editor's drawn line (app.js), the
+// shader's lookup textures (below), and the server's export LUT
+// (film_processing._build_curve_lut) all implement this same algorithm.
+function buildMonotoneCubicSpline(points) {
+    const sorted = [...points].sort((a, b) => a.x - b.x);
+    const n = sorted.length;
+
+    if (n < 2) return () => 0;
+    if (n === 2) {
+        const x0 = sorted[0].x, y0 = sorted[0].y;
+        const slope = (sorted[1].y - y0) / (sorted[1].x - x0);
+        return (x) => y0 + slope * (x - x0);
+    }
+
+    const xs = sorted.map(p => p.x);
+    const ys = sorted.map(p => p.y);
+
+    // Secant slopes
+    const dxs = [];
+    const ms = [];
+    for (let i = 0; i < n - 1; i++) {
+        const dx = xs[i + 1] - xs[i];
+        dxs.push(dx);
+        ms.push((ys[i + 1] - ys[i]) / dx);
+    }
+
+    // Tangents
+    const c1s = [ms[0]];
+    for (let i = 1; i < n - 1; i++) {
+        const mLeft = ms[i - 1];
+        const mRight = ms[i];
+        if (mLeft * mRight <= 0) {
+            c1s.push(0);
+        } else {
+            const common = dxs[i - 1] + dxs[i];
+            c1s.push(3 * common / ((common + dxs[i]) / mLeft + (common + dxs[i - 1]) / mRight));
+        }
+    }
+    c1s.push(ms[n - 2]);
+
+    // Monotonicity constraints
+    for (let i = 0; i < n - 1; i++) {
+        if (Math.abs(ms[i]) < 1e-10) {
+            c1s[i] = 0;
+            c1s[i + 1] = 0;
+        } else {
+            const alpha = c1s[i] / ms[i];
+            const beta = c1s[i + 1] / ms[i];
+            if (alpha * alpha + beta * beta > 9) {
+                const tau = 3 / Math.sqrt(alpha * alpha + beta * beta);
+                c1s[i] = tau * alpha * ms[i];
+                c1s[i + 1] = tau * beta * ms[i];
+            }
+        }
+    }
+
+    // Cubic coefficients per segment
+    const c2s = [];
+    const c3s = [];
+    for (let i = 0; i < n - 1; i++) {
+        const invDx = 1 / dxs[i];
+        const common = c1s[i] + c1s[i + 1] - 2 * ms[i];
+        c2s.push((ms[i] - c1s[i] - common) * invDx);
+        c3s.push(common * invDx * invDx);
+    }
+
+    return (x) => {
+        if (x <= xs[0]) return ys[0];
+        if (x >= xs[n - 1]) return ys[n - 1];
+
+        let i = 0;
+        for (let j = 0; j < n - 1; j++) {
+            if (xs[j] <= x && x <= xs[j + 1]) {
+                i = j;
+                break;
+            }
+        }
+
+        const dx = x - xs[i];
+        return ys[i] + dx * (c1s[i] + dx * (c2s[i] + dx * c3s[i]));
+    };
+}
+
 class WebGLRenderer {
     constructor(canvasId) {
         this.canvas = document.getElementById(canvasId);
@@ -585,32 +669,20 @@ class WebGLRenderer {
         console.log(`Canvas: ${this.imageWidth}x${this.imageHeight} rendered, displayed at ${displayWidth.toFixed(0)}x${displayHeight.toFixed(0)}`);
     }
     
-    // Create 1D curve lookup texture from curve points
-    createCurveTexture(curvePoints) {
+    // Create 1D curve lookup texture from curve points.
+    // Uses the same monotone cubic spline as the curve editor and the
+    // server-side export LUT, so preview and export match.
+    createCurveTexture(curvePoints, existingTexture = null) {
         const gl = this.gl;
         const LUT_SIZE = 256;
-        
-        // Build lookup table (256 samples from curve)
+
+        const spline = buildMonotoneCubicSpline(curvePoints);
         const lut = new Uint8Array(LUT_SIZE * 4); // RGBA
-        
+
         for (let i = 0; i < LUT_SIZE; i++) {
             const x = i / (LUT_SIZE - 1); // 0 to 1
-            
-            // Evaluate curve at x (linear interpolation between points)
-            let y = x; // Default: straight line
-            
-            for (let j = 0; j < curvePoints.length - 1; j++) {
-                const p0 = curvePoints[j];
-                const p1 = curvePoints[j + 1];
-                
-                if (x >= p0.x && x <= p1.x) {
-                    // Linear interpolation
-                    const t = (x - p0.x) / (p1.x - p0.x);
-                    y = p0.y + t * (p1.y - p0.y);
-                    break;
-                }
-            }
-            
+            const y = Math.max(0, Math.min(1, spline(x)));
+
             // Store in all RGB channels (makes lookup simpler)
             const value = Math.round(y * 255);
             lut[i * 4 + 0] = value; // R
@@ -618,9 +690,10 @@ class WebGLRenderer {
             lut[i * 4 + 2] = value; // B
             lut[i * 4 + 3] = 255;   // A
         }
-        
-        // Create and upload texture
-        const texture = gl.createTexture();
+
+        // Reuse the existing texture object when possible (avoids leaking
+        // one texture per slider/curve update)
+        const texture = existingTexture || gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, texture);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, LUT_SIZE, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, lut);
         
@@ -636,26 +709,30 @@ class WebGLRenderer {
     // Update adjustment parameters and re-render
     updateParams(newParams) {
         Object.assign(this.params, newParams);
-        
-        // Rebuild curve textures if curves provided (GPU is fast enough for real-time)
-        if (newParams.curves) {
+
+        // Rebuild curve textures only when the curves actually changed
+        // (updateParams runs on every slider move)
+        const curvesJSON = typeof newParams.curves === 'string'
+            ? newParams.curves
+            : (newParams.curves ? JSON.stringify(newParams.curves) : null);
+
+        if (curvesJSON && curvesJSON !== this.lastCurvesJSON) {
             try {
-                const curvesData = typeof newParams.curves === 'string' ? 
-                    JSON.parse(newParams.curves) : newParams.curves;
-                
-                // Create/update curve textures
-                if (curvesData.rgb) this.curveTextureRgb = this.createCurveTexture(curvesData.rgb);
-                if (curvesData.red) this.curveTextureRed = this.createCurveTexture(curvesData.red);
-                if (curvesData.green) this.curveTextureGreen = this.createCurveTexture(curvesData.green);
-                if (curvesData.blue) this.curveTextureBlue = this.createCurveTexture(curvesData.blue);
-                
+                const curvesData = JSON.parse(curvesJSON);
+
+                if (curvesData.rgb) this.curveTextureRgb = this.createCurveTexture(curvesData.rgb, this.curveTextureRgb);
+                if (curvesData.red) this.curveTextureRed = this.createCurveTexture(curvesData.red, this.curveTextureRed);
+                if (curvesData.green) this.curveTextureGreen = this.createCurveTexture(curvesData.green, this.curveTextureGreen);
+                if (curvesData.blue) this.curveTextureBlue = this.createCurveTexture(curvesData.blue, this.curveTextureBlue);
+
                 this.params.hasCurves = true;
+                this.lastCurvesJSON = curvesJSON;
             } catch (e) {
                 console.warn('Failed to parse curves:', e);
                 this.params.hasCurves = false;
             }
         }
-        
+
         this.render();
     }
     
