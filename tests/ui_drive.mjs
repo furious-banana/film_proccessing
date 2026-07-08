@@ -75,7 +75,8 @@ try {
         // gradient the detected "base" is near-white and correctly crushes
         // the image to black, which would mask the slider effects.
         await page.evaluate(() => toggleControl('film_correction_basic'));
-        await page.waitForFunction(() => processor.lastFilmCorrection === 0, null, { timeout: 15_000 });
+        await page.waitForFunction(() =>
+            processor.lastBaked && processor.lastBaked.film_correction === 0, null, { timeout: 15_000 });
         await page.waitForTimeout(1000);
     }
     await page.screenshot({ path: path.join(SHOT_DIR, '02-uploaded.png') });
@@ -128,9 +129,9 @@ try {
 
     const sliderProbes = [
         { id: 'contrast', range: [60, 190], value: 'max' },
-        { id: 'highlights', range: [150, 235], value: 'min' }, // bright, unclipped
+        { id: 'highlights', range: [170, 245], value: 'min' }, // bright (min darkens, so clipping is fine)
         { id: 'shadows', range: [30, 120], value: 'max' },     // dark midtones
-        { id: 'whites', range: [195, 245], value: 'min' },     // near-white
+        { id: 'whites', range: [210, 255], value: 'min' },     // near-white, well inside the mask
         { id: 'blacks', range: [12, 64], value: 'max' },       // deep shadows
         { id: 'red', range: [50, 190], value: 'max' },
         { id: 'green', range: [50, 190], value: 'max' },
@@ -248,6 +249,64 @@ try {
         !processor.showingOriginal && !processor.webglRenderer.params.showOriginal);
     check('hold shows original, release restores', showingOrig && backToEdit);
 
+    // --- Straighten: fine rotation bakes server-side, bbox expands ---
+    const dimsPreStraighten = await page.evaluate(() =>
+        [processor.webglRenderer.imageWidth, processor.webglRenderer.imageHeight]);
+    await page.evaluate(() => {
+        const s = document.getElementById('straighten');
+        s.value = 10;
+        s.dispatchEvent(new Event('input', { bubbles: true }));   // CSS preview
+        s.dispatchEvent(new Event('change', { bubbles: true }));  // bake
+    });
+    // Large scans re-transfer a ~200MB float texture on rebake - be patient.
+    // Note: the display caps the long side at 5000px, so for big scans only
+    // the short side of the bounding box visibly grows.
+    await page.waitForFunction((prev) =>
+        processor.webglRenderer.imageWidth > prev[0] || processor.webglRenderer.imageHeight > prev[1],
+        dimsPreStraighten, { timeout: 120_000 });
+    const dimsStraightened = await page.evaluate(() =>
+        [processor.webglRenderer.imageWidth, processor.webglRenderer.imageHeight]);
+    check('straighten 10deg expands bounding box',
+        dimsStraightened[0] > dimsPreStraighten[0] || dimsStraightened[1] > dimsPreStraighten[1],
+        `${dimsPreStraighten} -> ${dimsStraightened}`);
+    await page.evaluate(() => {
+        const s = document.getElementById('straighten');
+        s.value = 0;
+        s.dispatchEvent(new Event('input', { bubbles: true }));
+        s.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await page.waitForFunction((prev) =>
+        processor.webglRenderer.imageWidth === prev[0], dimsPreStraighten, { timeout: 120_000 });
+    check('straighten reset restores dimensions', true);
+
+    // --- Presets: save, apply, delete ---
+    await page.evaluate(() => {
+        document.getElementById('contrast').value = 0.25;
+        document.getElementById('presetName').value = 'ui-test-preset';
+    });
+    await page.click('#savePresetBtn');
+    await page.evaluate(() => {
+        const s = document.getElementById('contrast');
+        s.value = 0;
+        s.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await page.evaluate(() => { document.getElementById('presetSelect').value = 'ui-test-preset'; });
+    await page.click('#applyPresetBtn');
+    await page.waitForTimeout(400);
+    check('preset save + apply restores slider values',
+        await page.evaluate(() => document.getElementById('contrast').value) === '0.25');
+    await page.click('#deletePresetBtn');
+    await page.waitForTimeout(200);
+    check('preset delete removes it',
+        await page.evaluate(() =>
+            ![...document.getElementById('presetSelect').options].some(o => o.value === 'ui-test-preset')));
+    // Reset contrast for the remaining checks
+    await page.evaluate(() => {
+        const s = document.getElementById('contrast');
+        s.value = 0;
+        s.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
     // --- Crop: toggle (C key), apply, verify dims, undo ---
     const dimsBefore = await page.evaluate(() =>
         [processor.webglRenderer.imageWidth, processor.webglRenderer.imageHeight]);
@@ -281,10 +340,10 @@ try {
 
     // --- Film base correction toggle syncs + reloads texture ---
     if (MODE !== 'photo') {
-        const fcBefore = await page.evaluate(() => processor.lastFilmCorrection);
+        const fcBefore = await page.evaluate(() => processor.lastBaked?.film_correction);
         await page.evaluate(() => toggleControl('film_correction_basic'));
         await page.waitForTimeout(1500);
-        const fcAfter = await page.evaluate(() => processor.lastFilmCorrection);
+        const fcAfter = await page.evaluate(() => processor.lastBaked?.film_correction);
         check('film correction toggle syncs to server', fcBefore !== fcAfter, `${fcBefore} -> ${fcAfter}`);
     }
 

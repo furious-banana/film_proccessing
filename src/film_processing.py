@@ -55,6 +55,7 @@ DEFAULT_PARAMS = {
     'blue': 0.0,
     'saturation': 0.0,    # 0 = neutral, applied as mix(gray, color, 1 + s)
     'film_correction': 0.0,  # film base removal strength, rebuilds cache
+    'straighten': 0.0,    # fine rotation in degrees (+ = clockwise), rebuilds cache
     # Eyedropper points (0-255 per channel, None = unset)
     'black_point_r': None, 'black_point_g': None, 'black_point_b': None,
     'white_point_r': None, 'white_point_g': None, 'white_point_b': None,
@@ -99,16 +100,47 @@ class FilmProcessor:
             self.original = image_array
         self._initialize_cache()
 
+    def _rotate_cpu(self, img_cpu, angle):
+        """Rotate a CPU image by `angle` degrees clockwise, expanding the
+        canvas to fit. Border fill is chosen so it ends up black after the
+        pipeline (white in negative space, black in positive space)."""
+        if angle == 0:
+            return img_cpu
+        h, w = img_cpu.shape[:2]
+        # cv2's positive angle is counter-clockwise; ours is clockwise
+        M = cv2.getRotationMatrix2D((w / 2, h / 2), -angle, 1.0)
+        cos, sin = abs(M[0, 0]), abs(M[0, 1])
+        new_w = int(h * sin + w * cos)
+        new_h = int(h * cos + w * sin)
+        M[0, 2] += new_w / 2 - w / 2
+        M[1, 2] += new_h / 2 - h / 2
+        fill = 1.0 if self.is_negative else 0.0
+        return cv2.warpAffine(img_cpu, M, (new_w, new_h), flags=cv2.INTER_LINEAR,
+                              borderMode=cv2.BORDER_CONSTANT,
+                              borderValue=(fill, fill, fill))
+
+    def get_rotated_original_cpu(self):
+        """The raw original with the current straighten angle applied.
+        Crop coordinates arrive in this (displayed) space."""
+        angle = float(self.params.get('straighten') or 0.0)
+        return self._rotate_cpu(self.original_cpu, angle)
+
     def _initialize_cache(self):
-        """Build the 'initial' image: float32 [0,1], inverted if negative,
-        with optional film base correction applied."""
+        """Build the 'initial' image: float32 [0,1], straightened, inverted
+        if negative, with optional film base correction applied."""
         logger.info(f"Initializing cache. Is negative: {self.is_negative}, "
                     f"shape: {self.original.shape}, dtype: {self.original.dtype}")
 
         xp = cp if GPU_AVAILABLE else np
         self._proxy = None  # source changed; any proxy is stale
 
-        img = self.original
+        angle = float(self.params.get('straighten') or 0.0)
+        if angle != 0:
+            rotated = self.get_rotated_original_cpu()
+            img = cp.asarray(rotated) if GPU_AVAILABLE else rotated
+            logger.info(f"Applied straighten: {angle:.1f} deg -> {img.shape[1]}x{img.shape[0]}")
+        else:
+            img = self.original
         if img.ndim == 2:
             img = xp.stack([img] * 3, axis=-1)
 
@@ -404,13 +436,17 @@ class FilmProcessor:
     # ------------------------------------------------------------------
 
     def update_params(self, **kwargs):
-        """Update known parameters; rebuild cache if film correction changed."""
-        old_film_correction = self.params.get('film_correction', 0.0)
+        """Update known parameters; rebuild the cached source image when a
+        baked-in parameter (film correction, straighten) changed."""
+        old_baked = (self.params.get('film_correction', 0.0),
+                     self.params.get('straighten', 0.0))
 
         for key, value in kwargs.items():
             if key in DEFAULT_PARAMS:
                 self.params[key] = value
 
-        if self.params.get('film_correction', 0.0) != old_film_correction:
-            logger.info("Film correction changed, regenerating cache")
+        new_baked = (self.params.get('film_correction', 0.0),
+                     self.params.get('straighten', 0.0))
+        if new_baked != old_baked:
+            logger.info("Baked source params changed, regenerating cache")
             self._initialize_cache()

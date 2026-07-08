@@ -32,9 +32,10 @@ class ProfessionalFilmProcessor {
         // WebGL GPU rendering (client-side, instant updates)
         this.webglRenderer = null;
         this.webglEnabled = false;
-        // Film base correction is baked into the raw image server-side, so
-        // the WebGL texture must be reloaded when it changes.
-        this.lastFilmCorrection = null;
+        // Film base correction and straighten are baked into the raw image
+        // server-side, so the WebGL texture must reload when they change.
+        this.lastBaked = null;          // { film_correction, straighten }
+        this.bakedStraighten = 0;       // angle already baked into the texture
 
         // Tone curves per channel, normalized [0,1] control points
         this.curves = this.defaultCurves();
@@ -106,12 +107,23 @@ class ProfessionalFilmProcessor {
 
             slider.addEventListener('input', () => {
                 this.updateValueDisplay(slider.id, slider.value);
+                if (slider.id === 'straighten') {
+                    // Instant CSS preview while dragging; the real (resampled)
+                    // rotation is baked server-side on release ('change')
+                    this.applyZoom();
+                    return;
+                }
                 if (this.webglEnabled) {
                     this.updateImage(); // instant GPU render
                 } else if (this.isSliderActive) {
                     this.debouncedProxyUpdate(); // low-res proxy while dragging
                 }
             });
+
+            if (slider.id === 'straighten') {
+                // Fires on release (and keyboard commit): bake the rotation
+                slider.addEventListener('change', () => this.updateImage());
+            }
 
             slider.addEventListener('dblclick', () => {
                 this.saveHistory();
@@ -152,6 +164,8 @@ class ProfessionalFilmProcessor {
         // Keyboard shortcuts
         document.addEventListener('keydown', (e) => {
             if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+                // Let text fields keep their native undo
+                if (e.target.matches('input[type="text"], textarea')) return;
                 e.preventDefault();
                 this.undo();
                 return;
@@ -194,6 +208,12 @@ class ProfessionalFilmProcessor {
         document.getElementById('applyCropBtn')?.addEventListener('click', () => this.applyCrop());
         document.getElementById('cancelCropBtn')?.addEventListener('click', () => this.cancelCrop());
         document.getElementById('undoCropBtn')?.addEventListener('click', () => this.undoCrop());
+
+        // Presets
+        document.getElementById('savePresetBtn')?.addEventListener('click', () => this.savePreset());
+        document.getElementById('applyPresetBtn')?.addEventListener('click', () => this.applyPresetFromSelect());
+        document.getElementById('deletePresetBtn')?.addEventListener('click', () => this.deletePreset());
+        this.refreshPresetList();
 
         this.setupWheelZoom();
         this.setupCropTool();
@@ -488,7 +508,11 @@ class ProfessionalFilmProcessor {
         if (!display) return;
 
         const numValue = parseFloat(value);
-        display.textContent = numValue % 1 === 0 ? numValue.toString() : numValue.toFixed(2);
+        if (sliderId === 'straighten') {
+            display.textContent = numValue.toFixed(1) + '°';
+        } else {
+            display.textContent = numValue % 1 === 0 ? numValue.toString() : numValue.toFixed(2);
+        }
 
         if (numValue > 0) {
             display.style.color = '#00c851';
@@ -592,7 +616,7 @@ class ProfessionalFilmProcessor {
             wrapper.style.height = (zoomedHeight * 3) + 'px';
         }
 
-        wrapper.style.transform = `rotate(${this.rotation}deg)`;
+        wrapper.style.transform = `rotate(${this.rotation + this.straightenDelta()}deg)`;
 
         const zoomPercent = actualSize ? 100 : Math.round(this.zoom * 100);
         document.getElementById('zoomLevel').textContent = zoomPercent + '%';
@@ -601,6 +625,13 @@ class ProfessionalFilmProcessor {
         if (this.cropMode && cropRelative) {
             setTimeout(() => this.positionCropOverlay(cropRelative), 0);
         }
+    }
+
+    // The straighten angle not yet baked into the server-side image; shown
+    // as a live CSS rotation while the slider is being dragged.
+    straightenDelta() {
+        const s = document.getElementById('straighten');
+        return s ? parseFloat(s.value) - this.bakedStraighten : 0;
     }
 
     rotateLeft() {
@@ -885,10 +916,14 @@ class ProfessionalFilmProcessor {
                     this.originalImage = data.image;
                 }
 
+                // The crop bakes the fine rotation into the image
+                this.setStraightenValue(0);
+
                 if (this.webglEnabled && this.webglRenderer) {
                     // Reload the cropped raw image; adjustments re-apply on top
                     await this.webglRenderer.loadImage('/get_raw_image');
                     await this.updateImage();
+                    this.applyZoom();
                 } else {
                     this.displayImage(data.image);
                 }
@@ -923,9 +958,15 @@ class ProfessionalFilmProcessor {
                     this.originalImage = data.image;
                 }
 
+                // The pre-crop fine rotation is restored server-side
+                if (typeof data.straighten === 'number') {
+                    this.setStraightenValue(data.straighten);
+                }
+
                 if (this.webglEnabled && this.webglRenderer) {
                     await this.webglRenderer.loadImage('/get_raw_image');
                     await this.updateImage();
+                    this.applyZoom();
                 } else {
                     this.displayImage(data.image);
                 }
@@ -1451,6 +1492,92 @@ class ProfessionalFilmProcessor {
     }
 
     // ------------------------------------------------------------------
+    // Presets (stored in localStorage; portable across images)
+    // ------------------------------------------------------------------
+
+    loadPresets() {
+        try {
+            return JSON.parse(localStorage.getItem('filmProcessorPresets')) || {};
+        } catch {
+            return {};
+        }
+    }
+
+    storePresets(presets) {
+        localStorage.setItem('filmProcessorPresets', JSON.stringify(presets));
+    }
+
+    refreshPresetList(selected = '') {
+        const select = document.getElementById('presetSelect');
+        if (!select) return;
+        const names = Object.keys(this.loadPresets()).sort();
+        select.innerHTML = '';
+        if (names.length === 0) {
+            const opt = document.createElement('option');
+            opt.value = '';
+            opt.textContent = '— no presets saved —';
+            select.appendChild(opt);
+            return;
+        }
+        for (const name of names) {
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            select.appendChild(opt);
+        }
+        if (selected && names.includes(selected)) select.value = selected;
+    }
+
+    savePreset() {
+        const nameInput = document.getElementById('presetName');
+        const name = (nameInput?.value || '').trim();
+        if (!name) {
+            this.updateProcessingStatus('Type a preset name first');
+            return;
+        }
+
+        const params = this.getParameters();
+        // Image-specific parameters don't belong in a portable preset
+        delete params.rotation;
+        delete params.straighten;
+        for (const point of ['black_point', 'white_point', 'gray_point']) {
+            delete params[point + '_r'];
+            delete params[point + '_g'];
+            delete params[point + '_b'];
+        }
+
+        const presets = this.loadPresets();
+        presets[name] = params;
+        this.storePresets(presets);
+        this.refreshPresetList(name);
+        nameInput.value = '';
+        this.updateProcessingStatus(`Preset "${name}" saved`);
+    }
+
+    applyPresetFromSelect() {
+        const select = document.getElementById('presetSelect');
+        const name = select?.value;
+        if (!name) return;
+        const preset = this.loadPresets()[name];
+        if (!preset) return;
+
+        this.saveHistory(); // Ctrl+Z undoes the preset
+        this.applySettings(preset);
+        this.updateProcessingStatus(`Preset "${name}" applied`);
+    }
+
+    deletePreset() {
+        const select = document.getElementById('presetSelect');
+        const name = select?.value;
+        if (!name) return;
+        const presets = this.loadPresets();
+        delete presets[name];
+        this.storePresets(presets);
+        this.refreshPresetList();
+        this.updateProcessingStatus(`Preset "${name}" deleted`);
+    }
+
+    // ------------------------------------------------------------------
     // Upload & rendering
     // ------------------------------------------------------------------
 
@@ -1463,9 +1590,21 @@ class ProfessionalFilmProcessor {
         this.curves = this.defaultCurves();
         this.rotation = 0;
         this.zoom = 1.0;
+        this.setStraightenValue(0);
         this.drawCurves();
         this.updateUndoButton();
         document.querySelectorAll('.eyedropper-btn').forEach(btn => btn.classList.remove('active'));
+    }
+
+    // Set the straighten slider + display + baked bookkeeping in one place
+    setStraightenValue(angle) {
+        const s = document.getElementById('straighten');
+        if (s) {
+            s.value = angle;
+            this.updateValueDisplay('straighten', angle);
+        }
+        this.bakedStraighten = angle;
+        if (this.lastBaked) this.lastBaked.straighten = angle;
     }
 
     async handleFileUpload(file) {
@@ -1501,7 +1640,12 @@ class ProfessionalFilmProcessor {
 
             // Bake film base correction (if enabled) into the source before
             // the WebGL texture is first loaded.
-            this.lastFilmCorrection = this.getParameters().film_correction;
+            const p = this.getParameters();
+            this.lastBaked = {
+                film_correction: p.film_correction || 0,
+                straighten: p.straighten || 0
+            };
+            this.bakedStraighten = this.lastBaked.straighten;
             await this.syncSourceParams();
 
             await this.initializeWebGL();
@@ -1569,12 +1713,21 @@ class ProfessionalFilmProcessor {
         if (this.webglEnabled && this.webglRenderer) {
             const params = this.getParameters();
 
-            // Film base correction changed: rebuild the source server-side
-            // and reload the texture, so preview and export stay identical.
-            if (params.film_correction !== this.lastFilmCorrection) {
-                this.lastFilmCorrection = params.film_correction;
+            // Baked source params changed (film base correction, straighten):
+            // rebuild the source server-side and reload the texture, so
+            // preview and export stay identical.
+            const baked = {
+                film_correction: params.film_correction || 0,
+                straighten: params.straighten || 0
+            };
+            if (!this.lastBaked
+                || baked.film_correction !== this.lastBaked.film_correction
+                || baked.straighten !== this.lastBaked.straighten) {
+                this.lastBaked = baked;
                 await this.syncSourceParams();
                 await this.webglRenderer.loadImage('/get_raw_image');
+                this.bakedStraighten = baked.straighten;
+                this.applyZoom(); // dims changed; also clears the CSS preview angle
             }
 
             this.webglRenderer.updateParams({
@@ -1634,6 +1787,8 @@ class ProfessionalFilmProcessor {
             if (result.success) {
                 this.currentImage = result.image;
                 this.displayImage(result.image);
+                this.bakedStraighten = params.straighten || 0;
+                this.applyZoom();
                 this.updateProcessingStatus('Processing complete');
             } else {
                 this.updateProcessingStatus('Processing failed: ' + result.error);

@@ -111,6 +111,20 @@ def test_unknown_params_ignored():
     assert processor.params['exposure'] == 0.5
 
 
+def test_straighten_rotates_and_expands():
+    img = make_test_image(100, 200)
+    processor = FilmProcessor(img, is_negative=False)
+
+    processor.update_params(straighten=10.0)  # triggers cache rebuild
+    out = processor.get_full_res()
+    h, w = out.shape[:2]
+    assert h > 100 and w > 200, f"rotated bbox should expand, got {w}x{h}"
+
+    processor.update_params(straighten=0.0)
+    out = processor.get_full_res()
+    assert out.shape[:2] == (100, 200), "resetting angle restores original dims"
+
+
 def test_film_correction_applies_on_gpu_and_cpu():
     """Regression: film base subtraction must work with CuPy arrays too."""
     img = make_test_image()

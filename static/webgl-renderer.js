@@ -571,51 +571,50 @@ class WebGLRenderer {
 
     uploadTexture(data, width, height) {
         const gl = this.gl;
-        
-        // Try to use float textures for full precision
-        const floatExt = gl.getExtension('OES_texture_float');
-        const useFloat = floatExt !== null;
-        
+
+        // Float textures: core in WebGL2, extension in WebGL1. (Checking only
+        // OES_texture_float would wrongly report "unsupported" on WebGL2 and
+        // silently degrade the preview to 8-bit.)
+        const isWebGL2 = typeof WebGL2RenderingContext !== 'undefined'
+            && gl instanceof WebGL2RenderingContext;
+        const useFloat = isWebGL2 || gl.getExtension('OES_texture_float') !== null;
+        // LINEAR filtering of float32 textures needs this on both versions
+        const floatLinear = gl.getExtension('OES_texture_float_linear') !== null;
+
         // Create or update texture
         if (!this.texture) {
             this.texture = gl.createTexture();
         }
-        
+
         gl.bindTexture(gl.TEXTURE_2D, this.texture);
-        
+
         // Set pixel store parameters - CRITICAL for non-aligned row widths
         gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);  // No padding, pack tightly
-        
+
         if (useFloat) {
-            // Upload float32 RGB data directly (full precision!)
-            // Use RGBA32F for WebGL2 or RGBA for WebGL1 (RGB doesn't support float in all browsers)
-            const internalFormat = this.gl.RGB32F || gl.RGBA;  // WebGL2 supports RGB32F, WebGL1 needs RGBA
-            const format = internalFormat === gl.RGBA ? gl.RGBA : gl.RGB;
-            
-            // Convert RGB to RGBA if needed (add alpha=1.0)
-            let textureData = data;
-            if (format === gl.RGBA) {
-                textureData = new Float32Array(width * height * 4);
-                for (let i = 0; i < width * height; i++) {
-                    textureData[i * 4 + 0] = data[i * 3 + 0];  // R
-                    textureData[i * 4 + 1] = data[i * 3 + 1];  // G
-                    textureData[i * 4 + 2] = data[i * 3 + 2];  // B
-                    textureData[i * 4 + 3] = 1.0;              // A (always 1.0)
-                }
+            // Upload as RGBA float32 (full 16-bit-scan precision). RGBA is
+            // used instead of RGB because 3-channel float textures are not
+            // reliably supported across drivers.
+            const textureData = new Float32Array(width * height * 4);
+            for (let i = 0; i < width * height; i++) {
+                textureData[i * 4 + 0] = data[i * 3 + 0];  // R
+                textureData[i * 4 + 1] = data[i * 3 + 1];  // G
+                textureData[i * 4 + 2] = data[i * 3 + 2];  // B
+                textureData[i * 4 + 3] = 1.0;              // A
             }
-            
+
             gl.texImage2D(
                 gl.TEXTURE_2D,
-                0,                    // level
-                internalFormat,       // internal format (RGB32F or RGBA - full float precision!)
+                0,                                     // level
+                isWebGL2 ? gl.RGBA32F : gl.RGBA,       // sized format required on WebGL2
                 width,
                 height,
-                0,                    // border
-                format,               // format (RGB or RGBA)
-                gl.FLOAT,             // type (float32 - full precision!)
+                0,                                     // border
+                gl.RGBA,
+                gl.FLOAT,
                 textureData
             );
-            console.log(`Texture uploaded to GPU: ${width}x${height} ${format === gl.RGBA ? 'RGBA' : 'RGB'} float32 (full precision)`);
+            console.log(`Texture uploaded to GPU: ${width}x${height} RGBA float32 (full precision)`);
         } else {
             // Fallback: convert to uint8 (some quality loss)
             console.warn('Float textures not supported, converting to 8-bit');
@@ -623,7 +622,7 @@ class WebGLRenderer {
             for (let i = 0; i < data.length; i++) {
                 uint8Data[i] = Math.max(0, Math.min(255, Math.round(data[i] * 255)));
             }
-            
+
             gl.texImage2D(
                 gl.TEXTURE_2D,
                 0,                    // level
@@ -637,18 +636,21 @@ class WebGLRenderer {
             );
             console.log(`Texture uploaded to GPU: ${width}x${height} RGB uint8 (8-bit fallback)`);
         }
-        
+
         // Check for WebGL errors
         const error = gl.getError();
         if (error !== gl.NO_ERROR) {
             console.error('WebGL texture upload error:', error);
         }
-        
-        // Set texture parameters (no mipmaps, linear filtering for smooth scaling)
+
+        // No mipmaps; linear filtering for smooth scaling (float32 textures
+        // can only be filtered with OES_texture_float_linear - otherwise
+        // NEAREST, which at 1:1-or-larger display is visually identical)
+        const filter = (useFloat && !floatLinear) ? gl.NEAREST : gl.LINEAR;
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
         
         // Enable anisotropic filtering for highest quality texture sampling
         if (this.anisotropicExt && this.maxAnisotropy) {

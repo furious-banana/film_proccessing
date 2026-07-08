@@ -174,7 +174,11 @@ def crop_image():
         width = int(data.get('width', 100))
         height = int(data.get('height', 100))
 
-        img = processor.original_cpu
+        # Crop in the space the user sees: the straightened original. The
+        # fine rotation is baked into the cropped result, and the straighten
+        # parameter resets to 0 (the response tells the frontend).
+        straighten = float(processor.params.get('straighten') or 0.0)
+        img = processor.get_rotated_original_cpu()
         img_height, img_width = img.shape[:2]
 
         # The frontend computes crop coordinates in the (possibly downsampled)
@@ -194,7 +198,8 @@ def crop_image():
         width = min(width, img_width - x)
         height = min(height, img_height - y)
 
-        crop_undo_stack.append(img)
+        crop_undo_stack.append((processor.original_cpu, straighten))
+        processor.params['straighten'] = 0.0  # now baked into the crop
         processor.set_original(img[y:y + height, x:x + width].copy())
 
         # WebGL clients reload the texture from /get_raw_image instead
@@ -217,17 +222,21 @@ def undo_crop():
         if not crop_undo_stack:
             return jsonify({'error': 'No crop to undo', 'success': False})
 
-        processor.set_original(crop_undo_stack.pop())
+        restored, straighten = crop_undo_stack.pop()
+        processor.params['straighten'] = straighten
+        processor.set_original(restored)
         undo_available = len(crop_undo_stack) > 0
 
         data = request.json or {}
         if data.get('webgl'):
-            return jsonify({'success': True, 'undoAvailable': undo_available})
+            return jsonify({'success': True, 'undoAvailable': undo_available,
+                            'straighten': straighten})
 
         return jsonify({
             'image': _png_base64(processor.get_processed_image(), compress_level=1),
             'success': True,
-            'undoAvailable': undo_available
+            'undoAvailable': undo_available,
+            'straighten': straighten
         })
     except Exception as e:
         logger.exception("Error undoing crop")
