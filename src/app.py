@@ -161,29 +161,6 @@ def process_image():
         return jsonify({'error': str(e), 'success': False})
 
 
-@app.route('/get_pixel', methods=['POST'])
-def get_pixel():
-    """Get the RGB value of an original-image pixel at the given coordinates."""
-    try:
-        if processor is None or processor.original_image is None:
-            return jsonify({'error': 'No image loaded', 'success': False})
-
-        data = request.json or {}
-        x, y = int(data.get('x', 0)), int(data.get('y', 0))
-
-        img = processor.original_image
-        height, width = img.shape[:2]
-        if not (0 <= x < width and 0 <= y < height):
-            return jsonify({'error': 'Coordinates out of bounds', 'success': False})
-
-        pixel = img[y, x]  # float32 [0,1]
-        rgb = [int(pixel[0] * 255), int(pixel[1] * 255), int(pixel[2] * 255)]
-        return jsonify({'rgb': rgb, 'success': True})
-    except Exception as e:
-        logger.exception("Error getting pixel")
-        return jsonify({'error': str(e), 'success': False})
-
-
 @app.route('/crop', methods=['POST'])
 def crop_image():
     """Crop the raw original (non-destructive: adjustments re-apply after)."""
@@ -405,4 +382,6 @@ def upload_file():
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    # No reloader: this entrypoint is spawned by Electron, and the reloader's
+    # child process would survive Electron's kill and keep port 5000 busy.
+    app.run(debug=True, use_reloader=False)

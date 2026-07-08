@@ -114,6 +114,7 @@ class ProfessionalFilmProcessor {
             });
 
             slider.addEventListener('dblclick', () => {
+                this.saveHistory();
                 slider.value = 0;
                 this.updateValueDisplay(slider.id, 0);
                 this.updateImage();
@@ -153,7 +154,10 @@ class ProfessionalFilmProcessor {
             if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
                 e.preventDefault();
                 this.undo();
+                return;
             }
+            // Don't hijack plain keys while a control is focused
+            if (e.target.matches('input, textarea, select')) return;
             if (e.key === '+' || e.key === '=') {
                 e.preventDefault();
                 this.zoomIn();
@@ -624,7 +628,6 @@ class ProfessionalFilmProcessor {
             }
 
             const params = this.getParameters();
-            params.rotation = this.rotation; // export matches on-screen rotation
 
             const response = await fetch('/export', {
                 method: 'POST',
@@ -946,7 +949,8 @@ class ProfessionalFilmProcessor {
             curves: JSON.parse(JSON.stringify(this.curves)),
             blackPoint: this.blackPoint ? [...this.blackPoint] : null,
             whitePoint: this.whitePoint ? [...this.whitePoint] : null,
-            grayPoint: this.grayPoint ? [...this.grayPoint] : null
+            grayPoint: this.grayPoint ? [...this.grayPoint] : null,
+            rotation: this.rotation
         };
 
         document.querySelectorAll('.pro-slider').forEach(slider => {
@@ -988,6 +992,11 @@ class ProfessionalFilmProcessor {
         if (state.filmCorrection !== undefined) {
             const toggle = document.getElementById('film_correction_basic');
             if (toggle) toggle.classList.toggle('active', state.filmCorrection);
+        }
+
+        if (state.rotation !== undefined && state.rotation !== this.rotation) {
+            this.rotation = state.rotation;
+            this.applyZoom();
         }
 
         this.updateUndoButton();
@@ -1104,19 +1113,10 @@ class ProfessionalFilmProcessor {
         }
     }
 
-    updateEyedropperLoupe(e) {
-        const loupe = document.getElementById('eyedropperLoupe');
-        if (!loupe) return;
-
-        loupe.style.display = 'block';
-        // Offset so the loupe doesn't cover the pixel being picked
-        const offset = 80;
-        loupe.style.left = (e.clientX + offset) + 'px';
-        loupe.style.top = (e.clientY - offset) + 'px';
-
-        const imgElement = this.getActiveImageElement();
-        if (!imgElement) return;
-
+    // Map a mouse event to native image-pixel coordinates on the preview,
+    // accounting for zoom (CSS size) and the wrapper's CSS rotation.
+    // Returns { x, y } in native canvas pixels, or null if outside the image.
+    screenToImagePixel(e, imgElement) {
         const normalizedRotation = ((this.rotation % 360) + 360) % 360;
         const canvasW = imgElement.width;   // native drawing buffer size
         const canvasH = imgElement.height;
@@ -1147,13 +1147,36 @@ class ProfessionalFilmProcessor {
         const cssMy = dx * sinR + dy * cosR + cssH / 2;
 
         if (cssMx < 0 || cssMy < 0 || cssMx >= cssW || cssMy >= cssH) {
-            loupe.style.display = 'none';
-            return;
+            return null;
         }
 
         // Scale from CSS display pixels to native canvas pixels
-        const mouseX = (cssMx / cssW) * canvasW;
-        const mouseY = (cssMy / cssH) * canvasH;
+        return {
+            x: (cssMx / cssW) * canvasW,
+            y: (cssMy / cssH) * canvasH
+        };
+    }
+
+    updateEyedropperLoupe(e) {
+        const loupe = document.getElementById('eyedropperLoupe');
+        if (!loupe) return;
+
+        loupe.style.display = 'block';
+        // Offset so the loupe doesn't cover the pixel being picked
+        const offset = 80;
+        loupe.style.left = (e.clientX + offset) + 'px';
+        loupe.style.top = (e.clientY - offset) + 'px';
+
+        const imgElement = this.getActiveImageElement();
+        if (!imgElement) return;
+
+        const pixel = this.screenToImagePixel(e, imgElement);
+        if (!pixel) {
+            loupe.style.display = 'none';
+            return;
+        }
+        const mouseX = pixel.x;
+        const mouseY = pixel.y;
 
         const loupeCanvas = document.getElementById('loupeCanvas');
         const loupeCtx = loupeCanvas.getContext('2d', { willReadFrequently: true });
@@ -1181,10 +1204,15 @@ class ProfessionalFilmProcessor {
             loupeCtx.drawImage(imgElement, srcX, srcY, sourceSize, sourceSize, 0, 0, loupeSize, loupeSize);
             loupeCtx.restore();
 
-            const centerPixel = loupeCtx.getImageData(loupeSize / 2, loupeSize / 2, 1, 1).data;
+            // Show the value the eyedropper would pick: the raw source pixel
+            // when available (WebGL), otherwise the displayed pixel.
             const rgbText = document.getElementById('loupeRGB');
             if (rgbText) {
-                rgbText.textContent = `RGB: ${centerPixel[0]}, ${centerPixel[1]}, ${centerPixel[2]}`;
+                const source = this.webglEnabled && this.webglRenderer
+                    ? this.webglRenderer.getSourcePixel(mouseX, mouseY) : null;
+                const p = source
+                    || loupeCtx.getImageData(loupeSize / 2, loupeSize / 2, 1, 1).data;
+                rgbText.textContent = `RGB: ${p[0]}, ${p[1]}, ${p[2]}`;
             }
         } catch (err) {
             loupeCtx.restore();
@@ -1192,35 +1220,48 @@ class ProfessionalFilmProcessor {
         }
     }
 
-    async handleEyedropperClick() {
+    async handleEyedropperClick(e) {
         if (!this.eyedropperMode || !this.currentImage) return;
 
         this.saveHistory();
 
-        // Sample the loupe's center pixel (exactly what the user sees)
-        const loupeCanvas = document.getElementById('loupeCanvas');
-        if (!loupeCanvas) return;
-
-        const loupeCtx = loupeCanvas.getContext('2d', { willReadFrequently: true });
-        const loupeSize = 120;
-
-        try {
-            const centerPixel = loupeCtx.getImageData(loupeSize / 2, loupeSize / 2, 1, 1).data;
-            const rgb = [centerPixel[0], centerPixel[1], centerPixel[2]];
-
-            if (this.eyedropperMode === 'black') {
-                this.blackPoint = rgb;
-            } else if (this.eyedropperMode === 'white') {
-                this.whitePoint = rgb;
-            } else if (this.eyedropperMode === 'gray') {
-                this.grayPoint = rgb;
+        // Sample the RAW source pixel, not the processed display. Levels are
+        // the first pipeline stage, so points must be in source values -
+        // this also makes picking the same spot twice idempotent instead of
+        // compounding the correction.
+        let rgb = null;
+        const imgElement = this.getActiveImageElement();
+        if (this.webglEnabled && this.webglRenderer && imgElement) {
+            const pixel = this.screenToImagePixel(e, imgElement);
+            if (pixel) {
+                rgb = this.webglRenderer.getSourcePixel(pixel.x, pixel.y);
             }
-
-            // Eyedropper mode stays active for repeated picks
-            await this.updateImage();
-        } catch (error) {
-            console.error('Error getting pixel value:', error);
         }
+
+        // CPU fallback: sample the loupe's center (displayed pixel)
+        if (!rgb) {
+            const loupeCanvas = document.getElementById('loupeCanvas');
+            if (!loupeCanvas) return;
+            try {
+                const loupeCtx = loupeCanvas.getContext('2d', { willReadFrequently: true });
+                const p = loupeCtx.getImageData(60, 60, 1, 1).data;
+                rgb = [p[0], p[1], p[2]];
+            } catch (error) {
+                console.error('Error getting pixel value:', error);
+                return;
+            }
+        }
+
+        if (this.eyedropperMode === 'black') {
+            this.blackPoint = rgb;
+        } else if (this.eyedropperMode === 'white') {
+            this.whitePoint = rgb;
+        } else if (this.eyedropperMode === 'gray') {
+            this.grayPoint = rgb;
+        }
+
+        // Eyedropper mode stays active for repeated picks
+        await this.updateImage();
     }
 
     // ------------------------------------------------------------------
@@ -1274,6 +1315,7 @@ class ProfessionalFilmProcessor {
         }
 
         params.curves = JSON.stringify(this.curves);
+        params.rotation = this.rotation; // applied on export; ignored by preview
 
         return params;
     }
@@ -1398,6 +1440,11 @@ class ProfessionalFilmProcessor {
             } catch (e) {
                 console.error('Failed to parse curves:', e);
             }
+        }
+
+        if (typeof params.rotation === 'number') {
+            this.rotation = params.rotation;
+            this.applyZoom();
         }
 
         this.updateImage();

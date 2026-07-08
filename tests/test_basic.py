@@ -111,6 +111,21 @@ def test_unknown_params_ignored():
     assert processor.params['exposure'] == 0.5
 
 
+def test_film_correction_applies_on_gpu_and_cpu():
+    """Regression: film base subtraction must work with CuPy arrays too."""
+    img = make_test_image()
+    processor = FilmProcessor(img, is_negative=True)
+    plain = processor.get_full_res()
+    plain = plain.get().copy() if hasattr(plain, 'get') else plain.copy()
+
+    processor.update_params(film_correction=1.0)  # triggers cache rebuild
+    corrected = processor.get_full_res()
+    if hasattr(corrected, 'get'):
+        corrected = corrected.get()
+    assert not np.allclose(corrected, plain), "film correction should change pixels"
+    assert corrected.min() >= 0.0 and corrected.max() <= 1.0
+
+
 def test_get_processed_image_uint8():
     img = make_test_image()
     processor = FilmProcessor(img, is_negative=True)

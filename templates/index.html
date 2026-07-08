@@ -17,17 +17,12 @@
             <span id="versionLabel" style="font-size: 10px; color: var(--text-tertiary); margin-left: 8px; opacity: 0.6;"></span>
         </div>
         <div class="top-controls">
-            <div class="image-mode-toggle" style="margin-right: 16px; display: flex; align-items: center; gap: 8px;">
+            <div class="image-mode-toggle" style="display: flex; align-items: center; gap: 8px;">
                 <span style="font-size: 11px; color: var(--text-tertiary);">Mode:</span>
                 <div class="view-toggle">
                     <button class="view-btn mode-btn" id="modePhoto" onclick="switchImageMode('photo')">Photo</button>
                     <button class="view-btn mode-btn active" id="modeNegative" onclick="switchImageMode('negative')">Negative</button>
                 </div>
-            </div>
-            <div class="view-toggle">
-                <button class="view-btn active">Develop</button>
-                <button class="view-btn">Library</button>
-                <button class="view-btn">Export</button>
             </div>
         </div>
     </div>
@@ -43,7 +38,7 @@
             <div class="panel-content">
                 <!-- Upload Section -->
                 <div class="upload-zone" id="uploadZone">
-                    <input type="file" id="fileInput" accept="image/*">
+                    <input type="file" id="fileInput" accept="image/*,.tif,.tiff">
                     <div class="upload-icon">
                         <i class="fas fa-cloud-upload-alt"></i>
                     </div>
@@ -225,11 +220,6 @@
                             </div>
                         </div>
                     </div>
-                </div>
-
-                <!-- Film Effects Panel -->
-                <div id="filmPanel" class="tab-panel">
-                    <!-- This tab is hidden - no film emulation needed for real film scans -->
                 </div>
             </div>
         </div>

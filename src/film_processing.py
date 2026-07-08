@@ -124,7 +124,9 @@ class FilmProcessor:
             strength = self.params['film_correction']
             base = self._detect_film_base_color()
             if base is not None:
-                img = img - (base / 255.0).reshape(1, 1, 3).astype(np.float32) * strength
+                # base is numpy; convert so CuPy accepts the subtraction
+                correction = (xp.asarray(base, dtype=xp.float32) / 255.0).reshape(1, 1, 3)
+                img = img - correction * strength
                 logger.info(f"Applied film base correction: strength={strength:.2f}")
 
         self.cached_stages['initial'] = xp.clip(img, 0.0, 1.0).astype(xp.float32)

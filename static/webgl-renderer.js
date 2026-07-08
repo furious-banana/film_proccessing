@@ -529,10 +529,14 @@ class WebGLRenderer {
             
             // Get raw bytes
             const arrayBuffer = await response.arrayBuffer();
-            
+
             // Convert to Float32Array
             const float32Data = new Float32Array(arrayBuffer);
-            
+
+            // Keep a CPU copy so tools (eyedroppers) can sample the
+            // unadjusted source pixels
+            this.imageData = float32Data;
+
             // Upload to GPU texture
             this.uploadTexture(float32Data, this.imageWidth, this.imageHeight);
             
@@ -551,6 +555,20 @@ class WebGLRenderer {
         }
     }
     
+    // Sample the raw (unadjusted) source pixel at native image coordinates.
+    // Returns [r, g, b] in 0-255, or null if unavailable.
+    getSourcePixel(x, y) {
+        if (!this.imageData || !this.imageWidth || !this.imageHeight) return null;
+        const px = Math.max(0, Math.min(this.imageWidth - 1, Math.floor(x)));
+        const py = Math.max(0, Math.min(this.imageHeight - 1, Math.floor(y)));
+        const i = (py * this.imageWidth + px) * 3;
+        return [
+            Math.round(this.imageData[i] * 255),
+            Math.round(this.imageData[i + 1] * 255),
+            Math.round(this.imageData[i + 2] * 255)
+        ];
+    }
+
     uploadTexture(data, width, height) {
         const gl = this.gl;
         
