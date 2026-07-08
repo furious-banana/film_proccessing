@@ -2,10 +2,13 @@
 // interactive feature (upload, sliders, eyedroppers, curves, undo, rotate,
 // zoom, crop, film correction toggle, export).
 //
-// Run from the repo root:   node tests/ui_drive.mjs [path-to-test-image]
+// Run from the repo root:
+//   node tests/ui_drive.mjs [path-to-test-image] [negative|photo]
 //
-// Needs dev deps installed (npm install). Generates a synthetic 16-bit
-// negative TIFF via uv/python if no image is given.
+// Mode defaults to "negative". Use "photo" for scans your scanner has
+// already converted to a positive. Needs dev deps installed (npm install).
+// Generates a synthetic 16-bit negative TIFF via uv/python if no image
+// is given.
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -19,6 +22,8 @@ const { _electron: electron } = require('playwright-core');
 
 const SHOT_DIR = path.join(os.tmpdir(), 'film-processor-ui-shots');
 fs.mkdirSync(SHOT_DIR, { recursive: true });
+
+const MODE = (process.argv[3] || 'negative').toLowerCase();
 
 let TIFF = process.argv[2];
 if (!TIFF) {
@@ -54,19 +59,25 @@ try {
     await page.waitForFunction(() =>
         document.getElementById('versionLabel')?.textContent?.startsWith('v'), null, { timeout: 15_000 });
 
-    // --- Upload the negative ---
+    // --- Upload ---
+    if (MODE === 'photo') {
+        await page.evaluate(() => switchImageMode('photo'));
+    }
     await page.setInputFiles('#fileInput', TIFF);
+    // Large 16-bit scans can take a while to decode/convert
     await page.waitForFunction(() => typeof processor !== 'undefined' && processor.webglEnabled === true,
-        null, { timeout: 60_000 });
+        null, { timeout: 300_000 });
     check('upload + WebGL preview enabled', true);
     await page.waitForTimeout(500);
 
-    // Disable film base correction for the slider probes: on a synthetic
-    // gradient the detected "base" is near-white and correctly crushes the
-    // image to black, which would mask the slider effects.
-    await page.evaluate(() => toggleControl('film_correction_basic'));
-    await page.waitForFunction(() => processor.lastFilmCorrection === 0, null, { timeout: 15_000 });
-    await page.waitForTimeout(1000);
+    if (MODE !== 'photo') {
+        // Disable film base correction for the slider probes: on a synthetic
+        // gradient the detected "base" is near-white and correctly crushes
+        // the image to black, which would mask the slider effects.
+        await page.evaluate(() => toggleControl('film_correction_basic'));
+        await page.waitForFunction(() => processor.lastFilmCorrection === 0, null, { timeout: 15_000 });
+        await page.waitForTimeout(1000);
+    }
     await page.screenshot({ path: path.join(SHOT_DIR, '02-uploaded.png') });
 
     const samplePixel = (fx, fy) => page.evaluate(([px, py]) => {
@@ -94,19 +105,44 @@ try {
     check('dblclick resets exposure', await page.evaluate(() => document.getElementById('exposure').value) === '0');
 
     // --- Each tone/color slider changes the rendered image ---
-    // Sample a pixel in the tonal range the slider targets, pushing away
-    // from clipping (bright pixels get negative values, dark positive).
+    // Each slider only affects a certain tonal range, and additive sliders
+    // do nothing on clipped pixels, so search the image for a pixel whose
+    // channels sit in the range the slider targets (works on any photo).
+    const findProbe = (minC, maxC) => page.evaluate(([lo, hi]) => {
+        const c = document.getElementById('webglCanvas');
+        const N = 80;
+        const t = document.createElement('canvas'); t.width = N; t.height = N;
+        const ctx = t.getContext('2d');
+        ctx.drawImage(c, 0, 0, N, N);
+        const d = ctx.getImageData(0, 0, N, N).data;
+        for (let y = 8; y < N - 8; y++) {
+            for (let x = 8; x < N - 8; x++) {
+                const i = (y * N + x) * 4;
+                const mn = Math.min(d[i], d[i + 1], d[i + 2]);
+                const mx = Math.max(d[i], d[i + 1], d[i + 2]);
+                if (mn >= lo && mx <= hi) return [(x + 0.5) / N, (y + 0.5) / N];
+            }
+        }
+        return null;
+    }, [minC, maxC]);
+
     const sliderProbes = [
-        { id: 'contrast', fx: 0.33, fy: 0.33, value: 'max' },
-        { id: 'highlights', fx: 0.78, fy: 0.78, value: 'min' },
-        { id: 'shadows', fx: 0.33, fy: 0.33, value: 'max' },
-        { id: 'whites', fx: 0.9, fy: 0.9, value: 'min' },
-        { id: 'blacks', fx: 0.12, fy: 0.12, value: 'max' },
-        { id: 'red', fx: 0.33, fy: 0.33, value: 'max' },
-        { id: 'green', fx: 0.33, fy: 0.33, value: 'max' },
-        { id: 'blue', fx: 0.33, fy: 0.33, value: 'max' },
+        { id: 'contrast', range: [60, 190], value: 'max' },
+        { id: 'highlights', range: [150, 235], value: 'min' }, // bright, unclipped
+        { id: 'shadows', range: [30, 120], value: 'max' },     // dark midtones
+        { id: 'whites', range: [195, 245], value: 'min' },     // near-white
+        { id: 'blacks', range: [12, 64], value: 'max' },       // deep shadows
+        { id: 'red', range: [50, 190], value: 'max' },
+        { id: 'green', range: [50, 190], value: 'max' },
+        { id: 'blue', range: [50, 190], value: 'max' },
     ];
     for (const probe of sliderProbes) {
+        const pos = await findProbe(probe.range[0], probe.range[1]);
+        if (!pos) {
+            console.log(`[SKIP] slider '${probe.id}': no pixel in range ${probe.range} on this image`);
+            continue;
+        }
+        [probe.fx, probe.fy] = pos;
         const b = await samplePixel(probe.fx, probe.fy);
         await page.evaluate(([sid, dir]) => {
             const s = document.getElementById(sid);
@@ -226,9 +262,15 @@ try {
     }, dimsBefore, { timeout: 15_000 });
     const dimsAfter = await page.evaluate(() =>
         [processor.webglRenderer.imageWidth, processor.webglRenderer.imageHeight]);
+    // The default crop is 80% of the displayed image. For scans larger than
+    // the 5000px display cap, the cropped result may no longer need
+    // downsampling, so the ratio vs the previous DISPLAY dims can be up to
+    // 0.8 * (full/display). Both axes must shrink by the same factor.
+    const ratioX = dimsAfter[0] / dimsBefore[0];
+    const ratioY = dimsAfter[1] / dimsBefore[1];
     check('apply crop shrinks image (~80%)',
-        Math.abs(dimsAfter[0] - dimsBefore[0] * 0.8) < 8 && Math.abs(dimsAfter[1] - dimsBefore[1] * 0.8) < 8,
-        `${dimsBefore} -> ${dimsAfter}`);
+        ratioX > 0.7 && ratioX < 0.96 && Math.abs(ratioX - ratioY) < 0.02,
+        `${dimsBefore} -> ${dimsAfter} (ratio ${ratioX.toFixed(3)}/${ratioY.toFixed(3)})`);
     await page.waitForFunction(() =>
         document.getElementById('undoCropBtn').style.display !== 'none', null, { timeout: 5_000 });
     check('undo crop button appears', true);
@@ -238,11 +280,13 @@ try {
     check('undo crop restores dimensions', true);
 
     // --- Film base correction toggle syncs + reloads texture ---
-    const fcBefore = await page.evaluate(() => processor.lastFilmCorrection);
-    await page.evaluate(() => toggleControl('film_correction_basic'));
-    await page.waitForTimeout(1500);
-    const fcAfter = await page.evaluate(() => processor.lastFilmCorrection);
-    check('film correction toggle syncs to server', fcBefore !== fcAfter, `${fcBefore} -> ${fcAfter}`);
+    if (MODE !== 'photo') {
+        const fcBefore = await page.evaluate(() => processor.lastFilmCorrection);
+        await page.evaluate(() => toggleControl('film_correction_basic'));
+        await page.waitForTimeout(1500);
+        const fcAfter = await page.evaluate(() => processor.lastFilmCorrection);
+        check('film correction toggle syncs to server', fcBefore !== fcAfter, `${fcBefore} -> ${fcAfter}`);
+    }
 
     // --- Export via fetch (avoids the native save dialog) ---
     const exportInfo = await page.evaluate(async () => {
