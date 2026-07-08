@@ -4,6 +4,11 @@ echo Film Processor - Distribution Packager
 echo ========================================
 echo.
 
+REM Auto-increment patch version in package.json
+echo Bumping version...
+powershell -Command "$pkg = Get-Content package.json -Raw -Encoding UTF8 | ConvertFrom-Json; $v = [version]$pkg.version; $newV = '{0}.{1}.{2}' -f $v.Major, $v.Minor, ($v.Build + 1); Write-Host ('Bumping version: ' + $pkg.version + ' -> ' + $newV); $pkg.version = $newV; $json = $pkg | ConvertTo-Json -Depth 10; [System.IO.File]::WriteAllText((Resolve-Path 'package.json'), $json, (New-Object System.Text.UTF8Encoding $false))"
+echo.
+
 REM Kill any running FilmProcessor instances
 echo Checking for running FilmProcessor instances...
 taskkill /F /IM FilmProcessor.exe 2>nul

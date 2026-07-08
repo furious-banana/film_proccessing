@@ -14,6 +14,7 @@
         <div class="logo">
             <i class="fas fa-camera"></i>
             Professional Image Processor
+            <span id="versionLabel" style="font-size: 10px; color: var(--text-tertiary); margin-left: 8px; opacity: 0.6;"></span>
         </div>
         <div class="top-controls">
             <div class="image-mode-toggle" style="margin-right: 16px; display: flex; align-items: center; gap: 8px;">
@@ -278,6 +279,9 @@
                 <button id="cancelCropBtn" class="toolbar-btn" style="display: none;">
                     ✕ Cancel
                 </button>
+                <button id="undoCropBtn" class="toolbar-btn" style="display: none;" title="Undo Last Crop">
+                    ↩ Undo Crop
+                </button>
             </div>
             
             <div class="image-container" id="imageContainer">
@@ -297,6 +301,10 @@
                         <div class="crop-handle ne"></div>
                         <div class="crop-handle sw"></div>
                         <div class="crop-handle se"></div>
+                        <div class="crop-edge n"></div>
+                        <div class="crop-edge s"></div>
+                        <div class="crop-edge e"></div>
+                        <div class="crop-edge w"></div>
                     </div>
                 </div>
             </div>

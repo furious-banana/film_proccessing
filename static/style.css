@@ -604,6 +604,15 @@
         .crop-handle.sw { bottom: -6px; left: -6px; cursor: sw-resize; }
         .crop-handle.se { bottom: -6px; right: -6px; cursor: se-resize; }
 
+        .crop-edge {
+            position: absolute;
+            background: transparent;
+        }
+        .crop-edge.n { top: -4px; left: 10px; right: 10px; height: 8px; cursor: n-resize; }
+        .crop-edge.s { bottom: -4px; left: 10px; right: 10px; height: 8px; cursor: s-resize; }
+        .crop-edge.e { right: -4px; top: 10px; bottom: 10px; width: 8px; cursor: e-resize; }
+        .crop-edge.w { left: -4px; top: 10px; bottom: 10px; width: 8px; cursor: w-resize; }
+
         .upload-zone {
             text-align: center;
             padding: 40px 20px;

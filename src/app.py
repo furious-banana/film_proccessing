@@ -43,6 +43,11 @@ static_dir = os.path.join(os.path.dirname(current_dir), 'static')
 app = Flask(__name__, template_folder=template_dir, static_folder=static_dir, static_url_path='/static')
 processor = None
 
+def _smoothstep(xp, edge0, edge1, x):
+    """GLSL smoothstep equivalent for numpy/cupy arrays"""
+    t = xp.clip((x - edge0) / (edge1 - edge0), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
 @app.after_request
 def no_cache(response):
     response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
@@ -52,6 +57,24 @@ def no_cache(response):
 @app.route('/')
 def index():
     return render_template('index.html')
+
+@app.route('/version')
+def version():
+    import json
+    # Try multiple locations for package.json
+    candidates = [
+        os.path.join(os.path.dirname(current_dir), 'package.json'),
+        os.path.join(os.getcwd(), 'package.json'),
+    ]
+    for pkg_json in candidates:
+        try:
+            with open(pkg_json, encoding='utf-8-sig') as f:
+                v = json.load(f).get('version', None)
+                if v:
+                    return jsonify(version=v)
+        except Exception:
+            continue
+    return jsonify(version='unknown')
 
 @app.route('/get_raw_image', methods=['GET'])
 def get_raw_image():
@@ -352,6 +375,9 @@ def get_pixel():
         logger.error(f"Error getting pixel: {str(e)}")
         return jsonify({'error': str(e), 'success': False})
 
+# Stack of pre-crop originals for undo
+crop_undo_stack = []
+
 @app.route('/crop', methods=['POST'])
 def crop_image():
     """Crop the image to the specified rectangle"""
@@ -359,6 +385,12 @@ def crop_image():
         global processor
         if processor is None or processor.original_image is None:
             return jsonify({'error': 'No image loaded', 'success': False})
+        
+        # Save pre-crop state for undo
+        img_backup = processor.original
+        if hasattr(img_backup, 'get'):
+            img_backup = img_backup.get()
+        crop_undo_stack.append(img_backup.copy())
         
         data = request.json
         x = int(data.get('x', 0))
@@ -405,6 +437,10 @@ def crop_image():
         processor.original_cpu = cropped
         processor._initialize_cache()
         
+        # If client will use WebGL, skip expensive PNG encoding
+        if request.json.get('webgl'):
+            return jsonify({'success': True})
+        
         # Return the cropped initial stage (with negative inversion if applicable)
         initial = processor.cached_stages.get('initial')
         if hasattr(initial, 'get'):
@@ -412,7 +448,7 @@ def crop_image():
         display_img = (np.clip(initial, 0, 1) * 255).astype(np.uint8)
         
         img_byte_arr = io.BytesIO()
-        Image.fromarray(display_img).save(img_byte_arr, format='PNG', compress_level=6)
+        Image.fromarray(display_img).save(img_byte_arr, format='PNG', compress_level=1)
         img_byte_arr = img_byte_arr.getvalue()
         
         return jsonify({
@@ -421,6 +457,42 @@ def crop_image():
         })
     except Exception as e:
         logger.error(f"Error cropping image: {str(e)}")
+        return jsonify({'error': str(e), 'success': False})
+
+@app.route('/undo_crop', methods=['POST'])
+def undo_crop():
+    """Restore the image to pre-crop state"""
+    try:
+        global processor
+        if not crop_undo_stack:
+            return jsonify({'error': 'No crop to undo', 'success': False})
+        
+        restored = crop_undo_stack.pop()
+        processor.original = restored
+        processor.original_image = restored
+        processor.original_cpu = restored
+        processor._initialize_cache()
+        
+        # If client will use WebGL, skip expensive PNG encoding
+        if request.json and request.json.get('webgl'):
+            return jsonify({'success': True, 'undoAvailable': len(crop_undo_stack) > 0})
+        
+        initial = processor.cached_stages.get('initial')
+        if hasattr(initial, 'get'):
+            initial = initial.get()
+        display_img = (np.clip(initial, 0, 1) * 255).astype(np.uint8)
+        
+        img_byte_arr = io.BytesIO()
+        Image.fromarray(display_img).save(img_byte_arr, format='PNG', compress_level=1)
+        img_byte_arr = img_byte_arr.getvalue()
+        
+        return jsonify({
+            'image': base64.b64encode(img_byte_arr).decode(),
+            'success': True,
+            'undoAvailable': len(crop_undo_stack) > 0
+        })
+    except Exception as e:
+        logger.error(f"Error undoing crop: {str(e)}")
         return jsonify({'error': str(e), 'success': False})
 
 @app.route('/export', methods=['POST'])
@@ -474,13 +546,39 @@ def export_image():
             logger.info("=" * 80)
             
             # Check if user made ANY edits
+            has_curves = False
+            curves_str = processor.params.get('curves')
+            if curves_str:
+                try:
+                    import json as _json
+                    curves_data = _json.loads(curves_str) if isinstance(curves_str, str) else curves_str
+                    default_points = [{"x": 0, "y": 0}, {"x": 1, "y": 1}]
+                    for ch in ['rgb', 'red', 'green', 'blue']:
+                        pts = curves_data.get(ch, default_points)
+                        if len(pts) != 2 or pts[0].get('x') != 0 or pts[0].get('y') != 0 or pts[-1].get('x') != 1 or pts[-1].get('y') != 1:
+                            has_curves = True
+                            break
+                except Exception:
+                    pass
+            
             has_edits = (
                 processor.params['exposure'] != 0 or
                 processor.params['contrast'] != 0 or
                 processor.params['highlights'] != 0 or
                 processor.params['shadows'] != 0 or
                 processor.params['whites'] != 0 or
-                processor.params['blacks'] != 0
+                processor.params['blacks'] != 0 or
+                float(params.get('red', 0)) != 0 or
+                float(params.get('green', 0)) != 0 or
+                float(params.get('blue', 0)) != 0 or
+                processor.params.get('brightness', 0.0) != 0 or
+                processor.params.get('saturation', 1.0) != 1.0 or
+                processor.params.get('temperature', 0.0) != 0 or
+                processor.params.get('tint', 0.0) != 0 or
+                processor.params.get('black_point_r') is not None or
+                processor.params.get('white_point_r') is not None or
+                processor.params.get('gray_point_r') is not None or
+                has_curves
             )
             
             if not has_edits:
@@ -513,42 +611,82 @@ def export_image():
                     processed = img_float
             
             if has_edits:
-                # Apply all adjustments (same as get_processed_image but on original data)
+                # Apply all adjustments matching the WebGL shader pipeline order exactly
+                
+                # 0. Levels (eyedropper black/white/gray points)
                 processed = processor._apply_levels_adjustment(processed)
                 
+                # 1. Exposure: color * 2^exposure
                 if processor.params['exposure'] != 0:
                     processed *= 2 ** processor.params['exposure']
                 
+                # 2. Tone curve (highlights/shadows/whites/blacks) using smoothstep
+                highlights = processor.params['highlights']
+                shadows = processor.params['shadows']
+                whites = processor.params['whites']
+                blacks = processor.params['blacks']
+                if highlights != 0 or shadows != 0 or whites != 0 or blacks != 0:
+                    luminance = 0.299 * processed[:, :, 0] + 0.587 * processed[:, :, 1] + 0.114 * processed[:, :, 2]
+                    luminance = xp.clip(luminance, 0.0, 1.0)
+                    
+                    if shadows != 0:
+                        shadow_mask = 1.0 - _smoothstep(xp, 0.0, 0.5, luminance)
+                        for c in range(3):
+                            processed[:, :, c] += shadows * shadow_mask * 0.3
+                    
+                    if blacks != 0:
+                        black_mask = 1.0 - _smoothstep(xp, 0.0, 0.25, luminance)
+                        for c in range(3):
+                            processed[:, :, c] += blacks * black_mask * 0.3
+                    
+                    if highlights != 0:
+                        highlight_mask = _smoothstep(xp, 0.5, 1.0, luminance)
+                        for c in range(3):
+                            processed[:, :, c] += highlights * highlight_mask * 0.3
+                    
+                    if whites != 0:
+                        white_mask = _smoothstep(xp, 0.75, 1.0, luminance)
+                        for c in range(3):
+                            processed[:, :, c] += whites * white_mask * 0.3
+                
+                # 3. Contrast: (color - 0.5) * (1 + contrast) + 0.5
                 if processor.params['contrast'] != 0:
-                    contrast_factor = 1.0 + (processor.params['contrast'] / 100.0)
+                    contrast_factor = 1.0 + processor.params['contrast']
                     processed = (processed - 0.5) * contrast_factor + 0.5
                 
-                luminance = 0.299 * processed[:, :, 0] + 0.587 * processed[:, :, 1] + 0.114 * processed[:, :, 2]
+                # 4. Brightness
+                brightness = processor.params.get('brightness', 0.0)
+                if brightness != 0:
+                    processed += brightness
                 
-                if processor.params['highlights'] != 0:
-                    highlight_mask = xp.power(luminance, 4)
-                    adjustment = processor.params['highlights'] / 50.0
+                # 5. Temperature and Tint
+                temperature = processor.params.get('temperature', 0.0)
+                tint = processor.params.get('tint', 0.0)
+                if temperature != 0:
+                    processed[:, :, 0] += temperature * 0.05
+                    processed[:, :, 2] -= temperature * 0.05
+                if tint != 0:
+                    processed[:, :, 1] += tint * 0.05
+                
+                # 6. RGB channel adjustments
+                red = float(params.get('red', 0))
+                green = float(params.get('green', 0))
+                blue = float(params.get('blue', 0))
+                if red != 0:
+                    processed[:, :, 0] += red
+                if green != 0:
+                    processed[:, :, 1] += green
+                if blue != 0:
+                    processed[:, :, 2] += blue
+                
+                # 7. Saturation: mix(gray, color, 1 + saturation)
+                saturation = processor.params.get('saturation', 1.0)
+                if saturation != 1.0:
+                    gray = 0.299 * processed[:, :, 0] + 0.587 * processed[:, :, 1] + 0.114 * processed[:, :, 2]
                     for c in range(3):
-                        processed[:, :, c] += highlight_mask * adjustment
+                        processed[:, :, c] = gray + (processed[:, :, c] - gray) * saturation
                 
-                if processor.params['shadows'] != 0:
-                    shadow_mask = xp.power(1.0 - luminance, 4)
-                    adjustment = processor.params['shadows'] / 50.0
-                    for c in range(3):
-                        processed[:, :, c] += shadow_mask * adjustment
-                
-                if processor.params['whites'] != 0:
-                    white_adjust = processor.params['whites'] / 100.0
-                    mask = xp.power(luminance, 3)
-                    for c in range(3):
-                        processed[:, :, c] += mask * white_adjust
-                
-                if processor.params['blacks'] != 0:
-                    black_adjust = processor.params['blacks'] / 100.0
-                    mask = xp.power(1.0 - luminance, 3)
-                    for c in range(3):
-                        processed[:, :, c] += mask * black_adjust
-                
+                # 8. Custom curves (after other adjustments)
                 processed = processor._apply_curves(processed)
                 
                 processed = xp.clip(processed, 0.0, 1.0)
@@ -573,40 +711,68 @@ def export_image():
             xp = cp if GPU_AVAILABLE else np
             
             processed = processor.cached_stages.get('initial', processor.cached_stages.get('inverted'))
+            
+            # Apply all adjustments matching the WebGL shader pipeline order
             processed = processor._apply_levels_adjustment(processed)
             
             if processor.params['exposure'] != 0:
                 processed *= 2 ** processor.params['exposure']
             
+            highlights = processor.params['highlights']
+            shadows = processor.params['shadows']
+            whites = processor.params['whites']
+            blacks = processor.params['blacks']
+            if highlights != 0 or shadows != 0 or whites != 0 or blacks != 0:
+                luminance = 0.299 * processed[:, :, 0] + 0.587 * processed[:, :, 1] + 0.114 * processed[:, :, 2]
+                luminance = xp.clip(luminance, 0.0, 1.0)
+                if shadows != 0:
+                    shadow_mask = 1.0 - _smoothstep(xp, 0.0, 0.5, luminance)
+                    for c in range(3):
+                        processed[:, :, c] += shadows * shadow_mask * 0.3
+                if blacks != 0:
+                    black_mask = 1.0 - _smoothstep(xp, 0.0, 0.25, luminance)
+                    for c in range(3):
+                        processed[:, :, c] += blacks * black_mask * 0.3
+                if highlights != 0:
+                    highlight_mask = _smoothstep(xp, 0.5, 1.0, luminance)
+                    for c in range(3):
+                        processed[:, :, c] += highlights * highlight_mask * 0.3
+                if whites != 0:
+                    white_mask = _smoothstep(xp, 0.75, 1.0, luminance)
+                    for c in range(3):
+                        processed[:, :, c] += whites * white_mask * 0.3
+            
             if processor.params['contrast'] != 0:
-                contrast_factor = 1.0 + (processor.params['contrast'] / 100.0)
+                contrast_factor = 1.0 + processor.params['contrast']
                 processed = (processed - 0.5) * contrast_factor + 0.5
             
-            luminance = 0.299 * processed[:, :, 0] + 0.587 * processed[:, :, 1] + 0.114 * processed[:, :, 2]
+            brightness = processor.params.get('brightness', 0.0)
+            if brightness != 0:
+                processed += brightness
             
-            if processor.params['highlights'] != 0:
-                highlight_mask = xp.power(luminance, 4)
-                adjustment = processor.params['highlights'] / 50.0
-                for c in range(3):
-                    processed[:, :, c] += highlight_mask * adjustment
+            temperature = processor.params.get('temperature', 0.0)
+            tint = processor.params.get('tint', 0.0)
+            if temperature != 0:
+                processed[:, :, 0] += temperature * 0.05
+                processed[:, :, 2] -= temperature * 0.05
+            if tint != 0:
+                processed[:, :, 1] += tint * 0.05
             
-            if processor.params['shadows'] != 0:
-                shadow_mask = xp.power(1.0 - luminance, 4)
-                adjustment = processor.params['shadows'] / 50.0
-                for c in range(3):
-                    processed[:, :, c] += shadow_mask * adjustment
+            red = float(params.get('red', 0))
+            green = float(params.get('green', 0))
+            blue = float(params.get('blue', 0))
+            if red != 0:
+                processed[:, :, 0] += red
+            if green != 0:
+                processed[:, :, 1] += green
+            if blue != 0:
+                processed[:, :, 2] += blue
             
-            if processor.params['whites'] != 0:
-                white_adjust = processor.params['whites'] / 100.0
-                mask = xp.power(luminance, 3)
+            saturation = processor.params.get('saturation', 1.0)
+            if saturation != 1.0:
+                gray = 0.299 * processed[:, :, 0] + 0.587 * processed[:, :, 1] + 0.114 * processed[:, :, 2]
                 for c in range(3):
-                    processed[:, :, c] += mask * white_adjust
-            
-            if processor.params['blacks'] != 0:
-                black_adjust = processor.params['blacks'] / 100.0
-                mask = xp.power(1.0 - luminance, 3)
-                for c in range(3):
-                    processed[:, :, c] += mask * black_adjust
+                    processed[:, :, c] = gray + (processed[:, :, c] - gray) * saturation
             
             processed = processor._apply_curves(processed)
             processed = xp.clip(processed, 0.0, 1.0)
@@ -651,6 +817,7 @@ def export_image():
 def upload_file():
     try:
         global processor
+        crop_undo_stack.clear()
         if 'image' not in request.files:
             return jsonify({
                 'error': 'No file uploaded',

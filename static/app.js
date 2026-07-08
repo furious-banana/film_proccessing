@@ -212,6 +212,7 @@ class ProfessionalFilmProcessor {
                 document.getElementById('cropBtn')?.addEventListener('click', () => this.toggleCropMode());
                 document.getElementById('applyCropBtn')?.addEventListener('click', () => this.applyCrop());
                 document.getElementById('cancelCropBtn')?.addEventListener('click', () => this.cancelCrop());
+                document.getElementById('undoCropBtn')?.addEventListener('click', () => this.undoCrop());
                 
                 // Mouse wheel zoom
                 const imageContainer = document.getElementById('imageContainer');
@@ -1127,6 +1128,9 @@ class ProfessionalFilmProcessor {
                     if (e.target.classList.contains('crop-handle')) {
                         isResizing = true;
                         resizeHandle = e.target.classList[1]; // nw, ne, sw, se
+                    } else if (e.target.classList.contains('crop-edge')) {
+                        isResizing = true;
+                        resizeHandle = e.target.classList[1]; // n, s, e, w
                     } else if (e.target === cropArea || e.target.parentElement === cropArea) {
                         // Clicking on the crop area itself (not a handle) - drag it
                         isDragging = true;
@@ -1327,14 +1331,16 @@ class ProfessionalFilmProcessor {
                     const response = await fetch('/crop', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(cropData)
+                        body: JSON.stringify({...cropData, webgl: !!(this.webglEnabled && this.webglRenderer)})
                     });
                     
                     const data = await response.json();
                     
                     if (data.success) {
-                        this.currentImage = data.image;
-                        this.originalImage = data.image;
+                        if (data.image) {
+                            this.currentImage = data.image;
+                            this.originalImage = data.image;
+                        }
                         
                         if (this.webglEnabled && this.webglRenderer) {
                             // Reload WebGL texture with the cropped original
@@ -1346,6 +1352,7 @@ class ProfessionalFilmProcessor {
                         }
                         
                         this.cancelCrop();
+                        document.getElementById('undoCropBtn').style.display = 'inline-block';
                     }
                 } catch (error) {
                     console.error('Error cropping image:', error);
@@ -1358,6 +1365,36 @@ class ProfessionalFilmProcessor {
                 document.getElementById('cropBtn').style.display = 'block';
                 document.getElementById('applyCropBtn').style.display = 'none';
                 document.getElementById('cancelCropBtn').style.display = 'none';
+            }
+            
+            async undoCrop() {
+                try {
+                    const response = await fetch('/undo_crop', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({webgl: !!(this.webglEnabled && this.webglRenderer)})
+                    });
+                    const data = await response.json();
+                    if (data.success) {
+                        if (data.image) {
+                            this.currentImage = data.image;
+                            this.originalImage = data.image;
+                        }
+                        
+                        if (this.webglEnabled && this.webglRenderer) {
+                            await this.webglRenderer.loadImage('/get_raw_image');
+                            await this.updateImage();
+                        } else {
+                            this.displayImage(data.image);
+                        }
+                        
+                        if (!data.undoAvailable) {
+                            document.getElementById('undoCropBtn').style.display = 'none';
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error undoing crop:', error);
+                }
             }
             
             saveHistory() {
@@ -1518,9 +1555,15 @@ class ProfessionalFilmProcessor {
             }
             
             handlePreviewMouseMove(e) {
-                // Update eyedropper loupe directly (fast path)
+                // Update eyedropper loupe directly (fast path, throttled with rAF)
                 if (this.eyedropperMode) {
-                    this.updateEyedropperLoupe(e);
+                    if (!this.loupeRafPending) {
+                        this.loupeRafPending = true;
+                        requestAnimationFrame(() => {
+                            this.loupeRafPending = false;
+                            this.updateEyedropperLoupe(e);
+                        });
+                    }
                 }
             }
             
@@ -2098,6 +2141,9 @@ class ProfessionalFilmProcessor {
                         this.currentImage = result.image;
                         this.originalImage = result.image; // Store original
                         
+                        // Hide undo crop button on new image
+                        document.getElementById('undoCropBtn').style.display = 'none';
+                        
                         // Try to initialize WebGL renderer for instant updates
                         await this.initializeWebGL();
                         
@@ -2643,4 +2689,10 @@ window.addEventListener('DOMContentLoaded', function() {
     setTimeout(function() {
         switchImageMode('negative');
     }, 100);
+
+    // Load version label
+    fetch('/version').then(r => r.json()).then(data => {
+        const el = document.getElementById('versionLabel');
+        if (el) el.textContent = 'v' + data.version;
+    }).catch(() => {});
 });
