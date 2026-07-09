@@ -265,6 +265,104 @@ try {
     });
     check('compare hold toggles original', cmp.during === true && cmp.after === false);
 
+    // --- Layout: the viewer pane always shows the image, controls scroll
+    // in their own pane, and the canvas fills the available space ---
+    // Normalize to a known CONTENT size (outer size includes the frame)
+    await app.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows()[0].setContentSize(430, 930));
+    await page.waitForTimeout(400);
+    const fit = await page.evaluate(() => {
+        const pane = document.getElementById('viewerPane').getBoundingClientRect();
+        const c = document.getElementById('viewCanvas').getBoundingClientRect();
+        return {
+            paneW: pane.width, paneH: pane.height, w: c.width, h: c.height,
+            inside: c.left >= pane.left - 1 && c.top >= pane.top - 1
+                && c.right <= pane.right + 1 && c.bottom <= pane.bottom + 1,
+        };
+    });
+    check('canvas fits inside the viewer pane', fit.inside, JSON.stringify(fit));
+    check('canvas fills the viewer pane on one axis',
+        fit.w >= (fit.paneW - 12) * 0.98 || fit.h >= (fit.paneH - 12) * 0.98,
+        `${fit.w.toFixed(0)}x${fit.h.toFixed(0)} in pane ${fit.paneW.toFixed(0)}x${fit.paneH.toFixed(0)}`);
+
+    const curvesVis = await page.evaluate(() => {
+        document.getElementById('curvesCanvas').scrollIntoView({ block: 'center' });
+        const v = document.getElementById('viewerPane').getBoundingClientRect();
+        const p = document.getElementById('controlsPane').getBoundingClientRect();
+        const cu = document.getElementById('curvesCanvas').getBoundingClientRect();
+        const visibleCurve = Math.min(cu.bottom, p.bottom) - Math.max(cu.top, p.top);
+        return { imgH: v.height, imgBottom: v.bottom, panelTop: p.top, visibleCurve };
+    });
+    check('curves usable while the image stays visible',
+        curvesVis.imgH > 120 && curvesVis.visibleCurve > 150
+        && curvesVis.imgBottom <= curvesVis.panelTop + 2,
+        JSON.stringify(curvesVis));
+
+    // --- Fold/rotate: resizing the window refits the canvas and switches
+    // to the landscape layout (controls beside the image) ---
+    await app.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows()[0].setContentSize(900, 700));
+    await page.waitForTimeout(400);
+    const wide = await page.evaluate(() => {
+        const v = document.getElementById('viewerPane').getBoundingClientRect();
+        const p = document.getElementById('controlsPane').getBoundingClientRect();
+        const c = document.getElementById('viewCanvas').getBoundingClientRect();
+        return { canvasW: c.width, sideBySide: p.left >= v.right - 2 };
+    });
+    check('bigger window grows the image (fold-out refit)',
+        wide.canvasW > fit.w * 1.2, `${fit.w.toFixed(0)} -> ${wide.canvasW.toFixed(0)}px`);
+    check('landscape puts controls beside the image', wide.sideBySide);
+
+    await app.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows()[0].setContentSize(430, 930));
+    await page.waitForTimeout(400);
+    const narrowW = await page.evaluate(() =>
+        document.getElementById('viewCanvas').getBoundingClientRect().width);
+    check('shrinking the window refits the canvas',
+        Math.abs(narrowW - fit.w) < 8, `${wide.canvasW.toFixed(0)} -> ${narrowW.toFixed(0)}px`);
+
+    // --- Pinch zoom (view-only) and double-tap reset ---
+    const pinchRes = await page.evaluate(() => {
+        const pane = document.getElementById('viewerPane');
+        const r = pane.getBoundingClientRect();
+        const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+        const ev = (type, id, x, y) => pane.dispatchEvent(new PointerEvent(type,
+            { bubbles: true, pointerId: id, clientX: x, clientY: y }));
+        ev('pointerdown', 11, cx - 30, cy);
+        ev('pointerdown', 12, cx + 30, cy);
+        ev('pointermove', 11, cx - 90, cy);
+        ev('pointermove', 12, cx + 90, cy);
+        ev('pointerup', 11, cx - 90, cy);
+        ev('pointerup', 12, cx + 90, cy);
+        return {
+            zoom: mobileApp.viewZoom,
+            transform: document.getElementById('viewCanvas').style.transform,
+        };
+    });
+    check('pinch zooms the view',
+        pinchRes.zoom > 2 && pinchRes.transform.includes('scale'),
+        `zoom ${pinchRes.zoom.toFixed(2)}`);
+    const dtap = await page.evaluate(async () => {
+        const pane = document.getElementById('viewerPane');
+        const r = pane.getBoundingClientRect();
+        const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+        const tap = (id) => {
+            pane.dispatchEvent(new PointerEvent('pointerdown',
+                { bubbles: true, pointerId: id, clientX: cx, clientY: cy }));
+            pane.dispatchEvent(new PointerEvent('pointerup',
+                { bubbles: true, pointerId: id, clientX: cx, clientY: cy }));
+        };
+        tap(21);
+        await new Promise(res => setTimeout(res, 80));
+        tap(22);
+        return {
+            zoom: mobileApp.viewZoom,
+            transform: document.getElementById('viewCanvas').style.transform,
+        };
+    });
+    check('double-tap resets zoom', dtap.zoom === 1 && dtap.transform === '',
+        `zoom ${dtap.zoom}`);
+
     // --- Export cross-check against the desktop Python pipeline ---
     await page.evaluate(() => {
         const set = (id, v) => {
