@@ -1,6 +1,6 @@
-// Cache-first service worker: after the first visit the app works fully
+﻿// Cache-first service worker: after the first visit the app works fully
 // offline. Bump CACHE_VERSION when any app file changes.
-const CACHE_VERSION = 'film-mobile-v6';
+const CACHE_VERSION = 'film-mobile-v7';
 
 const ASSETS = [
     './',
@@ -36,3 +36,4 @@ self.addEventListener('fetch', (e) => {
         caches.match(e.request).then(cached => cached || fetch(e.request))
     );
 });
+
