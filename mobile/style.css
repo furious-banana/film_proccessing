@@ -272,7 +272,9 @@ details > *:not(summary) { padding: 0 14px 12px; }
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 9px 10px;
-    font-size: 13px;
+    /* 16px minimum: iOS Safari zoom-focuses smaller inputs, which fights
+       the fixed viewport and can appear as the field not accepting input */
+    font-size: 16px;
 }
 
 .export-row { margin-top: 12px; }

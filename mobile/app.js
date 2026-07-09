@@ -725,7 +725,7 @@ class MobileFilmProcessor {
     // ------------------------------------------------------------------
 
     setupPresets() {
-        document.getElementById('savePresetBtn').addEventListener('click', () => {
+        const doSave = () => {
             const input = document.getElementById('presetName');
             const name = input.value.trim();
             if (!name) { this.status('Type a preset name first'); return; }
@@ -738,8 +738,21 @@ class MobileFilmProcessor {
             presets[name] = params;
             localStorage.setItem('filmProcessorPresets', JSON.stringify(presets));
             input.value = '';
+            input.blur(); // dismiss the phone keyboard
             this.refreshPresetList(name);
             this.status(`Preset "${name}" saved`);
+            const btn = document.getElementById('savePresetBtn');
+            const original = btn.textContent;
+            btn.textContent = 'Saved ✓';
+            setTimeout(() => { btn.textContent = original; }, 1500);
+        };
+        document.getElementById('savePresetBtn').addEventListener('click', doSave);
+        // The phone keyboard's return key saves too
+        document.getElementById('presetName').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                doSave();
+            }
         });
 
         document.getElementById('applyPresetBtn').addEventListener('click', () => {
