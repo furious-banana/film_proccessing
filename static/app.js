@@ -229,6 +229,13 @@ class ProfessionalFilmProcessor {
         document.getElementById('savePresetBtn')?.addEventListener('click', () => this.savePreset());
         document.getElementById('applyPresetBtn')?.addEventListener('click', () => this.applyPresetFromSelect());
         document.getElementById('deletePresetBtn')?.addEventListener('click', () => this.deletePreset());
+        // Enter in the name field saves too
+        document.getElementById('presetName')?.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                this.savePreset();
+            }
+        });
         this.refreshPresetList();
 
         this.setupWheelZoom();
@@ -1694,6 +1701,14 @@ class ProfessionalFilmProcessor {
         this.refreshPresetList(name);
         nameInput.value = '';
         this.updateProcessingStatus(`Preset "${name}" saved`);
+
+        // Visible confirmation right where the user clicked
+        const btn = document.getElementById('savePresetBtn');
+        if (btn) {
+            const original = btn.textContent;
+            btn.textContent = 'Saved ✓';
+            setTimeout(() => { btn.textContent = original; }, 1500);
+        }
     }
 
     applyPresetFromSelect() {
