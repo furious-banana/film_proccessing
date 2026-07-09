@@ -163,6 +163,7 @@ class MobileFilmProcessor {
         document.querySelectorAll('.pro-slider').forEach(slider => {
             slider.addEventListener('pointerdown', () => this.saveHistory());
             slider.addEventListener('input', () => {
+                slider._lastInputTs = Date.now();
                 this.updateValueDisplay(slider.id, slider.value);
                 if (slider.id === 'straighten') {
                     this.updateCanvasRotationPreview();
@@ -174,6 +175,10 @@ class MobileFilmProcessor {
                 slider.addEventListener('change', () => this.bakeStraighten());
             }
             slider.addEventListener('dblclick', () => {
+                // Two quick micro-drags register as a double-tap; only treat
+                // it as "reset to 0" when the value wasn't just changed by
+                // dragging (double-tapping the idle thumb still resets)
+                if (Date.now() - (slider._lastInputTs || 0) < 600) return;
                 this.saveHistory();
                 slider.value = 0;
                 this.updateValueDisplay(slider.id, 0);

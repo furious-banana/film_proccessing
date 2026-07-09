@@ -109,6 +109,7 @@ class ProfessionalFilmProcessor {
             });
 
             slider.addEventListener('input', () => {
+                slider._lastInputTs = Date.now();
                 this.updateValueDisplay(slider.id, slider.value);
                 if (slider.id === 'straighten') {
                     // Instant CSS preview while dragging: rotate the image
@@ -131,6 +132,10 @@ class ProfessionalFilmProcessor {
             }
 
             slider.addEventListener('dblclick', () => {
+                // Two quick micro-drags register as a double-click; only
+                // treat it as "reset to 0" when the value wasn't just
+                // changed by dragging (double-clicking the idle thumb resets)
+                if (Date.now() - (slider._lastInputTs || 0) < 600) return;
                 this.saveHistory();
                 slider.value = 0;
                 this.updateValueDisplay(slider.id, 0);

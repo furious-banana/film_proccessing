@@ -99,11 +99,23 @@ try {
     await page.waitForTimeout(300);
     const after = await samplePixel(0.25, 0.25);
     check('exposure +1 brightens preview', before !== after, `${before} -> ${after}`);
+
+    // A dblclick right after dragging must NOT reset (micro-adjustment guard)
     await page.evaluate(() => {
         const s = document.getElementById('exposure');
         s.dispatchEvent(new Event('dblclick', { bubbles: true }));
     });
-    check('dblclick resets exposure', await page.evaluate(() => document.getElementById('exposure').value) === '0');
+    check('dblclick right after dragging is ignored',
+        await page.evaluate(() => document.getElementById('exposure').value) === '1');
+
+    // ... but an idle double-click resets
+    await page.waitForTimeout(700);
+    await page.evaluate(() => {
+        const s = document.getElementById('exposure');
+        s.dispatchEvent(new Event('dblclick', { bubbles: true }));
+    });
+    check('idle dblclick resets exposure',
+        await page.evaluate(() => document.getElementById('exposure').value) === '0');
 
     // --- Each tone/color slider changes the rendered image ---
     // Each slider only affects a certain tonal range, and additive sliders
@@ -240,13 +252,21 @@ try {
     // --- Before/after hold shows original ---
     await page.mouse.move(canvasBox.x + canvasBox.w / 2, canvasBox.y + canvasBox.h / 2);
     await page.mouse.down();
-    await page.waitForTimeout(150);
-    const showingOrig = await page.evaluate(() =>
-        processor.showingOriginal && processor.webglRenderer.params.showOriginal);
+    let showingOrig = false;
+    try {
+        await page.waitForFunction(() =>
+            processor.showingOriginal && processor.webglRenderer.params.showOriginal,
+            null, { timeout: 5_000 });
+        showingOrig = true;
+    } catch { /* stays false */ }
     await page.mouse.up();
-    await page.waitForTimeout(150);
-    const backToEdit = await page.evaluate(() =>
-        !processor.showingOriginal && !processor.webglRenderer.params.showOriginal);
+    let backToEdit = false;
+    try {
+        await page.waitForFunction(() =>
+            !processor.showingOriginal && !processor.webglRenderer.params.showOriginal,
+            null, { timeout: 5_000 });
+        backToEdit = true;
+    } catch { /* stays false */ }
     check('hold shows original, release restores', showingOrig && backToEdit);
 
     // --- Straighten: fine rotation bakes server-side, bbox expands ---
