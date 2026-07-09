@@ -208,9 +208,11 @@ function rotateImage(img, angleDeg, fill) {
         const dy = y + 0.5 - ncy;
         for (let x = 0; x < newW; x++) {
             const dx = x + 0.5 - ncx;
-            // Inverse rotation (dest -> source), clockwise display rotation
-            const sxF = dx * cos - dy * sin + cx - 0.5;
-            const syF = dx * sin + dy * cos + cy - 0.5;
+            // Inverse mapping (dest -> source): rotate by -angle, so the
+            // image turns CLOCKWISE on screen for positive angles, matching
+            // the CSS preview rotation
+            const sxF = dx * cos + dy * sin + cx - 0.5;
+            const syF = -dx * sin + dy * cos + cy - 0.5;
             if (sxF < 0 || syF < 0 || sxF > width - 1 || syF > height - 1) continue;
             const x0 = Math.floor(sxF), y0 = Math.floor(syF);
             const wx = sxF - x0, wy = syF - y0;

@@ -93,10 +93,24 @@ main { padding: 10px 12px calc(env(safe-area-inset-bottom, 0px) + 24px); }
     touch-action: none; /* eyedropper needs raw pointer events */
 }
 
+/* Crop mode: the wrapper locks to its pre-crop size and clips; the canvas
+   is centered inside and keeps constant CONTENT scale while it rotates,
+   so straightening neither zooms nor shifts the view */
+#canvasWrap.cropping {
+    overflow: hidden;
+}
+#canvasWrap.cropping #viewCanvas {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    max-width: none;
+    max-height: none;
+    transform: translate(-50%, -50%) rotate(var(--rot, 0deg));
+}
+
 #cropOverlay {
     position: absolute;
-    left: 0;
-    top: 0;
+    inset: 0;
     background: rgba(0, 0, 0, 0.35);
 }
 
