@@ -966,6 +966,36 @@ class ProfessionalFilmProcessor {
         }
     }
 
+    // Record the on-screen CSS size of the UNROTATED image content, so
+    // straightening can keep the content at constant scale instead of
+    // re-fitting the (larger) rotated bounding box. Captured at bake time,
+    // when the layout has settled.
+    captureCropContentScale() {
+        const el = this.getActiveImageElement();
+        if (!el) { this.cropBaseCss = null; return; }
+        const th = Math.abs(this.bakedStraighten) * Math.PI / 180;
+        const c = Math.cos(th), s = Math.sin(th);
+        const det = c * c - s * s; // 0 at 45 deg - fall back to raw dims
+        const w = el.offsetWidth, h = el.offsetHeight;
+        this.cropBaseCss = det > 0.15
+            ? { A: (w * c - h * s) / det, B: (h * c - w * s) / det }
+            : { A: w, B: h };
+    }
+
+    // Size the preview so the image CONTENT keeps the scale captured at
+    // crop entry; the rotated bounding box grows past the viewport instead
+    // of the view zooming out.
+    applyCropLockedCanvasSize() {
+        const el = this.getActiveImageElement();
+        if (!el || !this.cropBaseCss) return;
+        const th = Math.abs(this.bakedStraighten) * Math.PI / 180;
+        const { A, B } = this.cropBaseCss;
+        el.style.width = (A * Math.cos(th) + B * Math.sin(th)) + 'px';
+        el.style.height = (A * Math.sin(th) + B * Math.cos(th)) + 'px';
+        el.style.maxWidth = 'none';
+        el.style.maxHeight = 'none';
+    }
+
     async applyCrop() {
         // If a straighten rebake is still in flight, wait: the crop
         // coordinates must be computed against the settled image
@@ -1084,6 +1114,7 @@ class ProfessionalFilmProcessor {
     cancelCrop() {
         this.cropMode = false;
         this._cropScreenLock = null;
+        this.cropBaseCss = null;
         this.stopCropOverlayWatcher();
         document.getElementById('cropOverlay').style.display = 'none';
         document.getElementById('cropBtn').style.display = 'block';
@@ -1091,6 +1122,8 @@ class ProfessionalFilmProcessor {
         document.getElementById('cancelCropBtn').style.display = 'none';
         const bar = document.getElementById('straightenBar');
         if (bar) bar.style.display = 'none';
+        // Leave the constant-scale sizing behind and re-fit the view
+        this.applyZoom();
     }
 
     async undoCrop() {
@@ -1884,10 +1917,12 @@ class ProfessionalFilmProcessor {
 
                 // While cropping, lock the crop box to its current screen
                 // position for the duration of the rebake, so the image
-                // rotates/resizes underneath a stationary box
+                // rotates/resizes underneath a stationary box - and record
+                // the current content scale so the rotation doesn't zoom
                 if (this.cropMode) {
                     const cropArea = document.getElementById('cropArea');
                     if (cropArea) this._cropScreenLock = cropArea.getBoundingClientRect();
+                    this.captureCropContentScale();
                 }
 
                 // Expose the rebake as a promise so applyCrop can wait for it
@@ -1895,7 +1930,14 @@ class ProfessionalFilmProcessor {
                     await this.syncSourceParams();
                     await this.webglRenderer.loadImage('/get_raw_image');
                     this.bakedStraighten = baked.straighten;
-                    this.applyZoom(); // dims changed; clears the CSS preview angle
+                    if (this.cropMode && this.cropBaseCss) {
+                        // Keep the image content at constant scale while
+                        // cropping (no zoom on rotate)
+                        this.applyCropLockedCanvasSize();
+                        this.updateWrapperRotation(); // clears the preview angle
+                    } else {
+                        this.applyZoom(); // dims changed; clears the preview angle
+                    }
                 })();
                 try {
                     await this.bakePromise;

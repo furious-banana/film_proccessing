@@ -322,6 +322,10 @@ try {
         const r = document.getElementById('cropArea').getBoundingClientRect();
         return [r.left, r.top, r.width, r.height].map(Math.round);
     });
+    const cssBefore = await page.evaluate(() => {
+        const el = processor.getActiveImageElement();
+        return [el.offsetWidth, el.offsetHeight];
+    });
     await page.evaluate(() => {
         const s = document.getElementById('straighten');
         s.value = 3;
@@ -337,6 +341,20 @@ try {
     check('crop box stays fixed while straightening',
         cropRectBefore.every((v, i) => Math.abs(v - cropRectAfter[i]) <= 2),
         `${cropRectBefore} vs ${cropRectAfter}`);
+
+    // No zoom: the content scale is preserved, so the on-screen size must
+    // equal the rotated bounding box of the ORIGINAL on-screen size
+    const cssAfter = await page.evaluate(() => {
+        const el = processor.getActiveImageElement();
+        return [el.offsetWidth, el.offsetHeight];
+    });
+    const th = 3 * Math.PI / 180;
+    const expectW = cssBefore[0] * Math.cos(th) + cssBefore[1] * Math.sin(th);
+    const expectH = cssBefore[0] * Math.sin(th) + cssBefore[1] * Math.cos(th);
+    check('straighten keeps content scale (no zoom)',
+        Math.abs(cssAfter[0] - expectW) / expectW < 0.015
+        && Math.abs(cssAfter[1] - expectH) / expectH < 0.015,
+        `${cssBefore} -> ${cssAfter}, expected ~[${Math.round(expectW)}, ${Math.round(expectH)}]`);
     await page.evaluate(() => {
         const s = document.getElementById('straighten');
         s.value = 0;
