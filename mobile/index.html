@@ -29,7 +29,10 @@
             <button id="undoBtn" class="tb-btn">↶ Undo</button>
             <button id="compareBtn" class="tb-btn" title="Hold to compare">👁 Hold</button>
         </div>
-        <input type="file" id="fileInput" accept="image/*,.tif,.tiff" hidden>
+        <!-- No accept hint: with one, Android routes to the Google Photos
+             media picker (which hides TIFFs) instead of the file browser.
+             File types are validated by content after picking. -->
+        <input type="file" id="fileInput" hidden>
 
         <div id="emptyHint">
             <p>Load a scan to start.<br>
