@@ -1,0 +1,43 @@
+# Deploys the standalone mobile app (mobile/) to GitHub Pages.
+# The app is then installable on a phone at:
+#   https://furious-banana.github.io/film_proccessing/
+name: Deploy mobile app to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/deploy-pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # enablement: true creates the Pages site on first run, so no
+      # manual Settings -> Pages step is needed
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: mobile
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
