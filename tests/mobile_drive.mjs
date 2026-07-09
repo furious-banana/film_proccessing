@@ -15,7 +15,9 @@ const require = createRequire(path.join(APP_DIR, 'package.json'));
 const { _electron: electron } = require('playwright-core');
 
 const TIFF = path.join(os.tmpdir(), 'film_mobile_test_negative.tif');
-execSync(`uv run python -c "import numpy as np, tifffile; h,w=800,1200; yy,xx=np.mgrid[0:h,0:w]; s=np.stack([xx/(w-1),yy/(h-1),(xx+yy)/(w+h-2)],axis=-1).astype(np.float32); tifffile.imwrite(r'${TIFF.replace(/\\/g, '/')}', np.round((1.0-s)*65535).astype(np.uint16), photometric='rgb')"`,
+const JPEG = path.join(os.tmpdir(), 'film_mobile_test.jpg');
+const PNG = path.join(os.tmpdir(), 'film_mobile_test.png');
+execSync(`uv run python -c "import numpy as np, tifffile; from PIL import Image; h,w=800,1200; yy,xx=np.mgrid[0:h,0:w]; s=np.stack([xx/(w-1),yy/(h-1),(xx+yy)/(w+h-2)],axis=-1).astype(np.float32); tifffile.imwrite(r'${TIFF.replace(/\\/g, '/')}', np.round((1.0-s)*65535).astype(np.uint16), photometric='rgb'); im=Image.fromarray((s*255).astype(np.uint8)); im.resize((600,400)).save(r'${JPEG.replace(/\\/g, '/')}', quality=92); im.resize((300,200)).save(r'${PNG.replace(/\\/g, '/')}')"`,
     { cwd: APP_DIR, stdio: 'inherit' });
 
 const results = [];
@@ -279,6 +281,37 @@ print(f'RESULT max={diff.max()} mean={diff.mean():.2f}')
     check('mobile export matches desktop Python pipeline',
         m && parseInt(m[1]) <= 16 && parseFloat(m[2]) <= 2,
         m ? `max err ${m[1]}/65535 LSB, mean ${m[2]}` : pyCheck.trim());
+
+    // --- Big-endian 16-bit TIFF (regression: Nikon scans are 'MM' order
+    // and decoded as rainbow noise before the byte-order fix) ---
+    const BE_TIFF = path.join(os.tmpdir(), 'film_mobile_test_be.tif');
+    execSync(`uv run python -c "import numpy as np, tifffile; img=np.full((40,40,3),[30000,45000,20000],dtype=np.uint16); tifffile.imwrite(r'${BE_TIFF.replace(/\\/g, '/')}', img, photometric='rgb', byteorder='>')"`,
+        { cwd: APP_DIR, stdio: 'inherit' });
+    await page.click('.mode-btn[data-mode="photo"]');
+    await page.setInputFiles('#fileInput', BE_TIFF);
+    await page.waitForFunction(() => mobileApp.renderer.imageWidth === 40, null, { timeout: 30_000 });
+    const bePixel = await page.evaluate(() => mobileApp.renderer.getSourcePixel(20, 20));
+    // 30000/65535*255=117, 45000->175, 20000->78
+    check('big-endian 16-bit TIFF decodes correctly',
+        JSON.stringify(bePixel) === JSON.stringify([117, 175, 78]), JSON.stringify(bePixel));
+
+    // --- Non-TIFF formats load too (regression: closed-bitmap 0x0 bug) ---
+    await page.click('.mode-btn[data-mode="photo"]');
+    await page.setInputFiles('#fileInput', JPEG);
+    await page.waitForFunction(() =>
+        mobileApp.renderer.imageWidth === 600 && mobileApp.renderer.imageHeight === 400,
+        null, { timeout: 30_000 });
+    check('JPEG loads at correct size', true);
+    await page.setInputFiles('#fileInput', PNG);
+    await page.waitForFunction(() =>
+        mobileApp.renderer.imageWidth === 300 && mobileApp.renderer.imageHeight === 200,
+        null, { timeout: 30_000 });
+    check('PNG loads at correct size', true);
+    // Re-picking the same file must work (input resets after change)
+    await page.setInputFiles('#fileInput', JPEG);
+    await page.waitForFunction(() =>
+        mobileApp.renderer.imageWidth === 600, null, { timeout: 30_000 });
+    check('re-picking a file works', true);
 
     const realErrors = consoleErrors.filter(e => !e.includes('favicon') && !e.includes('Autofill'));
     check('no console/page errors', realErrors.length === 0, realErrors.slice(0, 3).join(' | '));
