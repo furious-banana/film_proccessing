@@ -96,6 +96,7 @@ class MobileRenderer {
 
         this.params = {
             showOriginal: false,
+            showClipping: false,
             exposure: 0, contrast: 0, brightness: 0, saturation: 0,
             temperature: 0, tint: 0,
             highlights: 0, shadows: 0, whites: 0, blacks: 0,
@@ -115,6 +116,7 @@ class MobileRenderer {
 
             uniform sampler2D u_image;
             uniform float u_showOriginal;
+            uniform float u_showClipping;
             uniform float u_exposure;
             uniform float u_contrast;
             uniform float u_brightness;
@@ -243,6 +245,17 @@ class MobileRenderer {
                 color = applyCurves(color);
 
                 color = clamp(color, 0.0, 1.0);
+
+                // Clipping overlay (display only, never exported): paint
+                // clipped highlights red and clipped blacks blue
+                if (u_showClipping > 0.5) {
+                    if (max(color.r, max(color.g, color.b)) >= 0.9995) {
+                        color = vec3(1.0, 0.1, 0.1);
+                    } else if (min(color.r, min(color.g, color.b)) <= 0.0005) {
+                        color = vec3(0.15, 0.4, 1.0);
+                    }
+                }
+
                 gl_FragColor = vec4(color, 1.0);
             }
         `;
@@ -468,6 +481,7 @@ class MobileRenderer {
         gl.uniform1i(u('u_image'), 0);
 
         gl.uniform1f(u('u_showOriginal'), p.showOriginal ? 1 : 0);
+        gl.uniform1f(u('u_showClipping'), p.showClipping ? 1 : 0);
         gl.uniform1f(u('u_exposure'), p.exposure || 0);
         gl.uniform1f(u('u_contrast'), p.contrast || 0);
         gl.uniform1f(u('u_brightness'), p.brightness || 0);
@@ -521,6 +535,14 @@ class MobileRenderer {
         const gl = this.gl;
         const w = this.imageWidth, h = this.imageHeight;
 
+        // Display-only overlays must never leak into the export
+        const overlays = {
+            showOriginal: this.params.showOriginal,
+            showClipping: this.params.showClipping,
+        };
+        this.params.showOriginal = false;
+        this.params.showClipping = false;
+
         const fbo = gl.createFramebuffer();
         const target = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, target);
@@ -565,6 +587,7 @@ class MobileRenderer {
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         gl.deleteFramebuffer(fbo);
         gl.deleteTexture(target);
+        Object.assign(this.params, overlays);
         this.render(); // restore the on-screen preview
 
         return { data: rgb, width: w, height: h, float: floatTarget };

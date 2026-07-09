@@ -573,6 +573,12 @@
             opacity: 0.5;
             cursor: not-allowed;
         }
+
+        .toolbar-btn.active {
+            background: var(--accent-blue);
+            border-color: var(--accent-blue);
+            color: #fff;
+        }
         
         /* Crop overlay */
         .crop-overlay {

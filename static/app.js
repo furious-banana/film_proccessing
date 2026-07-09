@@ -108,8 +108,12 @@ class ProfessionalFilmProcessor {
                 this.isSliderActive = true;
             });
 
+            slider.addEventListener('pointerdown', () => {
+                slider._downValue = slider.value;
+                slider._downTs = Date.now();
+            });
+
             slider.addEventListener('input', () => {
-                slider._lastInputTs = Date.now();
                 this.updateValueDisplay(slider.id, slider.value);
                 if (slider.id === 'straighten') {
                     // Instant CSS preview while dragging: rotate the image
@@ -131,15 +135,23 @@ class ProfessionalFilmProcessor {
                 slider.addEventListener('change', () => this.updateImage());
             }
 
-            slider.addEventListener('dblclick', () => {
-                // Two quick micro-drags register as a double-click; only
-                // treat it as "reset to 0" when the value wasn't just
-                // changed by dragging (double-clicking the idle thumb resets)
-                if (Date.now() - (slider._lastInputTs || 0) < 600) return;
-                this.saveHistory();
-                slider.value = 0;
-                this.updateValueDisplay(slider.id, 0);
-                this.updateImage();
+            // Double-click/double-tap the thumb resets to 0. A tap is a
+            // quick press that did NOT change the value - so micro-drags
+            // (which do, and on touchscreens fire input events even for
+            // tiny taps) can never trigger the reset.
+            slider.addEventListener('pointerup', () => {
+                const now = Date.now();
+                const isTap = slider.value === slider._downValue
+                    && now - (slider._downTs || 0) < 350;
+                if (isTap && now - (slider._lastTapTs || 0) < 450) {
+                    slider._lastTapTs = 0;
+                    this.saveHistory();
+                    slider.value = 0;
+                    this.updateValueDisplay(slider.id, 0);
+                    this.updateImage();
+                } else {
+                    slider._lastTapTs = isTap ? now : 0;
+                }
             });
 
             slider.addEventListener('mouseup', () => {
@@ -160,6 +172,19 @@ class ProfessionalFilmProcessor {
 
             this.updateValueDisplay(slider.id, slider.value);
         });
+
+        // Clipping overlay toggle (display only: highlights red, blacks blue)
+        this.showClipping = false;
+        const clippingBtn = document.getElementById('clippingBtn');
+        if (clippingBtn) {
+            clippingBtn.addEventListener('click', () => {
+                this.showClipping = !this.showClipping;
+                clippingBtn.classList.toggle('active', this.showClipping);
+                if (this.webglEnabled && this.webglRenderer) {
+                    this.webglRenderer.updateParams({ showClipping: this.showClipping });
+                }
+            });
+        }
 
         // Eyedropper buttons
         document.getElementById('blackPointBtn')?.addEventListener('click', () => this.activateEyedropper('black'));
@@ -1978,7 +2003,8 @@ class ProfessionalFilmProcessor {
                 hasBlackPoint: !!this.blackPoint,
                 hasWhitePoint: !!this.whitePoint,
                 hasGrayPoint: !!this.grayPoint,
-                curves: params.curves
+                curves: params.curves,
+                showClipping: !!this.showClipping
             });
 
             const previewImage = document.getElementById('previewImage');
