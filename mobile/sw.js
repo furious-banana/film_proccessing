@@ -1,6 +1,6 @@
 // Cache-first service worker: after the first visit the app works fully
 // offline. Bump CACHE_VERSION when any app file changes.
-const CACHE_VERSION = 'film-mobile-v4';
+const CACHE_VERSION = 'film-mobile-v5';
 
 const ASSETS = [
     './',
