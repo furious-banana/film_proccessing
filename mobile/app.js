@@ -26,6 +26,11 @@ class MobileFilmProcessor {
         this.cropMode = false;
         this.showingOriginal = false;
 
+        // View zoom (inspection only - never affects the pipeline/exports)
+        this.viewZoom = 1;
+        this.viewPanX = 0;
+        this.viewPanY = 0;
+
         this.curves = this.defaultCurves();
         this.currentCurveChannel = 'rgb';
         this.selectedPoint = -1;
@@ -55,6 +60,7 @@ class MobileFilmProcessor {
         this.setupCropTool();
         this.setupPresets();
         this.setupExport();
+        this.setupViewZoom();
         this.setupMisc();
     }
 
@@ -89,11 +95,11 @@ class MobileFilmProcessor {
             if (!this.renderer) {
                 this.renderer = new MobileRenderer(document.getElementById('viewCanvas'));
             }
-            this.rebuildSource();
-            this.updateImage();
-
+            // Show the editor before fitting so the viewer pane has its size
             document.getElementById('editorUI').style.display = '';
             document.getElementById('emptyHint').style.display = 'none';
+            this.rebuildSource();
+            this.updateImage();
             this.status(`${this.original.width}×${this.original.height}`
                 + ` · ${this.original.bitDepth}-bit`
                 + (this.original.colorConverted ? ' · ' + this.original.colorConverted : ''));
@@ -115,6 +121,7 @@ class MobileFilmProcessor {
         this.setStraightenValue(0);
         this.drawCurves();
         this.cancelCrop();
+        this.resetViewZoom();
     }
 
     // Rebuild the shader's input image from the original + baked state
@@ -125,7 +132,26 @@ class MobileFilmProcessor {
             straighten: this.bakedStraighten,
         });
         this.renderer.setImage(source.data, source.width, source.height);
+        if (!this.cropMode) this.fitCanvasToPane();
         this.syncCropOverlayBox();
+    }
+
+    // Size the canvas so the image fills as much of the viewer pane as
+    // possible (crop mode manages its own locked size instead)
+    fitCanvasToPane() {
+        if (!this.renderer || !this.original || this.cropMode) return;
+        const pane = document.getElementById('viewerPane');
+        const canvas = document.getElementById('viewCanvas');
+        const cs = getComputedStyle(pane);
+        const availW = pane.clientWidth
+            - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+        const availH = pane.clientHeight
+            - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+        if (availW < 10 || availH < 10) return;
+        const scale = Math.min(availW / this.renderer.imageWidth,
+            availH / this.renderer.imageHeight);
+        canvas.style.width = (this.renderer.imageWidth * scale) + 'px';
+        canvas.style.height = (this.renderer.imageHeight * scale) + 'px';
     }
 
     setupModeToggle() {
@@ -620,6 +646,16 @@ class MobileFilmProcessor {
     toggleCrop() {
         if (this.cropMode) { this.cancelCrop(); return; }
         if (!this.original) return;
+
+        // The crop controls float over the bottom of the viewer pane:
+        // reserve space for them and refit BEFORE locking the viewport
+        this.resetViewZoom();
+        const pane = document.getElementById('viewerPane');
+        const controls = document.getElementById('cropControls');
+        controls.style.display = '';
+        pane.style.paddingBottom = (controls.offsetHeight + 14) + 'px';
+        this.fitCanvasToPane();
+
         this.cropMode = true;
 
         // Lock the viewport: the wrapper keeps its current size and clips,
@@ -634,7 +670,6 @@ class MobileFilmProcessor {
         this.updateLockedCanvasSize();
 
         document.getElementById('cropOverlay').style.display = 'block';
-        document.getElementById('cropControls').style.display = '';
         document.getElementById('cropBtn').classList.add('active');
         this.syncCropOverlayBox(true);
     }
@@ -667,6 +702,8 @@ class MobileFilmProcessor {
         if (controls) controls.style.display = 'none';
         document.getElementById('cropBtn')?.classList.remove('active');
 
+        const pane = document.getElementById('viewerPane');
+        if (pane) pane.style.paddingBottom = '';
         const wrap = document.getElementById('canvasWrap');
         const canvas = document.getElementById('viewCanvas');
         if (wrap) {
@@ -679,6 +716,7 @@ class MobileFilmProcessor {
             canvas.style.height = '';
             canvas.style.removeProperty('--rot');
         }
+        this.fitCanvasToPane();
     }
 
     updateCanvasRotationPreview() {
@@ -750,6 +788,7 @@ class MobileFilmProcessor {
     }
 
     undoCrop() {
+        this.resetViewZoom();
         const op = this.bakedOps.pop();
         // Crop ops carry the user's straighten angle to restore; 90-degree
         // turns (rect-less) don't touch the straighten slider
@@ -764,6 +803,7 @@ class MobileFilmProcessor {
 
     rotate90() {
         if (!this.original) return;
+        this.resetViewZoom();
         this.bakedOps.push({ angle: 90, rect: null });
         this.rebuildSource();
         this.updateImage();
@@ -943,6 +983,149 @@ class MobileFilmProcessor {
     }
 
     // ------------------------------------------------------------------
+    // View zoom: pinch / double-tap / mouse wheel on the image pane.
+    // Purely visual (a CSS transform) - the pipeline and exports are
+    // untouched, and it is disabled while cropping.
+    // ------------------------------------------------------------------
+
+    setupViewZoom() {
+        const pane = document.getElementById('viewerPane');
+        const pointers = new Map();
+        let pinch = null;   // { dist, zoom, midX, midY, panX, panY }
+        let pan = null;     // { x, y, panX, panY }
+        let down = null;    // tap candidate for double-tap detection
+        let lastTap = { t: 0, x: 0, y: 0 };
+
+        // Coordinates relative to the pane centre (= the canvas centre,
+        // which is the transform origin)
+        const paneOffset = (clientX, clientY) => {
+            const r = pane.getBoundingClientRect();
+            return { x: clientX - r.left - r.width / 2, y: clientY - r.top - r.height / 2 };
+        };
+
+        pane.addEventListener('pointerdown', (e) => {
+            if (this.cropMode || !this.original) return;
+            pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+            if (pointers.size === 2) {
+                if (down) down.moved = true; // a pinch is never a tap
+                const [a, b] = [...pointers.values()];
+                const mid = paneOffset((a.x + b.x) / 2, (a.y + b.y) / 2);
+                pinch = {
+                    dist: Math.max(20, Math.hypot(a.x - b.x, a.y - b.y)),
+                    zoom: this.viewZoom,
+                    midX: mid.x, midY: mid.y,
+                    panX: this.viewPanX, panY: this.viewPanY,
+                };
+                pan = null;
+                for (const id of pointers.keys()) {
+                    try { pane.setPointerCapture(id); } catch { /* synthetic ids */ }
+                }
+            } else if (pointers.size === 1) {
+                down = { t: Date.now(), x: e.clientX, y: e.clientY, moved: false };
+                if (this.viewZoom > 1 && !this.eyedropperMode) {
+                    pan = { x: e.clientX, y: e.clientY, panX: this.viewPanX, panY: this.viewPanY };
+                    try { pane.setPointerCapture(e.pointerId); } catch { /* synthetic ids */ }
+                }
+            }
+        });
+
+        pane.addEventListener('pointermove', (e) => {
+            if (!pointers.has(e.pointerId)) return;
+            pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+            if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 10) {
+                down.moved = true;
+            }
+            if (pinch && pointers.size >= 2) {
+                const [a, b] = [...pointers.values()];
+                const z = Math.min(8, Math.max(1,
+                    pinch.zoom * Math.hypot(a.x - b.x, a.y - b.y) / pinch.dist));
+                // The image point under the start midpoint follows the
+                // CURRENT midpoint (pinch-zoom + two-finger pan combined)
+                const k = z / pinch.zoom;
+                const mid = paneOffset((a.x + b.x) / 2, (a.y + b.y) / 2);
+                this.viewPanX = mid.x - (pinch.midX - pinch.panX) * k;
+                this.viewPanY = mid.y - (pinch.midY - pinch.panY) * k;
+                this.viewZoom = z;
+                this.applyViewTransform();
+            } else if (pan) {
+                this.viewPanX = pan.panX + (e.clientX - pan.x);
+                this.viewPanY = pan.panY + (e.clientY - pan.y);
+                this.applyViewTransform();
+            }
+        });
+
+        const release = (e) => {
+            if (!pointers.delete(e.pointerId)) return;
+            if (pointers.size < 2) pinch = null;
+            if (!pointers.size) pan = null;
+
+            // Double-tap toggles 2.5x zoom at the tap point
+            if (e.type === 'pointerup' && down && !down.moved
+                && Date.now() - down.t < 350
+                && !this.eyedropperMode && !this.cropMode && this.original) {
+                const now = Date.now();
+                if (now - lastTap.t < 320
+                    && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 50) {
+                    if (this.viewZoom > 1) {
+                        this.resetViewZoom();
+                    } else {
+                        const m = paneOffset(e.clientX, e.clientY);
+                        this.viewZoom = 2.5;
+                        this.viewPanX = m.x * (1 - 2.5);
+                        this.viewPanY = m.y * (1 - 2.5);
+                        this.applyViewTransform();
+                    }
+                    lastTap = { t: 0, x: 0, y: 0 };
+                } else {
+                    lastTap = { t: now, x: e.clientX, y: e.clientY };
+                }
+            }
+            if (!pointers.size) down = null;
+        };
+        pane.addEventListener('pointerup', release);
+        pane.addEventListener('pointercancel', release);
+
+        // Mouse wheel zooms too (handy when testing in a browser)
+        pane.addEventListener('wheel', (e) => {
+            if (this.cropMode || !this.original) return;
+            e.preventDefault();
+            const z = Math.min(8, Math.max(1, this.viewZoom * Math.exp(-e.deltaY * 0.0022)));
+            const k = z / this.viewZoom;
+            const m = paneOffset(e.clientX, e.clientY);
+            this.viewPanX = m.x - (m.x - this.viewPanX) * k;
+            this.viewPanY = m.y - (m.y - this.viewPanY) * k;
+            this.viewZoom = z;
+            this.applyViewTransform();
+        }, { passive: false });
+    }
+
+    applyViewTransform() {
+        const canvas = document.getElementById('viewCanvas');
+        const pane = document.getElementById('viewerPane');
+        if (this.viewZoom <= 1.02) {
+            this.resetViewZoom();
+            return;
+        }
+        // Keep at least a quarter of the pane covered by the image
+        const halfW = (canvas.clientWidth * this.viewZoom) / 2;
+        const halfH = (canvas.clientHeight * this.viewZoom) / 2;
+        const maxX = Math.max(0, halfW - pane.clientWidth * 0.25);
+        const maxY = Math.max(0, halfH - pane.clientHeight * 0.25);
+        this.viewPanX = Math.max(-maxX, Math.min(maxX, this.viewPanX));
+        this.viewPanY = Math.max(-maxY, Math.min(maxY, this.viewPanY));
+        canvas.style.transform =
+            `translate(${this.viewPanX}px, ${this.viewPanY}px) scale(${this.viewZoom})`;
+    }
+
+    resetViewZoom() {
+        this.viewZoom = 1;
+        this.viewPanX = 0;
+        this.viewPanY = 0;
+        const canvas = document.getElementById('viewCanvas');
+        if (canvas) canvas.style.transform = '';
+    }
+
+    // ------------------------------------------------------------------
     // Misc
     // ------------------------------------------------------------------
 
@@ -960,7 +1143,13 @@ class MobileFilmProcessor {
         btn.addEventListener('pointercancel', () => show(false));
         btn.addEventListener('pointerleave', () => { if (this.showingOriginal) show(false); });
 
-        window.addEventListener('resize', () => this.syncCropOverlayBox());
+        // Refit on any viewport change: rotating the phone, unfolding a
+        // foldable, resizing a window
+        window.addEventListener('resize', () => {
+            this.fitCanvasToPane();
+            if (this.viewZoom > 1) this.applyViewTransform();
+            this.syncCropOverlayBox();
+        });
     }
 }
 

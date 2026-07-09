@@ -42,33 +42,38 @@
         </div>
 
         <div id="editorUI" style="display:none">
-            <div id="canvasWrap">
-                <canvas id="viewCanvas"></canvas>
-                <div id="cropOverlay" style="display:none">
-                    <div id="cropBox">
-                        <div class="crop-handle" data-handle="nw"></div>
-                        <div class="crop-handle" data-handle="ne"></div>
-                        <div class="crop-handle" data-handle="sw"></div>
-                        <div class="crop-handle" data-handle="se"></div>
+            <!-- Image pane: always visible; pinch/double-tap to zoom -->
+            <div id="viewerPane">
+                <div id="canvasWrap">
+                    <canvas id="viewCanvas"></canvas>
+                    <div id="cropOverlay" style="display:none">
+                        <div id="cropBox">
+                            <div class="crop-handle" data-handle="nw"></div>
+                            <div class="crop-handle" data-handle="ne"></div>
+                            <div class="crop-handle" data-handle="sw"></div>
+                            <div class="crop-handle" data-handle="se"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="status" class="status">Ready</div>
+
+                <div id="cropControls" style="display:none">
+                    <div class="straighten-row">
+                        <span>📐</span>
+                        <input type="range" class="pro-slider" id="straighten"
+                               min="-45" max="45" step="0.1" value="0">
+                        <span class="value-display" id="straighten_value">0.0°</span>
+                    </div>
+                    <div class="crop-actions">
+                        <button id="applyCropBtn" class="tb-btn primary">✓ Apply Crop</button>
+                        <button id="cancelCropBtn" class="tb-btn">✕ Cancel</button>
                     </div>
                 </div>
             </div>
 
-            <div id="cropControls" style="display:none">
-                <div class="straighten-row">
-                    <span>📐</span>
-                    <input type="range" class="pro-slider" id="straighten"
-                           min="-45" max="45" step="0.1" value="0">
-                    <span class="value-display" id="straighten_value">0.0°</span>
-                </div>
-                <div class="crop-actions">
-                    <button id="applyCropBtn" class="tb-btn primary">✓ Apply Crop</button>
-                    <button id="cancelCropBtn" class="tb-btn">✕ Cancel</button>
-                </div>
-            </div>
-
-            <div id="status" class="status">Ready</div>
-
+            <!-- Controls pane: scrolls on its own, image stays in view -->
+            <div id="controlsPane">
             <details open>
                 <summary>Tone</summary>
                 <div class="sliders">
@@ -161,6 +166,7 @@
             <div class="export-row">
                 <button id="exportTiffBtn" class="tb-btn primary wide">💾 Export 16-bit TIFF</button>
                 <button id="exportJpegBtn" class="tb-btn wide">📤 Export JPEG</button>
+            </div>
             </div>
         </div>
     </main>
