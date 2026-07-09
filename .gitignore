@@ -30,6 +30,9 @@ images_archive/
 # Stray tooling binaries
 *.exe
 
+# Local helper scripts
+sync.bat
+
 # IDE
 .vscode/settings.json
 .idea/

@@ -64,15 +64,14 @@ function decodeTiff(arrayBuffer) {
     const raw = ifd.data; // Uint8Array of decompressed sample data
 
     if (bps === 16) {
-        // UTIF keeps the file's byte order; TIFF header told it which
+        // UTIF converts big-endian 16-bit data to little-endian during
+        // decodeImage, so samples are read directly - do NOT swap again
+        // (a double swap shows as rainbow noise in the shadows)
         const src16 = new Uint16Array(raw.buffer, raw.byteOffset, Math.floor(raw.byteLength / 2));
-        const swap = ifd.isLE === false;
         for (let i = 0; i < n; i++) {
             for (let c = 0; c < 3; c++) {
                 const s = spp >= 3 ? i * spp + c : i * spp;
-                let v = src16[s];
-                if (swap) v = ((v & 0xff) << 8) | (v >> 8);
-                out[i * 3 + c] = v / 65535;
+                out[i * 3 + c] = src16[s] / 65535;
             }
         }
     } else {
@@ -96,36 +95,64 @@ function decodeTiff(arrayBuffer) {
 }
 
 async function decodeBrowserImage(file) {
-    const bitmap = await createImageBitmap(file);
+    // createImageBitmap is fastest, but some formats a browser can display
+    // (e.g. HEIC on iOS) aren't supported by it - fall back to an <img>
+    let source, width, height;
+    let objectUrl = null;
+    try {
+        source = await createImageBitmap(file);
+        width = source.width;
+        height = source.height;
+    } catch {
+        objectUrl = URL.createObjectURL(file);
+        source = new Image();
+        source.src = objectUrl;
+        try {
+            await source.decode();
+        } catch {
+            URL.revokeObjectURL(objectUrl);
+            throw new Error(`This image format isn't supported by your browser`
+                + (file.name ? ` (${file.name})` : ''));
+        }
+        width = source.naturalWidth;
+        height = source.naturalHeight;
+    }
+    if (!width || !height) throw new Error('Image decoded to an empty size');
+
     const canvas = document.createElement('canvas');
-    canvas.width = bitmap.width;
-    canvas.height = bitmap.height;
+    canvas.width = width;
+    canvas.height = height;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    ctx.drawImage(bitmap, 0, 0);
-    const { data } = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
-    const n = bitmap.width * bitmap.height;
+    ctx.drawImage(source, 0, 0);
+    if (source.close) source.close();
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+
+    const { data } = ctx.getImageData(0, 0, width, height);
+    const n = width * height;
     const out = new Float32Array(n * 3);
     for (let i = 0; i < n; i++) {
         out[i * 3] = data[i * 4] / 255;
         out[i * 3 + 1] = data[i * 4 + 1] / 255;
         out[i * 3 + 2] = data[i * 4 + 2] / 255;
     }
-    bitmap.close();
-    return { data: out, width: bitmap.width, height: bitmap.height, bitDepth: 8 };
+    return { data: out, width, height, bitDepth: 8 };
 }
 
 // Decode any supported file to float RGB, capped to the working resolution
 async function decodeImageFile(file) {
-    const name = (file.name || '').toLowerCase();
-    let img;
-    if (name.endsWith('.tif') || name.endsWith('.tiff')) {
-        img = decodeTiff(await file.arrayBuffer());
-    } else {
-        img = await decodeBrowserImage(file);
-    }
+    // Detect TIFF by magic bytes, not filename - phone pickers sometimes
+    // hand over files with unhelpful names
+    const head = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+    const isTiff = (head[0] === 0x49 && head[1] === 0x49 && head[2] === 42)
+        || (head[0] === 0x4D && head[1] === 0x4D && head[3] === 42);
+
+    const img = isTiff
+        ? decodeTiff(await file.arrayBuffer())
+        : await decodeBrowserImage(file);
+
     if (Math.max(img.width, img.height) > MAX_WORK_SIZE) {
         const scale = MAX_WORK_SIZE / Math.max(img.width, img.height);
-        img = resizeBilinear(img, Math.round(img.width * scale), Math.round(img.height * scale));
+        return resizeBilinear(img, Math.round(img.width * scale), Math.round(img.height * scale));
     }
     return img;
 }

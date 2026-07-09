@@ -72,6 +72,7 @@ class MobileFilmProcessor {
         document.getElementById('loadBtn').addEventListener('click', () => input.click());
         input.addEventListener('change', (e) => {
             if (e.target.files[0]) this.loadFile(e.target.files[0]);
+            e.target.value = ''; // allow re-picking the same file
         });
     }
 
