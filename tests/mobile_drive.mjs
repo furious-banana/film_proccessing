@@ -253,17 +253,89 @@ try {
         s.dispatchEvent(new Event('input', { bubbles: true }));
     });
 
-    // --- Compare hold shows original ---
-    await page.evaluate(() => document.getElementById('compareBtn').scrollIntoView());
+    // --- Press-and-hold the IMAGE shows the original ---
     const cmp = await page.evaluate(async () => {
-        const btn = document.getElementById('compareBtn');
-        btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+        const pane = document.getElementById('viewerPane');
+        const r = pane.getBoundingClientRect();
+        const opts = {
+            bubbles: true, pointerId: 31, isPrimary: true,
+            clientX: r.left + r.width / 2, clientY: r.top + r.height / 2,
+        };
+        pane.dispatchEvent(new PointerEvent('pointerdown', opts));
+        await new Promise(res => setTimeout(res, 550));
         const during = mobileApp.renderer.params.showOriginal;
-        btn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+        pane.dispatchEvent(new PointerEvent('pointerup', opts));
         const after = mobileApp.renderer.params.showOriginal;
         return { during, after };
     });
-    check('compare hold toggles original', cmp.during === true && cmp.after === false);
+    check('holding the image shows original', cmp.during === true && cmp.after === false,
+        JSON.stringify(cmp));
+
+    // --- Slider reset: double-tap resets, micro-drags never do ---
+    const tapReset = await page.evaluate(async () => {
+        const s = document.getElementById('exposure');
+        s.value = 0.5;
+        s.dispatchEvent(new Event('input', { bubbles: true }));
+        const tap = () => {
+            s.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+            s.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+        };
+        tap();
+        await new Promise(r => setTimeout(r, 100));
+        tap();
+        return s.value;
+    });
+    check('double-tap resets a slider', tapReset === '0', `value ${tapReset}`);
+    const microNoReset = await page.evaluate(async () => {
+        const s = document.getElementById('exposure');
+        const microDrag = (v) => {
+            s.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+            s.value = v;
+            s.dispatchEvent(new Event('input', { bubbles: true }));
+            s.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+        };
+        microDrag(0.3);
+        await new Promise(r => setTimeout(r, 100));
+        microDrag(0.31);
+        return s.value;
+    });
+    check('micro-drags never reset a slider', microNoReset === '0.31', `value ${microNoReset}`);
+    await page.evaluate(() => {
+        const s = document.getElementById('exposure');
+        s.value = 0;
+        s.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    // --- Clipping overlay: blown highlights paint red, never exported ---
+    await page.evaluate(() => {
+        const s = document.getElementById('exposure');
+        s.value = 2;
+        s.dispatchEvent(new Event('input', { bubbles: true }));
+        document.getElementById('clipBtn').click();
+    });
+    await page.waitForTimeout(150);
+    const clipPx = await page.evaluate(() => {
+        const c = document.getElementById('viewCanvas');
+        const t = document.createElement('canvas'); t.width = 1; t.height = 1;
+        const ctx = t.getContext('2d');
+        ctx.drawImage(c, c.width / 2, c.height / 2, 1, 1, 0, 0, 1, 1);
+        return Array.from(ctx.getImageData(0, 0, 1, 1).data).slice(0, 3);
+    });
+    check('clipping overlay paints blown highlights red',
+        clipPx[0] > 200 && clipPx[1] < 90 && clipPx[2] < 90, JSON.stringify(clipPx));
+    const exportClean = await page.evaluate(() => {
+        const { data, width, height } = mobileApp.renderer.renderToPixels();
+        const i = ((height >> 1) * width + (width >> 1)) * 3;
+        return [data[i], data[i + 1], data[i + 2]];
+    });
+    check('clipping overlay is not exported',
+        exportClean.every(v => v > 0.99), JSON.stringify(exportClean));
+    await page.evaluate(() => {
+        document.getElementById('clipBtn').click();
+        const s = document.getElementById('exposure');
+        s.value = 0;
+        s.dispatchEvent(new Event('input', { bubbles: true }));
+    });
 
     // --- Layout: the viewer pane always shows the image, controls scroll
     // in their own pane, and the canvas fills the available space ---

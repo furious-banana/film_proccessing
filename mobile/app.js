@@ -187,9 +187,12 @@ class MobileFilmProcessor {
 
     setupSliders() {
         document.querySelectorAll('.pro-slider').forEach(slider => {
-            slider.addEventListener('pointerdown', () => this.saveHistory());
+            slider.addEventListener('pointerdown', () => {
+                this.saveHistory();
+                slider._downValue = slider.value;
+                slider._downTs = Date.now();
+            });
             slider.addEventListener('input', () => {
-                slider._lastInputTs = Date.now();
                 this.updateValueDisplay(slider.id, slider.value);
                 if (slider.id === 'straighten') {
                     this.updateCanvasRotationPreview();
@@ -200,16 +203,23 @@ class MobileFilmProcessor {
             if (slider.id === 'straighten') {
                 slider.addEventListener('change', () => this.bakeStraighten());
             }
-            slider.addEventListener('dblclick', () => {
-                // Two quick micro-drags register as a double-tap; only treat
-                // it as "reset to 0" when the value wasn't just changed by
-                // dragging (double-tapping the idle thumb still resets)
-                if (Date.now() - (slider._lastInputTs || 0) < 600) return;
-                this.saveHistory();
-                slider.value = 0;
-                this.updateValueDisplay(slider.id, 0);
-                if (slider.id === 'straighten') this.bakeStraighten();
-                else this.updateImage();
+            // Double-tap the thumb resets to 0. A tap is a quick press that
+            // did NOT change the value - so micro-drags (which do, and on
+            // touchscreens fire input events even for tiny taps) can never
+            // trigger the reset.
+            slider.addEventListener('pointerup', () => {
+                const now = Date.now();
+                const isTap = slider.value === slider._downValue
+                    && now - (slider._downTs || 0) < 350;
+                if (isTap && now - (slider._lastTapTs || 0) < 450) {
+                    slider._lastTapTs = 0;
+                    slider.value = 0;
+                    this.updateValueDisplay(slider.id, 0);
+                    if (slider.id === 'straighten') this.bakeStraighten();
+                    else this.updateImage();
+                } else {
+                    slider._lastTapTs = isTap ? now : 0;
+                }
             });
             this.updateValueDisplay(slider.id, slider.value);
         });
@@ -1132,16 +1142,53 @@ class MobileFilmProcessor {
     setupMisc() {
         document.getElementById('undoBtn').addEventListener('click', () => this.undo());
 
-        // Press-and-hold compare button
-        const btn = document.getElementById('compareBtn');
+        // Press-and-hold the IMAGE to compare with the unadjusted original
+        const pane = document.getElementById('viewerPane');
         const show = (on) => {
             this.showingOriginal = on;
             if (this.renderer) this.renderer.updateParams({ showOriginal: on });
         };
-        btn.addEventListener('pointerdown', (e) => { e.preventDefault(); show(true); });
-        btn.addEventListener('pointerup', () => show(false));
-        btn.addEventListener('pointercancel', () => show(false));
-        btn.addEventListener('pointerleave', () => { if (this.showingOriginal) show(false); });
+        let holdTimer = null;
+        let holdStart = null;
+        pane.addEventListener('pointerdown', (e) => {
+            if (this.cropMode || this.eyedropperMode || !this.original) return;
+            if (!e.isPrimary) {
+                // A second finger means pinch, not a hold
+                clearTimeout(holdTimer);
+                holdTimer = null;
+                if (this.showingOriginal) show(false);
+                return;
+            }
+            holdStart = { x: e.clientX, y: e.clientY };
+            clearTimeout(holdTimer);
+            holdTimer = setTimeout(() => show(true), 400);
+        });
+        pane.addEventListener('pointermove', (e) => {
+            // Moving before the hold kicks in means drag/pan, not compare
+            if (holdTimer && holdStart
+                && Math.hypot(e.clientX - holdStart.x, e.clientY - holdStart.y) > 12) {
+                clearTimeout(holdTimer);
+                holdTimer = null;
+            }
+        });
+        const endHold = () => {
+            clearTimeout(holdTimer);
+            holdTimer = null;
+            if (this.showingOriginal) show(false);
+        };
+        pane.addEventListener('pointerup', endHold);
+        pane.addEventListener('pointercancel', endHold);
+        // Long-press must not open the browser context menu
+        pane.addEventListener('contextmenu', (e) => e.preventDefault());
+
+        // Clipping overlay toggle (highlights red, blacks blue)
+        const clipBtn = document.getElementById('clipBtn');
+        this.showClipping = false;
+        clipBtn.addEventListener('click', () => {
+            this.showClipping = !this.showClipping;
+            clipBtn.classList.toggle('active', this.showClipping);
+            if (this.renderer) this.renderer.updateParams({ showClipping: this.showClipping });
+        });
 
         // Refit on any viewport change: rotating the phone, unfolding a
         // foldable, resizing a window

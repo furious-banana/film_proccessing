@@ -100,22 +100,38 @@ try {
     const after = await samplePixel(0.25, 0.25);
     check('exposure +1 brightens preview', before !== after, `${before} -> ${after}`);
 
-    // A dblclick right after dragging must NOT reset (micro-adjustment guard)
-    await page.evaluate(() => {
+    // Micro-drags (presses that change the value) must NEVER reset the
+    // slider, no matter how quickly they repeat (micro-adjustment guard)
+    const microNoReset = await page.evaluate(async () => {
         const s = document.getElementById('exposure');
-        s.dispatchEvent(new Event('dblclick', { bubbles: true }));
+        const microDrag = (v) => {
+            s.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+            s.value = v;
+            s.dispatchEvent(new Event('input', { bubbles: true }));
+            s.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+        };
+        microDrag(1.02);
+        await new Promise(r => setTimeout(r, 100));
+        microDrag(1.04);
+        return s.value;
     });
-    check('dblclick right after dragging is ignored',
-        await page.evaluate(() => document.getElementById('exposure').value) === '1');
+    check('micro-drags never reset the slider', microNoReset === '1.04',
+        `value ${microNoReset}`);
 
-    // ... but an idle double-click resets
-    await page.waitForTimeout(700);
-    await page.evaluate(() => {
+    // ... but a double-click on the thumb (value unchanged) resets
+    const tapReset = await page.evaluate(async () => {
         const s = document.getElementById('exposure');
-        s.dispatchEvent(new Event('dblclick', { bubbles: true }));
+        const tap = () => {
+            s.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+            s.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+        };
+        tap();
+        await new Promise(r => setTimeout(r, 100));
+        tap();
+        return s.value;
     });
-    check('idle dblclick resets exposure',
-        await page.evaluate(() => document.getElementById('exposure').value) === '0');
+    check('double-click on the thumb resets exposure', tapReset === '0',
+        `value ${tapReset}`);
 
     // --- Each tone/color slider changes the rendered image ---
     // Each slider only affects a certain tonal range, and additive sliders
@@ -268,6 +284,41 @@ try {
         backToEdit = true;
     } catch { /* stays false */ }
     check('hold shows original, release restores', showingOrig && backToEdit);
+
+    // --- Clipping overlay: blown highlights paint red, toggle restores ---
+    await page.evaluate(() => {
+        const s = document.getElementById('exposure');
+        s.value = 2;
+        s.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await page.click('#clippingBtn');
+    await page.waitForTimeout(300);
+    const clipProbe = await page.evaluate(() => {
+        // Find a clipped (bright) pixel and confirm it is painted red
+        const c = document.getElementById('webglCanvas');
+        const N = 80;
+        const t = document.createElement('canvas'); t.width = N; t.height = N;
+        const ctx = t.getContext('2d');
+        ctx.drawImage(c, 0, 0, N, N);
+        const d = ctx.getImageData(0, 0, N, N).data;
+        let red = 0, total = 0;
+        for (let i = 0; i < d.length; i += 4) {
+            total++;
+            if (d[i] > 200 && d[i + 1] < 90 && d[i + 2] < 90) red++;
+        }
+        return { red, total, on: processor.webglRenderer.params.showClipping };
+    });
+    check('clipping overlay paints blown highlights red',
+        clipProbe.on && clipProbe.red > 0, JSON.stringify(clipProbe));
+    await page.click('#clippingBtn');
+    await page.evaluate(() => {
+        const s = document.getElementById('exposure');
+        s.value = 0;
+        s.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await page.waitForTimeout(200);
+    check('clipping toggle turns back off',
+        await page.evaluate(() => !processor.webglRenderer.params.showClipping));
 
     // --- Straighten: fine rotation bakes server-side, bbox expands ---
     const dimsPreStraighten = await page.evaluate(() =>

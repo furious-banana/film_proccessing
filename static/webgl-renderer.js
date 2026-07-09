@@ -108,6 +108,7 @@ class WebGLRenderer {
         // Adjustment parameters (passed as uniforms to shader)
         this.params = {
             showOriginal: false,  // Bypass all adjustments when true
+            showClipping: false,  // Paint clipped pixels when true (display only)
             exposure: 0.0,
             contrast: 0.0,
             brightness: 0.0,
@@ -229,6 +230,7 @@ class WebGLRenderer {
             
             uniform sampler2D u_image;
             uniform float u_showOriginal;  // Bypass all adjustments when 1.0
+            uniform float u_showClipping;  // Paint clipped pixels when 1.0
             uniform float u_exposure;
             uniform float u_contrast;
             uniform float u_brightness;
@@ -429,7 +431,17 @@ class WebGLRenderer {
                 
                 // Clamp to valid range
                 color = clamp(color, 0.0, 1.0);
-                
+
+                // Clipping overlay (display only, never exported): paint
+                // clipped highlights red and clipped blacks blue
+                if (u_showClipping > 0.5) {
+                    if (max(color.r, max(color.g, color.b)) >= 0.9995) {
+                        color = vec3(1.0, 0.1, 0.1);
+                    } else if (min(color.r, min(color.g, color.b)) <= 0.0005) {
+                        color = vec3(0.15, 0.4, 1.0);
+                    }
+                }
+
                 gl_FragColor = vec4(color, 1.0);
             }
         `;
@@ -775,6 +787,7 @@ class WebGLRenderer {
         
         // Upload show original flag (bypasses all adjustments)
         gl.uniform1f(gl.getUniformLocation(this.program, 'u_showOriginal'), this.params.showOriginal ? 1.0 : 0.0);
+        gl.uniform1f(gl.getUniformLocation(this.program, 'u_showClipping'), this.params.showClipping ? 1.0 : 0.0);
         
         // Upload all uniform parameters
         gl.uniform1f(gl.getUniformLocation(this.program, 'u_exposure'), this.params.exposure || 0.0);
