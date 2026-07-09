@@ -1,89 +1,45 @@
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
+.pytest_cache/
+.coverage
+htmlcov/
 
-# uv
-.python-version
-uv.lock
-
-# Virtual Environment (uv manages this)
+# Virtual environment (uv manages this)
 .venv/
-venv/
-ENV/
-env/
 
 # Node.js / Electron
 node_modules/
-package-lock.json
 
-# Build/Distribution outputs
-FilmProcessor-Release/
-FilmProcessor-Release.zip
+# Build / distribution outputs (regenerate with package-for-distribution.bat)
 dist/
+build/
+FilmProcessor-Release*/
+FilmProcessor-Release*.zip
 
-# IDE
-.vscode/settings.json
-.idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Application specific
+# Local image files (scans, test outputs) - don't commit images
 images_archive/
-archive/
 *.jpg
 *.jpeg
 *.png
 *.gif
 *.bmp
+*.tif
 *.tiff
+
+# Stray tooling binaries
+*.exe
+
+# IDE
+.vscode/settings.json
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
 
 # Logs and temp
 *.log
 temp/
 tmp/
-
-# Test artifacts
-.pytest_cache/
-.coverage
-htmlcov/
-
-# Utility test files (keep these)
-# test_imports.py
-# test_flask.py
-
-# Ignore test and temp files
-test_*.py
-test_*.jpg
-test_*.png
-test_*.jpeg
-test_*.bmp
-*.log
-
-# Ignore executables
-uvw.exe
-uvx.exe
-
-# Ignore images archive if not needed
-images_archive/

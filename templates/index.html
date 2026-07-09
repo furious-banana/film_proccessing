@@ -17,17 +17,12 @@
             <span id="versionLabel" style="font-size: 10px; color: var(--text-tertiary); margin-left: 8px; opacity: 0.6;"></span>
         </div>
         <div class="top-controls">
-            <div class="image-mode-toggle" style="margin-right: 16px; display: flex; align-items: center; gap: 8px;">
+            <div class="image-mode-toggle" style="display: flex; align-items: center; gap: 8px;">
                 <span style="font-size: 11px; color: var(--text-tertiary);">Mode:</span>
                 <div class="view-toggle">
                     <button class="view-btn mode-btn" id="modePhoto" onclick="switchImageMode('photo')">Photo</button>
                     <button class="view-btn mode-btn active" id="modeNegative" onclick="switchImageMode('negative')">Negative</button>
                 </div>
-            </div>
-            <div class="view-toggle">
-                <button class="view-btn active">Develop</button>
-                <button class="view-btn">Library</button>
-                <button class="view-btn">Export</button>
             </div>
         </div>
     </div>
@@ -43,7 +38,7 @@
             <div class="panel-content">
                 <!-- Upload Section -->
                 <div class="upload-zone" id="uploadZone">
-                    <input type="file" id="fileInput" accept="image/*">
+                    <input type="file" id="fileInput" accept="image/*,.tif,.tiff">
                     <div class="upload-icon">
                         <i class="fas fa-cloud-upload-alt"></i>
                     </div>
@@ -70,8 +65,8 @@
                             <div class="control-row">
                                 <span class="control-label">Exposure</span>
                                 <div class="control-wrapper">
-                                    <input type="range" class="pro-slider" id="exposure" 
-                                           min="-3" max="3" step="0.01" value="0">
+                                    <input type="range" class="pro-slider" id="exposure"
+                                           min="-2" max="2" step="0.01" value="0">
                                     <span class="value-display" id="exposure_value">0.00</span>
                                 </div>
                             </div>
@@ -79,8 +74,8 @@
                             <div class="control-row">
                                 <span class="control-label">Contrast</span>
                                 <div class="control-wrapper">
-                                    <input type="range" class="pro-slider" id="contrast" 
-                                           min="-1" max="1" step="0.01" value="0">
+                                    <input type="range" class="pro-slider" id="contrast"
+                                           min="-0.5" max="0.5" step="0.005" value="0">
                                     <span class="value-display" id="contrast_value">0.00</span>
                                 </div>
                             </div>
@@ -88,8 +83,8 @@
                             <div class="control-row">
                                 <span class="control-label">Highlights</span>
                                 <div class="control-wrapper">
-                                    <input type="range" class="pro-slider" id="highlights" 
-                                           min="-1" max="1" step="0.01" value="0">
+                                    <input type="range" class="pro-slider" id="highlights"
+                                           min="-0.5" max="0.5" step="0.005" value="0">
                                     <span class="value-display" id="highlights_value">0.00</span>
                                 </div>
                             </div>
@@ -97,8 +92,8 @@
                             <div class="control-row">
                                 <span class="control-label">Shadows</span>
                                 <div class="control-wrapper">
-                                    <input type="range" class="pro-slider" id="shadows" 
-                                           min="-1" max="1" step="0.01" value="0">
+                                    <input type="range" class="pro-slider" id="shadows"
+                                           min="-0.5" max="0.5" step="0.005" value="0">
                                     <span class="value-display" id="shadows_value">0.00</span>
                                 </div>
                             </div>
@@ -106,8 +101,8 @@
                             <div class="control-row">
                                 <span class="control-label">Whites</span>
                                 <div class="control-wrapper">
-                                    <input type="range" class="pro-slider" id="whites" 
-                                           min="-1" max="1" step="0.01" value="0">
+                                    <input type="range" class="pro-slider" id="whites"
+                                           min="-0.5" max="0.5" step="0.005" value="0">
                                     <span class="value-display" id="whites_value">0.00</span>
                                 </div>
                             </div>
@@ -115,8 +110,8 @@
                             <div class="control-row">
                                 <span class="control-label">Blacks</span>
                                 <div class="control-wrapper">
-                                    <input type="range" class="pro-slider" id="blacks" 
-                                           min="-1" max="1" step="0.01" value="0">
+                                    <input type="range" class="pro-slider" id="blacks"
+                                           min="-0.5" max="0.5" step="0.005" value="0">
                                     <span class="value-display" id="blacks_value">0.00</span>
                                 </div>
                             </div>
@@ -131,8 +126,8 @@
                             <div class="control-row">
                                 <span class="control-label">Red</span>
                                 <div class="control-wrapper">
-                                    <input type="range" class="pro-slider" id="red" 
-                                           min="-0.3" max="0.3" step="0.01" value="0">
+                                    <input type="range" class="pro-slider" id="red"
+                                           min="-0.15" max="0.15" step="0.005" value="0">
                                     <span class="value-display" id="red_value">0.00</span>
                                 </div>
                             </div>
@@ -140,8 +135,8 @@
                             <div class="control-row">
                                 <span class="control-label">Green</span>
                                 <div class="control-wrapper">
-                                    <input type="range" class="pro-slider" id="green" 
-                                           min="-0.3" max="0.3" step="0.01" value="0">
+                                    <input type="range" class="pro-slider" id="green"
+                                           min="-0.15" max="0.15" step="0.005" value="0">
                                     <span class="value-display" id="green_value">0.00</span>
                                 </div>
                             </div>
@@ -149,8 +144,8 @@
                             <div class="control-row">
                                 <span class="control-label">Blue</span>
                                 <div class="control-wrapper">
-                                    <input type="range" class="pro-slider" id="blue" 
-                                           min="-0.3" max="0.3" step="0.01" value="0">
+                                    <input type="range" class="pro-slider" id="blue"
+                                           min="-0.15" max="0.15" step="0.005" value="0">
                                     <span class="value-display" id="blue_value">0.00</span>
                                 </div>
                             </div>
@@ -205,6 +200,38 @@
                                 Reset Curve
                             </button>
                         </div>
+
+                        <!-- Presets -->
+                        <div class="control-group" style="margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border-color);">
+                            <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px; font-weight: 500;">
+                                PRESETS
+                            </div>
+                            <div style="display: flex; gap: 6px; margin-bottom: 8px;">
+                                <input type="text" id="presetName" placeholder="Preset name"
+                                       style="flex: 1; min-width: 0; padding: 5px 8px; font-size: 11px; background: var(--bg-tertiary); border: 1px solid var(--border-primary); border-radius: 3px; color: var(--text-primary);">
+                                <button id="savePresetBtn" title="Save current settings as a preset"
+                                        style="padding: 5px 10px; font-size: 11px; background: var(--bg-tertiary); border: 1px solid var(--border-primary); border-radius: 3px; cursor: pointer; color: var(--text-primary);">
+                                    Save
+                                </button>
+                            </div>
+                            <div style="display: flex; gap: 6px;">
+                                <select id="presetSelect"
+                                        style="flex: 1; min-width: 0; padding: 5px 8px; font-size: 11px; background: var(--bg-tertiary); border: 1px solid var(--border-primary); border-radius: 3px; color: var(--text-primary);">
+                                    <option value="">— no presets saved —</option>
+                                </select>
+                                <button id="applyPresetBtn" title="Apply selected preset"
+                                        style="padding: 5px 10px; font-size: 11px; background: var(--bg-tertiary); border: 1px solid var(--border-primary); border-radius: 3px; cursor: pointer; color: var(--text-primary);">
+                                    Apply
+                                </button>
+                                <button id="deletePresetBtn" title="Delete selected preset"
+                                        style="padding: 5px 8px; font-size: 11px; background: var(--bg-tertiary); border: 1px solid var(--border-primary); border-radius: 3px; cursor: pointer; color: var(--text-primary);">
+                                    🗑
+                                </button>
+                            </div>
+                            <div style="font-size: 10px; color: var(--text-tertiary); margin-top: 6px;">
+                                Presets store tone, color, curves and film correction — not crop, rotation or eyedropper picks.
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Film Base Correction Section (shown only in negative mode) -->
@@ -225,11 +252,6 @@
                             </div>
                         </div>
                     </div>
-                </div>
-
-                <!-- Film Effects Panel -->
-                <div id="filmPanel" class="tab-panel">
-                    <!-- This tab is hidden - no film emulation needed for real film scans -->
                 </div>
             </div>
         </div>
@@ -284,6 +306,16 @@
                 </button>
             </div>
             
+            <!-- Straighten bar - appears in crop mode so the image can be
+                 rotated behind the (fixed) crop box to align with its edges -->
+            <div id="straightenBar" style="display: none; align-items: center; gap: 14px; padding: 10px 20px; background: var(--bg-secondary); border-bottom: 1px solid var(--border-primary);">
+                <span style="font-size: 12px; color: var(--text-secondary); white-space: nowrap; font-weight: 500;">📐 Straighten</span>
+                <input type="range" class="pro-slider" id="straighten"
+                       min="-45" max="45" step="0.1" value="0" style="max-width: none;">
+                <span class="value-display" id="straighten_value" style="min-width: 52px;">0.0°</span>
+                <button id="straightenResetBtn" class="toolbar-btn" title="Reset angle to 0">Reset</button>
+            </div>
+
             <div class="image-container" id="imageContainer">
                 <div class="loading-overlay" id="loadingOverlay">
                     <div class="loading-spinner"></div>
@@ -334,7 +366,7 @@
         <div style="position: absolute; bottom: 5px; left: 0; right: 0; text-align: center; color: #fff; font-size: 10px; text-shadow: 0 1px 3px rgba(0,0,0,0.8); font-family: monospace;"><span id="loupeRGB">RGB: ---</span></div>
     </div>
 
-    <script src="/static/webgl-renderer.js?v=51"></script>
-    <script src="/static/app.js?v=51"></script>
+    <script src="/static/webgl-renderer.js?v=54"></script>
+    <script src="/static/app.js?v=54"></script>
 </body>
 </html>

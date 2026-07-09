@@ -1,6 +1,90 @@
 // WebGL GPU Renderer for Real-Time Image Processing
 // Eliminates GPU→CPU transfer lag by processing entirely on client GPU
 
+// Monotone cubic Hermite spline (Fritsch-Carlson). This is the single curve
+// interpolation used everywhere: the curve editor's drawn line (app.js), the
+// shader's lookup textures (below), and the server's export LUT
+// (film_processing._build_curve_lut) all implement this same algorithm.
+function buildMonotoneCubicSpline(points) {
+    const sorted = [...points].sort((a, b) => a.x - b.x);
+    const n = sorted.length;
+
+    if (n < 2) return () => 0;
+    if (n === 2) {
+        const x0 = sorted[0].x, y0 = sorted[0].y;
+        const slope = (sorted[1].y - y0) / (sorted[1].x - x0);
+        return (x) => y0 + slope * (x - x0);
+    }
+
+    const xs = sorted.map(p => p.x);
+    const ys = sorted.map(p => p.y);
+
+    // Secant slopes
+    const dxs = [];
+    const ms = [];
+    for (let i = 0; i < n - 1; i++) {
+        const dx = xs[i + 1] - xs[i];
+        dxs.push(dx);
+        ms.push((ys[i + 1] - ys[i]) / dx);
+    }
+
+    // Tangents
+    const c1s = [ms[0]];
+    for (let i = 1; i < n - 1; i++) {
+        const mLeft = ms[i - 1];
+        const mRight = ms[i];
+        if (mLeft * mRight <= 0) {
+            c1s.push(0);
+        } else {
+            const common = dxs[i - 1] + dxs[i];
+            c1s.push(3 * common / ((common + dxs[i]) / mLeft + (common + dxs[i - 1]) / mRight));
+        }
+    }
+    c1s.push(ms[n - 2]);
+
+    // Monotonicity constraints
+    for (let i = 0; i < n - 1; i++) {
+        if (Math.abs(ms[i]) < 1e-10) {
+            c1s[i] = 0;
+            c1s[i + 1] = 0;
+        } else {
+            const alpha = c1s[i] / ms[i];
+            const beta = c1s[i + 1] / ms[i];
+            if (alpha * alpha + beta * beta > 9) {
+                const tau = 3 / Math.sqrt(alpha * alpha + beta * beta);
+                c1s[i] = tau * alpha * ms[i];
+                c1s[i + 1] = tau * beta * ms[i];
+            }
+        }
+    }
+
+    // Cubic coefficients per segment
+    const c2s = [];
+    const c3s = [];
+    for (let i = 0; i < n - 1; i++) {
+        const invDx = 1 / dxs[i];
+        const common = c1s[i] + c1s[i + 1] - 2 * ms[i];
+        c2s.push((ms[i] - c1s[i] - common) * invDx);
+        c3s.push(common * invDx * invDx);
+    }
+
+    return (x) => {
+        if (x <= xs[0]) return ys[0];
+        if (x >= xs[n - 1]) return ys[n - 1];
+
+        let i = 0;
+        for (let j = 0; j < n - 1; j++) {
+            if (xs[j] <= x && x <= xs[j + 1]) {
+                i = j;
+                break;
+            }
+        }
+
+        const dx = x - xs[i];
+        return ys[i] + dx * (c1s[i] + dx * (c2s[i] + dx * c3s[i]));
+    };
+}
+
 class WebGLRenderer {
     constructor(canvasId) {
         this.canvas = document.getElementById(canvasId);
@@ -445,10 +529,14 @@ class WebGLRenderer {
             
             // Get raw bytes
             const arrayBuffer = await response.arrayBuffer();
-            
+
             // Convert to Float32Array
             const float32Data = new Float32Array(arrayBuffer);
-            
+
+            // Keep a CPU copy so tools (eyedroppers) can sample the
+            // unadjusted source pixels
+            this.imageData = float32Data;
+
             // Upload to GPU texture
             this.uploadTexture(float32Data, this.imageWidth, this.imageHeight);
             
@@ -467,53 +555,66 @@ class WebGLRenderer {
         }
     }
     
+    // Sample the raw (unadjusted) source pixel at native image coordinates.
+    // Returns [r, g, b] in 0-255, or null if unavailable.
+    getSourcePixel(x, y) {
+        if (!this.imageData || !this.imageWidth || !this.imageHeight) return null;
+        const px = Math.max(0, Math.min(this.imageWidth - 1, Math.floor(x)));
+        const py = Math.max(0, Math.min(this.imageHeight - 1, Math.floor(y)));
+        const i = (py * this.imageWidth + px) * 3;
+        return [
+            Math.round(this.imageData[i] * 255),
+            Math.round(this.imageData[i + 1] * 255),
+            Math.round(this.imageData[i + 2] * 255)
+        ];
+    }
+
     uploadTexture(data, width, height) {
         const gl = this.gl;
-        
-        // Try to use float textures for full precision
-        const floatExt = gl.getExtension('OES_texture_float');
-        const useFloat = floatExt !== null;
-        
+
+        // Float textures: core in WebGL2, extension in WebGL1. (Checking only
+        // OES_texture_float would wrongly report "unsupported" on WebGL2 and
+        // silently degrade the preview to 8-bit.)
+        const isWebGL2 = typeof WebGL2RenderingContext !== 'undefined'
+            && gl instanceof WebGL2RenderingContext;
+        const useFloat = isWebGL2 || gl.getExtension('OES_texture_float') !== null;
+        // LINEAR filtering of float32 textures needs this on both versions
+        const floatLinear = gl.getExtension('OES_texture_float_linear') !== null;
+
         // Create or update texture
         if (!this.texture) {
             this.texture = gl.createTexture();
         }
-        
+
         gl.bindTexture(gl.TEXTURE_2D, this.texture);
-        
+
         // Set pixel store parameters - CRITICAL for non-aligned row widths
         gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);  // No padding, pack tightly
-        
+
         if (useFloat) {
-            // Upload float32 RGB data directly (full precision!)
-            // Use RGBA32F for WebGL2 or RGBA for WebGL1 (RGB doesn't support float in all browsers)
-            const internalFormat = this.gl.RGB32F || gl.RGBA;  // WebGL2 supports RGB32F, WebGL1 needs RGBA
-            const format = internalFormat === gl.RGBA ? gl.RGBA : gl.RGB;
-            
-            // Convert RGB to RGBA if needed (add alpha=1.0)
-            let textureData = data;
-            if (format === gl.RGBA) {
-                textureData = new Float32Array(width * height * 4);
-                for (let i = 0; i < width * height; i++) {
-                    textureData[i * 4 + 0] = data[i * 3 + 0];  // R
-                    textureData[i * 4 + 1] = data[i * 3 + 1];  // G
-                    textureData[i * 4 + 2] = data[i * 3 + 2];  // B
-                    textureData[i * 4 + 3] = 1.0;              // A (always 1.0)
-                }
+            // Upload as RGBA float32 (full 16-bit-scan precision). RGBA is
+            // used instead of RGB because 3-channel float textures are not
+            // reliably supported across drivers.
+            const textureData = new Float32Array(width * height * 4);
+            for (let i = 0; i < width * height; i++) {
+                textureData[i * 4 + 0] = data[i * 3 + 0];  // R
+                textureData[i * 4 + 1] = data[i * 3 + 1];  // G
+                textureData[i * 4 + 2] = data[i * 3 + 2];  // B
+                textureData[i * 4 + 3] = 1.0;              // A
             }
-            
+
             gl.texImage2D(
                 gl.TEXTURE_2D,
-                0,                    // level
-                internalFormat,       // internal format (RGB32F or RGBA - full float precision!)
+                0,                                     // level
+                isWebGL2 ? gl.RGBA32F : gl.RGBA,       // sized format required on WebGL2
                 width,
                 height,
-                0,                    // border
-                format,               // format (RGB or RGBA)
-                gl.FLOAT,             // type (float32 - full precision!)
+                0,                                     // border
+                gl.RGBA,
+                gl.FLOAT,
                 textureData
             );
-            console.log(`Texture uploaded to GPU: ${width}x${height} ${format === gl.RGBA ? 'RGBA' : 'RGB'} float32 (full precision)`);
+            console.log(`Texture uploaded to GPU: ${width}x${height} RGBA float32 (full precision)`);
         } else {
             // Fallback: convert to uint8 (some quality loss)
             console.warn('Float textures not supported, converting to 8-bit');
@@ -521,7 +622,7 @@ class WebGLRenderer {
             for (let i = 0; i < data.length; i++) {
                 uint8Data[i] = Math.max(0, Math.min(255, Math.round(data[i] * 255)));
             }
-            
+
             gl.texImage2D(
                 gl.TEXTURE_2D,
                 0,                    // level
@@ -535,18 +636,21 @@ class WebGLRenderer {
             );
             console.log(`Texture uploaded to GPU: ${width}x${height} RGB uint8 (8-bit fallback)`);
         }
-        
+
         // Check for WebGL errors
         const error = gl.getError();
         if (error !== gl.NO_ERROR) {
             console.error('WebGL texture upload error:', error);
         }
-        
-        // Set texture parameters (no mipmaps, linear filtering for smooth scaling)
+
+        // No mipmaps; linear filtering for smooth scaling (float32 textures
+        // can only be filtered with OES_texture_float_linear - otherwise
+        // NEAREST, which at 1:1-or-larger display is visually identical)
+        const filter = (useFloat && !floatLinear) ? gl.NEAREST : gl.LINEAR;
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
         
         // Enable anisotropic filtering for highest quality texture sampling
         if (this.anisotropicExt && this.maxAnisotropy) {
@@ -585,32 +689,20 @@ class WebGLRenderer {
         console.log(`Canvas: ${this.imageWidth}x${this.imageHeight} rendered, displayed at ${displayWidth.toFixed(0)}x${displayHeight.toFixed(0)}`);
     }
     
-    // Create 1D curve lookup texture from curve points
-    createCurveTexture(curvePoints) {
+    // Create 1D curve lookup texture from curve points.
+    // Uses the same monotone cubic spline as the curve editor and the
+    // server-side export LUT, so preview and export match.
+    createCurveTexture(curvePoints, existingTexture = null) {
         const gl = this.gl;
         const LUT_SIZE = 256;
-        
-        // Build lookup table (256 samples from curve)
+
+        const spline = buildMonotoneCubicSpline(curvePoints);
         const lut = new Uint8Array(LUT_SIZE * 4); // RGBA
-        
+
         for (let i = 0; i < LUT_SIZE; i++) {
             const x = i / (LUT_SIZE - 1); // 0 to 1
-            
-            // Evaluate curve at x (linear interpolation between points)
-            let y = x; // Default: straight line
-            
-            for (let j = 0; j < curvePoints.length - 1; j++) {
-                const p0 = curvePoints[j];
-                const p1 = curvePoints[j + 1];
-                
-                if (x >= p0.x && x <= p1.x) {
-                    // Linear interpolation
-                    const t = (x - p0.x) / (p1.x - p0.x);
-                    y = p0.y + t * (p1.y - p0.y);
-                    break;
-                }
-            }
-            
+            const y = Math.max(0, Math.min(1, spline(x)));
+
             // Store in all RGB channels (makes lookup simpler)
             const value = Math.round(y * 255);
             lut[i * 4 + 0] = value; // R
@@ -618,9 +710,10 @@ class WebGLRenderer {
             lut[i * 4 + 2] = value; // B
             lut[i * 4 + 3] = 255;   // A
         }
-        
-        // Create and upload texture
-        const texture = gl.createTexture();
+
+        // Reuse the existing texture object when possible (avoids leaking
+        // one texture per slider/curve update)
+        const texture = existingTexture || gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, texture);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, LUT_SIZE, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, lut);
         
@@ -636,26 +729,30 @@ class WebGLRenderer {
     // Update adjustment parameters and re-render
     updateParams(newParams) {
         Object.assign(this.params, newParams);
-        
-        // Rebuild curve textures if curves provided (GPU is fast enough for real-time)
-        if (newParams.curves) {
+
+        // Rebuild curve textures only when the curves actually changed
+        // (updateParams runs on every slider move)
+        const curvesJSON = typeof newParams.curves === 'string'
+            ? newParams.curves
+            : (newParams.curves ? JSON.stringify(newParams.curves) : null);
+
+        if (curvesJSON && curvesJSON !== this.lastCurvesJSON) {
             try {
-                const curvesData = typeof newParams.curves === 'string' ? 
-                    JSON.parse(newParams.curves) : newParams.curves;
-                
-                // Create/update curve textures
-                if (curvesData.rgb) this.curveTextureRgb = this.createCurveTexture(curvesData.rgb);
-                if (curvesData.red) this.curveTextureRed = this.createCurveTexture(curvesData.red);
-                if (curvesData.green) this.curveTextureGreen = this.createCurveTexture(curvesData.green);
-                if (curvesData.blue) this.curveTextureBlue = this.createCurveTexture(curvesData.blue);
-                
+                const curvesData = JSON.parse(curvesJSON);
+
+                if (curvesData.rgb) this.curveTextureRgb = this.createCurveTexture(curvesData.rgb, this.curveTextureRgb);
+                if (curvesData.red) this.curveTextureRed = this.createCurveTexture(curvesData.red, this.curveTextureRed);
+                if (curvesData.green) this.curveTextureGreen = this.createCurveTexture(curvesData.green, this.curveTextureGreen);
+                if (curvesData.blue) this.curveTextureBlue = this.createCurveTexture(curvesData.blue, this.curveTextureBlue);
+
                 this.params.hasCurves = true;
+                this.lastCurvesJSON = curvesJSON;
             } catch (e) {
                 console.warn('Failed to parse curves:', e);
                 this.params.hasCurves = false;
             }
         }
-        
+
         this.render();
     }
     

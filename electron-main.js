@@ -1,6 +1,6 @@
 const { app, BrowserWindow, dialog, ipcMain } = require('electron');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const Store = require('electron-store');
 
@@ -151,6 +151,23 @@ ipcMain.handle('read-file', async (event, filePath) => {
     }
 });
 
+// Stop Flask and its whole process tree. On Windows, child.kill() only
+// terminates the direct child (the `uv run` wrapper) and the actual
+// python server survives, keeping port 5000 busy for the next launch.
+function stopFlaskServer() {
+    if (!flaskProcess) return;
+    if (process.platform === 'win32') {
+        try {
+            spawnSync('taskkill', ['/pid', String(flaskProcess.pid), '/T', '/F']);
+        } catch (e) {
+            console.error('Failed to kill Flask process tree:', e);
+        }
+    } else {
+        flaskProcess.kill();
+    }
+    flaskProcess = null;
+}
+
 // App lifecycle
 app.whenReady().then(async () => {
     await startFlaskServer();
@@ -164,16 +181,12 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
-    if (flaskProcess) {
-        flaskProcess.kill();
-    }
+    stopFlaskServer();
     if (process.platform !== 'darwin') {
         app.quit();
     }
 });
 
 app.on('before-quit', () => {
-    if (flaskProcess) {
-        flaskProcess.kill();
-    }
+    stopFlaskServer();
 });

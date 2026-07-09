@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="theme-color" content="#111113">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Film Processor</title>
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="apple-touch-icon" href="icons/icon-192.png">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <span class="title">🎞 Film Processor</span>
+        <div class="mode-toggle">
+            <button class="mode-btn" data-mode="photo">Photo</button>
+            <button class="mode-btn active" data-mode="negative">Negative</button>
+        </div>
+    </header>
+
+    <main>
+        <div class="toolbar">
+            <button id="loadBtn" class="tb-btn primary">📂 Load</button>
+            <button id="cropBtn" class="tb-btn">✂️ Crop</button>
+            <button id="rotate90Btn" class="tb-btn" title="Rotate 90°">↷ 90°</button>
+            <button id="undoCropBtn" class="tb-btn" style="display:none">↩ Un-crop</button>
+            <button id="undoBtn" class="tb-btn">↶ Undo</button>
+            <button id="compareBtn" class="tb-btn" title="Hold to compare">👁 Hold</button>
+        </div>
+        <input type="file" id="fileInput" accept="image/*,.tif,.tiff" hidden>
+
+        <div id="emptyHint">
+            <p>Load a scan to start.<br>
+            JPEG, PNG and 16-bit TIFF are supported.<br>
+            <small>Negative mode inverts the scan; Photo mode is for scans
+            your scanner already converted.</small></p>
+        </div>
+
+        <div id="editorUI" style="display:none">
+            <div id="canvasWrap">
+                <canvas id="viewCanvas"></canvas>
+                <div id="cropOverlay" style="display:none">
+                    <div id="cropBox">
+                        <div class="crop-handle" data-handle="nw"></div>
+                        <div class="crop-handle" data-handle="ne"></div>
+                        <div class="crop-handle" data-handle="sw"></div>
+                        <div class="crop-handle" data-handle="se"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="cropControls" style="display:none">
+                <div class="straighten-row">
+                    <span>📐</span>
+                    <input type="range" class="pro-slider" id="straighten"
+                           min="-45" max="45" step="0.1" value="0">
+                    <span class="value-display" id="straighten_value">0.0°</span>
+                </div>
+                <div class="crop-actions">
+                    <button id="applyCropBtn" class="tb-btn primary">✓ Apply Crop</button>
+                    <button id="cancelCropBtn" class="tb-btn">✕ Cancel</button>
+                </div>
+            </div>
+
+            <div id="status" class="status">Ready</div>
+
+            <details open>
+                <summary>Tone</summary>
+                <div class="sliders">
+                    <label>Exposure
+                        <input type="range" class="pro-slider" id="exposure" min="-2" max="2" step="0.01" value="0">
+                        <span class="value-display" id="exposure_value">0</span>
+                    </label>
+                    <label>Contrast
+                        <input type="range" class="pro-slider" id="contrast" min="-0.5" max="0.5" step="0.005" value="0">
+                        <span class="value-display" id="contrast_value">0</span>
+                    </label>
+                    <label>Highlights
+                        <input type="range" class="pro-slider" id="highlights" min="-0.5" max="0.5" step="0.005" value="0">
+                        <span class="value-display" id="highlights_value">0</span>
+                    </label>
+                    <label>Shadows
+                        <input type="range" class="pro-slider" id="shadows" min="-0.5" max="0.5" step="0.005" value="0">
+                        <span class="value-display" id="shadows_value">0</span>
+                    </label>
+                    <label>Whites
+                        <input type="range" class="pro-slider" id="whites" min="-0.5" max="0.5" step="0.005" value="0">
+                        <span class="value-display" id="whites_value">0</span>
+                    </label>
+                    <label>Blacks
+                        <input type="range" class="pro-slider" id="blacks" min="-0.5" max="0.5" step="0.005" value="0">
+                        <span class="value-display" id="blacks_value">0</span>
+                    </label>
+                </div>
+            </details>
+
+            <details>
+                <summary>Color</summary>
+                <div class="sliders">
+                    <label>Red
+                        <input type="range" class="pro-slider" id="red" min="-0.15" max="0.15" step="0.005" value="0">
+                        <span class="value-display" id="red_value">0</span>
+                    </label>
+                    <label>Green
+                        <input type="range" class="pro-slider" id="green" min="-0.15" max="0.15" step="0.005" value="0">
+                        <span class="value-display" id="green_value">0</span>
+                    </label>
+                    <label>Blue
+                        <input type="range" class="pro-slider" id="blue" min="-0.15" max="0.15" step="0.005" value="0">
+                        <span class="value-display" id="blue_value">0</span>
+                    </label>
+                </div>
+                <div class="eyedroppers">
+                    <button class="eyedropper-btn" id="blackPointBtn">⬛ Black</button>
+                    <button class="eyedropper-btn" id="grayPointBtn">◼ Gray</button>
+                    <button class="eyedropper-btn" id="whitePointBtn">⬜ White</button>
+                    <button class="tb-btn" id="resetEyedroppersBtn">Reset</button>
+                </div>
+            </details>
+
+            <details>
+                <summary>Curves</summary>
+                <div class="curve-channels">
+                    <button class="curve-channel-btn active" data-channel="rgb">RGB</button>
+                    <button class="curve-channel-btn red" data-channel="red">R</button>
+                    <button class="curve-channel-btn green" data-channel="green">G</button>
+                    <button class="curve-channel-btn blue" data-channel="blue">B</button>
+                </div>
+                <canvas id="curvesCanvas" width="300" height="300"></canvas>
+                <button id="resetCurvesBtn" class="tb-btn wide">Reset Curve</button>
+                <p class="hint">Tap to add a point, drag to move, double-tap to remove.</p>
+            </details>
+
+            <details>
+                <summary>Film</summary>
+                <div id="filmCorrRow" class="toggle-row">
+                    <span>Film base correction</span>
+                    <input type="checkbox" id="filmCorrToggle" class="switch" checked>
+                </div>
+                <p class="hint">Removes the orange film base cast (negatives only).</p>
+            </details>
+
+            <details>
+                <summary>Presets</summary>
+                <div class="preset-row">
+                    <input type="text" id="presetName" placeholder="Preset name">
+                    <button id="savePresetBtn" class="tb-btn">Save</button>
+                </div>
+                <div class="preset-row">
+                    <select id="presetSelect"></select>
+                    <button id="applyPresetBtn" class="tb-btn">Apply</button>
+                    <button id="deletePresetBtn" class="tb-btn">🗑</button>
+                </div>
+            </details>
+
+            <div class="export-row">
+                <button id="exportTiffBtn" class="tb-btn primary wide">💾 Export 16-bit TIFF</button>
+                <button id="exportJpegBtn" class="tb-btn wide">📤 Export JPEG</button>
+            </div>
+        </div>
+    </main>
+
+    <div id="loupe" style="display:none">
+        <canvas id="loupeCanvas" width="120" height="120"></canvas>
+        <div class="crosshair-v"></div>
+        <div class="crosshair-h"></div>
+        <div class="loupe-rgb"><span id="loupeRGB">—</span></div>
+    </div>
+
+    <script src="vendor/UTIF.js"></script>
+    <script src="pipeline.js"></script>
+    <script src="tiff.js"></script>
+    <script src="webgl-renderer.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
