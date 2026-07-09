@@ -159,6 +159,14 @@ try {
     await page.click('#cropBtn');
     await page.waitForTimeout(300);
     check('crop mode opens', await page.evaluate(() => mobileApp.cropMode));
+
+    // Viewport lock: record content scale + viewport size before rotating
+    const scaleBefore = await page.evaluate(() => {
+        const r = document.getElementById('viewCanvas').getBoundingClientRect();
+        const w = document.getElementById('canvasWrap').getBoundingClientRect();
+        return { content: r.width / mobileApp.renderer.imageWidth, wrapW: w.width, wrapH: w.height };
+    });
+
     await page.evaluate(() => {
         const s = document.getElementById('straighten');
         s.value = 10;
@@ -170,6 +178,18 @@ try {
     const rotDims = await page.evaluate(() =>
         [mobileApp.renderer.imageWidth, mobileApp.renderer.imageHeight]);
     check('straighten expands bbox', rotDims[0] > 1200 && rotDims[1] > 800, rotDims.join('x'));
+
+    // No zoom: content scale and crop viewport unchanged after the bake
+    const scaleAfter = await page.evaluate(() => {
+        const r = document.getElementById('viewCanvas').getBoundingClientRect();
+        const w = document.getElementById('canvasWrap').getBoundingClientRect();
+        return { content: r.width / mobileApp.renderer.imageWidth, wrapW: w.width, wrapH: w.height };
+    });
+    check('straighten keeps content scale (no zoom)',
+        Math.abs(scaleAfter.content - scaleBefore.content) / scaleBefore.content < 0.01
+        && Math.abs(scaleAfter.wrapW - scaleBefore.wrapW) < 1
+        && Math.abs(scaleAfter.wrapH - scaleBefore.wrapH) < 1,
+        `scale ${scaleBefore.content.toFixed(4)} -> ${scaleAfter.content.toFixed(4)}`);
     await page.evaluate(() => {
         const s = document.getElementById('straighten');
         s.value = 0;
@@ -193,11 +213,18 @@ try {
     check('undo crop restores', await page.evaluate(() =>
         mobileApp.renderer.imageWidth === 1200));
 
-    // --- Rotate 90 ---
+    // --- Rotate 90 (and verify the rotation is CLOCKWISE: the source's
+    // bottom-left pixel must land at the destination's top-left) ---
+    const blBefore = await page.evaluate(() =>
+        mobileApp.renderer.getSourcePixel(2, mobileApp.renderer.imageHeight - 3));
     await page.click('#rotate90Btn');
     await page.waitForTimeout(500);
     check('rotate 90 swaps dims', await page.evaluate(() =>
         mobileApp.renderer.imageWidth === 800 && mobileApp.renderer.imageHeight === 1200));
+    const tlAfter = await page.evaluate(() => mobileApp.renderer.getSourcePixel(2, 2));
+    check('rotation direction is clockwise',
+        blBefore.every((v, i) => Math.abs(v - tlAfter[i]) <= 3),
+        `src bottom-left ${blBefore} -> dest top-left ${tlAfter}`);
     await page.click('#undoCropBtn');
     await page.waitForTimeout(500);
     check('undo rotate 90', await page.evaluate(() =>

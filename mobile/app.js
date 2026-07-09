@@ -616,26 +616,42 @@ class MobileFilmProcessor {
         if (this.cropMode) { this.cancelCrop(); return; }
         if (!this.original) return;
         this.cropMode = true;
+
+        // Lock the viewport: the wrapper keeps its current size and clips,
+        // and the canvas keeps constant content scale while straightening
+        const canvas = document.getElementById('viewCanvas');
+        const wrap = document.getElementById('canvasWrap');
+        const rect = canvas.getBoundingClientRect();
+        this.cropContentScale = rect.width / this.renderer.imageWidth;
+        wrap.style.width = rect.width + 'px';
+        wrap.style.height = rect.height + 'px';
+        wrap.classList.add('cropping');
+        this.updateLockedCanvasSize();
+
         document.getElementById('cropOverlay').style.display = 'block';
         document.getElementById('cropControls').style.display = '';
         document.getElementById('cropBtn').classList.add('active');
         this.syncCropOverlayBox(true);
     }
 
-    // Size the overlay to the displayed canvas; optionally reset the box
-    syncCropOverlayBox(resetBox = false) {
-        if (!this.cropMode) return;
+    // Keep the on-screen scale of the image content constant: css size
+    // follows the (possibly rotation-expanded) working image
+    updateLockedCanvasSize() {
+        if (!this.cropMode || !this.cropContentScale) return;
         const canvas = document.getElementById('viewCanvas');
-        const overlay = document.getElementById('cropOverlay');
-        overlay.style.width = canvas.clientWidth + 'px';
-        overlay.style.height = canvas.clientHeight + 'px';
-        if (resetBox) {
-            const box = document.getElementById('cropBox');
-            box.style.left = (canvas.clientWidth * 0.1) + 'px';
-            box.style.top = (canvas.clientHeight * 0.1) + 'px';
-            box.style.width = (canvas.clientWidth * 0.8) + 'px';
-            box.style.height = (canvas.clientHeight * 0.8) + 'px';
-        }
+        canvas.style.width = (this.renderer.imageWidth * this.cropContentScale) + 'px';
+        canvas.style.height = 'auto';
+    }
+
+    // Reset the crop box to 80% of the (fixed-size) crop viewport
+    syncCropOverlayBox(resetBox = false) {
+        if (!this.cropMode || !resetBox) return;
+        const wrap = document.getElementById('canvasWrap');
+        const box = document.getElementById('cropBox');
+        box.style.left = (wrap.clientWidth * 0.1) + 'px';
+        box.style.top = (wrap.clientHeight * 0.1) + 'px';
+        box.style.width = (wrap.clientWidth * 0.8) + 'px';
+        box.style.height = (wrap.clientHeight * 0.8) + 'px';
     }
 
     cancelCrop() {
@@ -645,12 +661,38 @@ class MobileFilmProcessor {
         const controls = document.getElementById('cropControls');
         if (controls) controls.style.display = 'none';
         document.getElementById('cropBtn')?.classList.remove('active');
+
+        const wrap = document.getElementById('canvasWrap');
+        const canvas = document.getElementById('viewCanvas');
+        if (wrap) {
+            wrap.classList.remove('cropping');
+            wrap.style.width = '';
+            wrap.style.height = '';
+        }
+        if (canvas) {
+            canvas.style.width = '';
+            canvas.style.height = '';
+            canvas.style.removeProperty('--rot');
+        }
     }
 
     updateCanvasRotationPreview() {
         const canvas = document.getElementById('viewCanvas');
         const delta = parseFloat(document.getElementById('straighten').value) - this.bakedStraighten;
-        canvas.style.transform = delta ? `rotate(${delta}deg)` : '';
+        if (delta) canvas.style.setProperty('--rot', delta + 'deg');
+        else canvas.style.removeProperty('--rot');
+    }
+
+    // Resample the source at the slider's angle. Synchronous variant is
+    // used by applyCrop so a crop can't race a pending bake.
+    bakeStraightenNow() {
+        const angle = parseFloat(document.getElementById('straighten').value);
+        if (angle === this.bakedStraighten) return;
+        this.bakedStraighten = angle;
+        document.getElementById('viewCanvas').style.removeProperty('--rot');
+        this.rebuildSource();
+        this.updateLockedCanvasSize();
+        this.updateImage();
     }
 
     bakeStraighten() {
@@ -660,11 +702,9 @@ class MobileFilmProcessor {
         this.status('Rotating…');
         // Let the status paint before the CPU-heavy rebuild
         setTimeout(() => {
-            this.bakedStraighten = angle;
-            document.getElementById('viewCanvas').style.transform = '';
-            this.rebuildSource();
-            this.updateImage();
-            this.status(angle ? `Straighten ${angle.toFixed(1)}°` : 'Ready');
+            this.bakeStraightenNow();
+            this.status(this.bakedStraighten
+                ? `Straighten ${this.bakedStraighten.toFixed(1)}°` : 'Ready');
         }, 30);
     }
 
@@ -673,20 +713,25 @@ class MobileFilmProcessor {
         s.value = angle;
         this.updateValueDisplay('straighten', angle);
         this.bakedStraighten = angle;
-        document.getElementById('viewCanvas').style.transform = '';
+        document.getElementById('viewCanvas').style.removeProperty('--rot');
     }
 
     applyCrop() {
+        if (!this.original) return;
+        this.bakeStraightenNow(); // in case Apply is tapped mid-bake
+
         const canvas = document.getElementById('viewCanvas');
         const box = document.getElementById('cropBox');
-        const scaleX = this.renderer.imageWidth / canvas.clientWidth;
-        const scaleY = this.renderer.imageHeight / canvas.clientHeight;
+        const cRect = canvas.getBoundingClientRect();
+        const bRect = box.getBoundingClientRect();
+        const sx = this.renderer.imageWidth / cRect.width;
+        const sy = this.renderer.imageHeight / cRect.height;
 
         const rect = {
-            x: box.offsetLeft * scaleX,
-            y: box.offsetTop * scaleY,
-            width: box.offsetWidth * scaleX,
-            height: box.offsetHeight * scaleY,
+            x: (bRect.left - cRect.left) * sx,
+            y: (bRect.top - cRect.top) * sy,
+            width: bRect.width * sx,
+            height: bRect.height * sy,
         };
 
         // The crop bakes the current straighten angle (desktop semantics)
@@ -717,6 +762,7 @@ class MobileFilmProcessor {
         this.bakedOps.push({ angle: 90, rect: null });
         this.rebuildSource();
         this.updateImage();
+        this.updateLockedCanvasSize();
         this.syncCropOverlayBox(true);
         document.getElementById('undoCropBtn').style.display = '';
     }
