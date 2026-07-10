@@ -3,7 +3,8 @@
 
 'use strict';
 
-// pixels: Float32Array RGB [0,1] -> Uint8Array of a complete .tif file
+// pixels: Float32Array RGB [0,1] (or Uint16Array, already quantized)
+// -> Uint8Array of a complete .tif file
 function encodeTiff16(pixels, width, height) {
     const numTags = 8;
     const headerSize = 8;
@@ -50,9 +51,13 @@ function encodeTiff16(pixels, width, height) {
 
     // Pixel data: float [0,1] -> uint16, rounded (matches np.rint on desktop)
     const out16 = new Uint16Array(buf, dataOffset, width * height * 3);
-    for (let i = 0; i < pixels.length; i++) {
-        const v = pixels[i];
-        out16[i] = Math.round(Math.min(1, Math.max(0, v)) * 65535);
+    if (pixels instanceof Uint16Array) {
+        out16.set(pixels);
+    } else {
+        for (let i = 0; i < pixels.length; i++) {
+            const v = pixels[i];
+            out16[i] = Math.round(Math.min(1, Math.max(0, v)) * 65535);
+        }
     }
 
     return new Uint8Array(buf);
