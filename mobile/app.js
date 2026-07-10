@@ -1008,8 +1008,9 @@ class MobileFilmProcessor {
     // Exports render at the file's NATIVE resolution: the original is
     // re-decoded (only its working copy is kept in memory), the baked
     // crops/rotations are replayed at full scale, and the same shader
-    // renders once at full size. Falls back to the working resolution if
-    // the device can't handle it.
+    // renders the image in bands - so even medium-format scans fit, up
+    // to the GPU texture limit. Falls back to the working resolution if
+    // the device can't handle it. Returns { data16: Uint16Array, ... }.
     async exportPixels() {
         const o = this.original;
         const downscaled = o && (o.fullWidth > o.width || o.fullHeight > o.height);
@@ -1023,30 +1024,34 @@ class MobileFilmProcessor {
                     filmCorrection: this.filmCorrection,
                     straighten: this.bakedStraighten,
                 }, native.width / o.width);
-                return this.renderer.renderToPixels(full);
+                return this.renderer.renderToPixels16(full);
             } catch (err) {
                 console.warn('Full-resolution export failed; using working size', err);
             }
         }
-        return this.renderer.renderToPixels();
+        return this.renderer.renderToPixels16({
+            data: this.renderer.imageData,
+            width: this.renderer.imageWidth,
+            height: this.renderer.imageHeight,
+        });
     }
 
     async makeTiffBlob() {
-        const { data, width, height } = await this.exportPixels();
-        return new Blob([encodeTiff16(data, width, height)], { type: 'image/tiff' });
+        const { data16, width, height } = await this.exportPixels();
+        return new Blob([encodeTiff16(data16, width, height)], { type: 'image/tiff' });
     }
 
     async makeJpegBlob() {
-        const { data, width, height } = await this.exportPixels();
+        const { data16, width, height } = await this.exportPixels();
         const canvas = document.createElement('canvas');
         canvas.width = width;
         canvas.height = height;
         const ctx = canvas.getContext('2d');
         const imgData = ctx.createImageData(width, height);
         for (let i = 0; i < width * height; i++) {
-            imgData.data[i * 4] = Math.round(data[i * 3] * 255);
-            imgData.data[i * 4 + 1] = Math.round(data[i * 3 + 1] * 255);
-            imgData.data[i * 4 + 2] = Math.round(data[i * 3 + 2] * 255);
+            imgData.data[i * 4] = Math.round(data16[i * 3] / 257);
+            imgData.data[i * 4 + 1] = Math.round(data16[i * 3 + 1] / 257);
+            imgData.data[i * 4 + 2] = Math.round(data16[i * 3 + 2] / 257);
             imgData.data[i * 4 + 3] = 255;
         }
         ctx.putImageData(imgData, 0, 0);

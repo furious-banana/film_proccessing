@@ -378,11 +378,34 @@ class MobileRenderer {
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
     }
 
-    // Largest source dimension exports can use (bounded by GPU texture
-    // limits and a pragmatic memory ceiling for phones)
+    // Largest source dimension exports can use (the GPU texture limit;
+    // exports render in bands, so this - not memory - is the bound)
     maxSourceSize() {
-        const glMax = this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE) || 4096;
-        return Math.min(glMax, 8192);
+        return this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE) || 4096;
+    }
+
+    // Render an arbitrarily large prepared image through the shader in
+    // full-width BANDS and quantize to uint16. The pipeline is purely
+    // per-pixel, so banding is exact, and peak GPU memory stays modest
+    // even for medium-format scans.
+    renderToPixels16(image) {
+        const { data, width, height } = image;
+        const out = new Uint16Array(width * height * 3);
+        // ~4M pixels per band: 64MB float RGBA staging + readback each
+        const bandH = Math.max(1, Math.min(height, Math.floor(4 * 1024 * 1024 / width)));
+        for (let y0 = 0; y0 < height; y0 += bandH) {
+            const bh = Math.min(bandH, height - y0);
+            const band = {
+                data: data.subarray(y0 * width * 3, (y0 + bh) * width * 3),
+                width, height: bh,
+            };
+            const rgb = this.renderToPixels(band).data;
+            const base = y0 * width * 3;
+            for (let i = 0; i < rgb.length; i++) {
+                out[base + i] = Math.round(Math.min(1, Math.max(0, rgb[i])) * 65535);
+            }
+        }
+        return { data16: out, width, height };
     }
 
     // Load a prepared source image (Float32Array RGB [0,1])
