@@ -138,22 +138,27 @@ async function decodeBrowserImage(file) {
     return { data: out, width, height, bitDepth: 8 };
 }
 
-// Decode any supported file to float RGB, capped to the working resolution
-async function decodeImageFile(file) {
+// Decode any supported file to float RGB, capped to maxSize (the working
+// resolution by default; exports re-decode with a higher cap). fullWidth/
+// fullHeight always carry the file's native dimensions.
+async function decodeImageFile(file, maxSize = MAX_WORK_SIZE) {
     // Detect TIFF by magic bytes, not filename - phone pickers sometimes
     // hand over files with unhelpful names
     const head = new Uint8Array(await file.slice(0, 4).arrayBuffer());
     const isTiff = (head[0] === 0x49 && head[1] === 0x49 && head[2] === 42)
         || (head[0] === 0x4D && head[1] === 0x4D && head[3] === 42);
 
-    const img = isTiff
+    let img = isTiff
         ? decodeTiff(await file.arrayBuffer())
         : await decodeBrowserImage(file);
 
-    if (Math.max(img.width, img.height) > MAX_WORK_SIZE) {
-        const scale = MAX_WORK_SIZE / Math.max(img.width, img.height);
-        return resizeBilinear(img, Math.round(img.width * scale), Math.round(img.height * scale));
+    const fullWidth = img.width, fullHeight = img.height;
+    if (Math.max(img.width, img.height) > maxSize) {
+        const scale = maxSize / Math.max(img.width, img.height);
+        img = resizeBilinear(img, Math.round(img.width * scale), Math.round(img.height * scale));
     }
+    img.fullWidth = fullWidth;
+    img.fullHeight = fullHeight;
     return img;
 }
 
@@ -287,17 +292,26 @@ function detectFilmBase(img) {
 // bakedOps     : [{ angle, rect }] - each crop bakes the straighten angle
 //                that was active when it was applied (desktop semantics)
 // state        : { isNegative, filmCorrection, straighten }
+// opScale      : crop rects are recorded in WORKING coordinates; exports
+//                replay them on the native-res image with this scale
 //
 // Returns the image the shader receives as its input texture.
 // ---------------------------------------------------------------------
 
-function prepareSource(original, bakedOps, state) {
+function prepareSource(original, bakedOps, state, opScale = 1) {
     const fill = state.isNegative ? 1.0 : 0.0;
 
     let img = original;
     for (const op of bakedOps) {
         img = rotateImage(img, op.angle, fill);
-        if (op.rect) img = cropImage(img, op.rect); // 90-degree turns have no crop
+        if (op.rect) { // 90-degree turns have no crop
+            img = cropImage(img, {
+                x: op.rect.x * opScale,
+                y: op.rect.y * opScale,
+                width: op.rect.width * opScale,
+                height: op.rect.height * opScale,
+            });
+        }
     }
     img = rotateImage(img, state.straighten || 0, fill);
 

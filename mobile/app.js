@@ -88,6 +88,9 @@ class MobileFilmProcessor {
         try {
             this.status('Loading ' + file.name + '…');
             this.original = await decodeImageFile(file);
+            // Kept so exports can re-decode at native resolution (the
+            // working copy above is capped for phone memory/perf)
+            this.sourceFile = file;
             this.bakedOps = [];
             this.bakedStraighten = 0;
             this.filmCorrection = this.isNegative ? 1 : 0;
@@ -1002,17 +1005,39 @@ class MobileFilmProcessor {
     // Export
     // ------------------------------------------------------------------
 
-    exportPixels() {
+    // Exports render at the file's NATIVE resolution: the original is
+    // re-decoded (only its working copy is kept in memory), the baked
+    // crops/rotations are replayed at full scale, and the same shader
+    // renders once at full size. Falls back to the working resolution if
+    // the device can't handle it.
+    async exportPixels() {
+        const o = this.original;
+        const downscaled = o && (o.fullWidth > o.width || o.fullHeight > o.height);
+        if (downscaled && this.sourceFile) {
+            try {
+                this.status('Rendering at full resolution…');
+                const native = await decodeImageFile(this.sourceFile,
+                    this.renderer.maxSourceSize());
+                const full = prepareSource(native, this.bakedOps, {
+                    isNegative: this.isNegative,
+                    filmCorrection: this.filmCorrection,
+                    straighten: this.bakedStraighten,
+                }, native.width / o.width);
+                return this.renderer.renderToPixels(full);
+            } catch (err) {
+                console.warn('Full-resolution export failed; using working size', err);
+            }
+        }
         return this.renderer.renderToPixels();
     }
 
-    makeTiffBlob() {
-        const { data, width, height } = this.exportPixels();
+    async makeTiffBlob() {
+        const { data, width, height } = await this.exportPixels();
         return new Blob([encodeTiff16(data, width, height)], { type: 'image/tiff' });
     }
 
     async makeJpegBlob() {
-        const { data, width, height } = this.exportPixels();
+        const { data, width, height } = await this.exportPixels();
         const canvas = document.createElement('canvas');
         canvas.width = width;
         canvas.height = height;
@@ -1051,7 +1076,7 @@ class MobileFilmProcessor {
         document.getElementById('exportTiffBtn').addEventListener('click', async () => {
             if (!this.original) return;
             this.status('Exporting TIFF…');
-            await this.deliverFile(this.makeTiffBlob(), `film_${stamp()}.tif`);
+            await this.deliverFile(await this.makeTiffBlob(), `film_${stamp()}.tif`);
             this.status('Exported 16-bit TIFF');
         });
         document.getElementById('exportJpegBtn').addEventListener('click', async () => {
@@ -1063,8 +1088,8 @@ class MobileFilmProcessor {
     }
 
     // Used by the automated test harness
-    exportTiffBase64() {
-        const blob = this.makeTiffBlob();
+    async exportTiffBase64() {
+        const blob = await this.makeTiffBlob();
         return new Promise((resolve) => {
             const r = new FileReader();
             r.onload = () => resolve(r.result.split(',')[1]);

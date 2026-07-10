@@ -572,6 +572,65 @@ print(f'RESULT max={diff.max()} mean={diff.mean():.2f}')
     check('big-endian 16-bit TIFF decodes correctly',
         JSON.stringify(bePixel) === JSON.stringify([117, 175, 78]), JSON.stringify(bePixel));
 
+    // --- Full-resolution export: a 6000x4000 scan is EDITED at the 4096
+    // working cap but must EXPORT at native size, and with no edits the
+    // export must be pixel-identical to the source (regression: exports
+    // came out at 4096, e.g. 140MB scans exporting as 60MB files) ---
+    const BIG_TIFF = path.join(os.tmpdir(), 'film_mobile_test_big.tif');
+    execSync(`uv run python -c "import numpy as np, tifffile; h,w=4000,6000; yy,xx=np.mgrid[0:h,0:w]; s=np.stack([xx/(w-1),yy/(h-1),(xx+yy)/(w+h-2)],axis=-1).astype(np.float32); tifffile.imwrite(r'${BIG_TIFF.replace(/\\/g, '/')}', np.rint(s*65535).astype(np.uint16), photometric='rgb')"`,
+        { cwd: APP_DIR, stdio: 'inherit' });
+    await page.evaluate(() => {
+        // Identity: zero every slider left over from earlier checks
+        document.querySelectorAll('.pro-slider').forEach(s => {
+            s.value = 0;
+            s.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+    });
+    await page.setInputFiles('#fileInput', BIG_TIFF);
+    await page.waitForFunction(() =>
+        mobileApp.renderer.imageWidth === 4096, null, { timeout: 120_000 });
+    check('big scan previews at the working cap', true);
+    const fullExport = await page.evaluate(async () => {
+        const p = await mobileApp.exportPixels();
+        // Round-trip: with no edits the export must equal a fresh native
+        // decode of the source file, sample-compared in 16-bit units
+        const src = await decodeImageFile(mobileApp.sourceFile, 99999);
+        let maxErr = 0;
+        if (src.width === p.width && src.height === p.height) {
+            for (let i = 0; i < p.data.length; i += 1237) {
+                maxErr = Math.max(maxErr, Math.abs(p.data[i] - src.data[i]) * 65535);
+            }
+        }
+        return { w: p.width, h: p.height, maxErr };
+    });
+    check('export renders at native resolution',
+        fullExport.w === 6000 && fullExport.h === 4000, `${fullExport.w}x${fullExport.h}`);
+    check('no-edit export is pixel-identical to the source',
+        fullExport.maxErr <= 1, `max err ${fullExport.maxErr.toFixed(3)}/65535`);
+
+    // A crop applied at working resolution scales up to native on export
+    await page.click('#cropBtn');
+    await page.waitForTimeout(300);
+    await page.evaluate(() => {
+        const wrap = document.getElementById('canvasWrap');
+        const box = document.getElementById('cropBox');
+        box.style.left = (wrap.clientWidth * 0.1) + 'px';
+        box.style.top = (wrap.clientHeight * 0.1) + 'px';
+        box.style.width = (wrap.clientWidth * 0.8) + 'px';
+        box.style.height = (wrap.clientHeight * 0.8) + 'px';
+    });
+    await page.click('#applyCropBtn');
+    await page.waitForTimeout(500);
+    const croppedDims = await page.evaluate(async () => {
+        const p = await mobileApp.exportPixels();
+        return [p.width, p.height];
+    });
+    check('cropped export stays native-res (80% of 6000x4000)',
+        Math.abs(croppedDims[0] - 4800) <= 8 && Math.abs(croppedDims[1] - 3200) <= 8,
+        croppedDims.join('x'));
+    await page.click('#undoCropBtn');
+    await page.waitForTimeout(300);
+
     // --- Non-TIFF formats load too (regression: closed-bitmap 0x0 bug) ---
     await page.click('.mode-btn[data-mode="photo"]');
     await page.setInputFiles('#fileInput', JPEG);

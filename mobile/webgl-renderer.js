@@ -344,15 +344,10 @@ class MobileRenderer {
         gl.vertexAttribPointer(texLoc, 2, gl.FLOAT, false, 0, 0);
     }
 
-    // Load a prepared source image (Float32Array RGB [0,1])
-    setImage(data, width, height) {
+    // Upload float RGB data into a source texture (float when supported)
+    _uploadSourceTexture(tex, data, width, height) {
         const gl = this.gl;
-        this.imageWidth = width;
-        this.imageHeight = height;
-        this.imageData = data;
-
-        if (!this.texture) this.texture = gl.createTexture();
-        gl.bindTexture(gl.TEXTURE_2D, this.texture);
+        gl.bindTexture(gl.TEXTURE_2D, tex);
         gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
 
         const useFloat = this.isWebGL2 || gl.getExtension('OES_texture_float') !== null;
@@ -381,6 +376,24 @@ class MobileRenderer {
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+    }
+
+    // Largest source dimension exports can use (bounded by GPU texture
+    // limits and a pragmatic memory ceiling for phones)
+    maxSourceSize() {
+        const glMax = this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE) || 4096;
+        return Math.min(glMax, 8192);
+    }
+
+    // Load a prepared source image (Float32Array RGB [0,1])
+    setImage(data, width, height) {
+        const gl = this.gl;
+        this.imageWidth = width;
+        this.imageHeight = height;
+        this.imageData = data;
+
+        if (!this.texture) this.texture = gl.createTexture();
+        this._uploadSourceTexture(this.texture, data, width, height);
 
         this.canvas.width = width;
         this.canvas.height = height;
@@ -532,8 +545,22 @@ class MobileRenderer {
     // Render the current adjustments into an offscreen FLOAT framebuffer and
     // read the pixels back - this is the export path. Returns
     // { data: Float32Array RGB [0,1], width, height, float: bool }.
-    renderToPixels() {
+    // With overrideImage {data,width,height} the same adjustments render on
+    // that image instead (full-resolution exports); the preview texture and
+    // canvas are left untouched.
+    renderToPixels(overrideImage = null) {
         const gl = this.gl;
+
+        let previewTexture = null;
+        const previewW = this.imageWidth, previewH = this.imageHeight;
+        if (overrideImage) {
+            previewTexture = this.texture;
+            this.texture = gl.createTexture();
+            this._uploadSourceTexture(this.texture,
+                overrideImage.data, overrideImage.width, overrideImage.height);
+            this.imageWidth = overrideImage.width;
+            this.imageHeight = overrideImage.height;
+        }
         const w = this.imageWidth, h = this.imageHeight;
 
         // Display-only overlays must never leak into the export
@@ -588,6 +615,12 @@ class MobileRenderer {
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         gl.deleteFramebuffer(fbo);
         gl.deleteTexture(target);
+        if (overrideImage) {
+            gl.deleteTexture(this.texture);
+            this.texture = previewTexture;
+            this.imageWidth = previewW;
+            this.imageHeight = previewH;
+        }
         Object.assign(this.params, overlays);
         this.render(); // restore the on-screen preview
 
