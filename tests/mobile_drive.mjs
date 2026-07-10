@@ -271,21 +271,22 @@ try {
     check('holding the image shows original', cmp.during === true && cmp.after === false,
         JSON.stringify(cmp));
 
-    // --- Slider reset: double-tap resets, micro-drags never do ---
-    const tapReset = await page.evaluate(async () => {
+    // --- Slider reset: double-tap the LABEL resets, taps or micro-drags
+    // on the slider itself never do ---
+    const labelReset = await page.evaluate(async () => {
         const s = document.getElementById('exposure');
         s.value = 0.5;
         s.dispatchEvent(new Event('input', { bubbles: true }));
-        const tap = () => {
-            s.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-            s.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
-        };
+        const label = s.closest('label');
+        const tap = () => label.dispatchEvent(
+            new PointerEvent('pointerdown', { bubbles: true }));
         tap();
         await new Promise(r => setTimeout(r, 100));
         tap();
         return s.value;
     });
-    check('double-tap resets a slider', tapReset === '0', `value ${tapReset}`);
+    check('double-tap on the label resets the slider', labelReset === '0',
+        `value ${labelReset}`);
     const microNoReset = await page.evaluate(async () => {
         const s = document.getElementById('exposure');
         const microDrag = (v) => {
@@ -306,32 +307,65 @@ try {
         s.dispatchEvent(new Event('input', { bubbles: true }));
     });
 
-    // --- Clipping overlay: blown highlights paint red, never exported ---
+    // --- Clipping threshold preview (Photoshop Alt-drag style): shown
+    // only while HOLDING a tone slider with the Clip toggle on ---
     await page.evaluate(() => {
         const s = document.getElementById('exposure');
-        s.value = 2;
+        s.value = 0.5; // clips the bright corner, center stays mid-gray
         s.dispatchEvent(new Event('input', { bubbles: true }));
-        document.getElementById('clipBtn').click();
+        document.getElementById('clipBtn').click(); // enable
+        document.getElementById('whites').dispatchEvent(
+            new PointerEvent('pointerdown', { bubbles: true }));
     });
     await page.waitForTimeout(150);
-    const clipPx = await page.evaluate(() => {
+    const thresh = await page.evaluate(() => {
         const c = document.getElementById('viewCanvas');
-        const t = document.createElement('canvas'); t.width = 1; t.height = 1;
+        const N = 60;
+        const t = document.createElement('canvas'); t.width = N; t.height = N;
         const ctx = t.getContext('2d');
-        ctx.drawImage(c, c.width / 2, c.height / 2, 1, 1, 0, 0, 1, 1);
-        return Array.from(ctx.getImageData(0, 0, 1, 1).data).slice(0, 3);
+        ctx.drawImage(c, 0, 0, N, N);
+        const d = ctx.getImageData(0, 0, N, N).data;
+        let sat = 0, white = 0, black = 0;
+        for (let i = 0; i < d.length; i += 4) {
+            if ([d[i], d[i + 1], d[i + 2]].every(v => v < 10 || v > 245)) sat++;
+            if (d[i] > 245 && d[i + 1] > 245 && d[i + 2] > 245) white++;
+            if (d[i] < 10 && d[i + 1] < 10 && d[i + 2] < 10) black++;
+        }
+        return { satFrac: sat / (N * N), white, black,
+            mode: mobileApp.renderer.params.clipMode };
     });
-    check('clipping overlay paints blown highlights red',
-        clipPx[0] > 200 && clipPx[1] < 90 && clipPx[2] < 90, JSON.stringify(clipPx));
+    check('holding whites shows the threshold view',
+        thresh.mode === 1 && thresh.satFrac > 0.95 && thresh.white > 0 && thresh.black > 0,
+        JSON.stringify(thresh));
     const exportClean = await page.evaluate(() => {
+        // Export while the threshold view is up must still be the real image
         const { data, width, height } = mobileApp.renderer.renderToPixels();
         const i = ((height >> 1) * width + (width >> 1)) * 3;
         return [data[i], data[i + 1], data[i + 2]];
     });
-    check('clipping overlay is not exported',
-        exportClean.every(v => v > 0.99), JSON.stringify(exportClean));
+    check('threshold view is not exported',
+        exportClean.every(v => v > 0.6 && v < 0.8), JSON.stringify(exportClean));
+    const releaseAndBlacks = await page.evaluate(() => {
+        const up = (id) => document.getElementById(id).dispatchEvent(
+            new PointerEvent('pointerup', { bubbles: true }));
+        const down = (id) => document.getElementById(id).dispatchEvent(
+            new PointerEvent('pointerdown', { bubbles: true }));
+        up('whites');
+        const afterRelease = mobileApp.renderer.params.clipMode;
+        down('blacks');
+        const blacksMode = mobileApp.renderer.params.clipMode;
+        up('blacks');
+        document.getElementById('clipBtn').click(); // disable
+        down('whites');
+        const disabledMode = mobileApp.renderer.params.clipMode;
+        up('whites');
+        return { afterRelease, blacksMode, disabledMode };
+    });
+    check('release restores; blacks = shadow mode; toggle off = no preview',
+        releaseAndBlacks.afterRelease === 0 && releaseAndBlacks.blacksMode === 2
+        && releaseAndBlacks.disabledMode === 0,
+        JSON.stringify(releaseAndBlacks));
     await page.evaluate(() => {
-        document.getElementById('clipBtn').click();
         const s = document.getElementById('exposure');
         s.value = 0;
         s.dispatchEvent(new Event('input', { bubbles: true }));

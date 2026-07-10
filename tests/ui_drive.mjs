@@ -118,20 +118,15 @@ try {
     check('micro-drags never reset the slider', microNoReset === '1.04',
         `value ${microNoReset}`);
 
-    // ... but a double-click on the thumb (value unchanged) resets
-    const tapReset = await page.evaluate(async () => {
+    // ... but a double-click on the slider's LABEL resets it
+    const labelReset = await page.evaluate(() => {
         const s = document.getElementById('exposure');
-        const tap = () => {
-            s.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-            s.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
-        };
-        tap();
-        await new Promise(r => setTimeout(r, 100));
-        tap();
+        const label = s.closest('.control-row').querySelector('.control-label');
+        label.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
         return s.value;
     });
-    check('double-click on the thumb resets exposure', tapReset === '0',
-        `value ${tapReset}`);
+    check('double-click on the label resets exposure', labelReset === '0',
+        `value ${labelReset}`);
 
     // --- Each tone/color slider changes the rendered image ---
     // Each slider only affects a certain tonal range, and additive sliders
@@ -285,40 +280,62 @@ try {
     } catch { /* stays false */ }
     check('hold shows original, release restores', showingOrig && backToEdit);
 
-    // --- Clipping overlay: blown highlights paint red, toggle restores ---
+    // --- Clipping threshold preview (Photoshop Alt-drag style): shown
+    // only while HOLDING a tone slider with the Clip toggle on ---
     await page.evaluate(() => {
         const s = document.getElementById('exposure');
         s.value = 2;
         s.dispatchEvent(new Event('input', { bubbles: true }));
     });
     await page.click('#clippingBtn');
+    await page.evaluate(() => {
+        document.getElementById('whites').dispatchEvent(
+            new PointerEvent('pointerdown', { bubbles: true }));
+    });
     await page.waitForTimeout(300);
-    const clipProbe = await page.evaluate(() => {
-        // Find a clipped (bright) pixel and confirm it is painted red
+    const thresh = await page.evaluate(() => {
+        // Threshold view signature: every pixel is saturated per channel
         const c = document.getElementById('webglCanvas');
         const N = 80;
         const t = document.createElement('canvas'); t.width = N; t.height = N;
         const ctx = t.getContext('2d');
         ctx.drawImage(c, 0, 0, N, N);
         const d = ctx.getImageData(0, 0, N, N).data;
-        let red = 0, total = 0;
+        let sat = 0;
         for (let i = 0; i < d.length; i += 4) {
-            total++;
-            if (d[i] > 200 && d[i + 1] < 90 && d[i + 2] < 90) red++;
+            if ([d[i], d[i + 1], d[i + 2]].every(v => v < 10 || v > 245)) sat++;
         }
-        return { red, total, on: processor.webglRenderer.params.showClipping };
+        return { satFrac: sat / (N * N), mode: processor.webglRenderer.params.clipMode };
     });
-    check('clipping overlay paints blown highlights red',
-        clipProbe.on && clipProbe.red > 0, JSON.stringify(clipProbe));
-    await page.click('#clippingBtn');
-    await page.evaluate(() => {
+    check('holding whites shows the threshold view (clip on)',
+        thresh.mode === 1 && thresh.satFrac > 0.95, JSON.stringify(thresh));
+    const clipRelease = await page.evaluate(() => {
+        const up = (id) => document.getElementById(id).dispatchEvent(
+            new PointerEvent('pointerup', { bubbles: true }));
+        const down = (id) => document.getElementById(id).dispatchEvent(
+            new PointerEvent('pointerdown', { bubbles: true }));
+        up('whites');
+        const afterRelease = processor.webglRenderer.params.clipMode;
+        down('blacks');
+        const blacksMode = processor.webglRenderer.params.clipMode;
+        up('blacks');
+        return { afterRelease, blacksMode };
+    });
+    check('release restores; blacks = shadow threshold',
+        clipRelease.afterRelease === 0 && clipRelease.blacksMode === 2,
+        JSON.stringify(clipRelease));
+    await page.click('#clippingBtn'); // toggle back off
+    const clipOff = await page.evaluate(() => {
+        const w = document.getElementById('whites');
+        w.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+        const mode = processor.webglRenderer.params.clipMode;
+        w.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
         const s = document.getElementById('exposure');
         s.value = 0;
         s.dispatchEvent(new Event('input', { bubbles: true }));
+        return mode;
     });
-    await page.waitForTimeout(200);
-    check('clipping toggle turns back off',
-        await page.evaluate(() => !processor.webglRenderer.params.showClipping));
+    check('clip toggle off = no threshold preview', clipOff === 0);
 
     // --- Straighten: fine rotation bakes server-side, bbox expands ---
     const dimsPreStraighten = await page.evaluate(() =>

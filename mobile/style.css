@@ -254,6 +254,8 @@ details > *:not(summary) { padding: 0 14px 12px; }
     font-size: 13px;
     color: var(--text2);
     padding: 7px 0;
+    user-select: none; /* double-tap the words resets the slider */
+    -webkit-user-select: none;
 }
 
 .pro-slider {

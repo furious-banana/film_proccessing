@@ -186,12 +186,26 @@ class MobileFilmProcessor {
     // ------------------------------------------------------------------
 
     setupSliders() {
+        // Tone sliders that show the Photoshop-style threshold clipping
+        // preview while held (when the Clip toggle is on): 1 = highlight
+        // threshold, 2 = shadow threshold
+        const CLIP_MODES = { exposure: 1, highlights: 1, whites: 1, shadows: 2, blacks: 2 };
+
         document.querySelectorAll('.pro-slider').forEach(slider => {
             slider.addEventListener('pointerdown', () => {
                 this.saveHistory();
-                slider._downValue = slider.value;
-                slider._downTs = Date.now();
+                if (this.clipEnabled && CLIP_MODES[slider.id] && this.renderer) {
+                    this.renderer.updateParams({ clipMode: CLIP_MODES[slider.id] });
+                }
             });
+            const endClipPreview = () => {
+                if (this.renderer && this.renderer.params.clipMode) {
+                    this.renderer.updateParams({ clipMode: 0 });
+                }
+            };
+            slider.addEventListener('pointerup', endClipPreview);
+            slider.addEventListener('pointercancel', endClipPreview);
+
             slider.addEventListener('input', () => {
                 this.updateValueDisplay(slider.id, slider.value);
                 if (slider.id === 'straighten') {
@@ -203,24 +217,25 @@ class MobileFilmProcessor {
             if (slider.id === 'straighten') {
                 slider.addEventListener('change', () => this.bakeStraighten());
             }
-            // Double-tap the thumb resets to 0. A tap is a quick press that
-            // did NOT change the value - so micro-drags (which do, and on
-            // touchscreens fire input events even for tiny taps) can never
-            // trigger the reset.
-            slider.addEventListener('pointerup', () => {
+
+            // Double-tap the slider's LABEL (the words / the value) to
+            // reset it - tapping the thumb itself is too easy to nudge
+            const holder = slider.closest('label') || slider.parentElement;
+            holder.addEventListener('pointerdown', (e) => {
+                if (e.target === slider) return;
                 const now = Date.now();
-                const isTap = slider.value === slider._downValue
-                    && now - (slider._downTs || 0) < 350;
-                if (isTap && now - (slider._lastTapTs || 0) < 450) {
-                    slider._lastTapTs = 0;
+                if (now - (holder._tapTs || 0) < 400) {
+                    holder._tapTs = 0;
+                    this.saveHistory();
                     slider.value = 0;
                     this.updateValueDisplay(slider.id, 0);
                     if (slider.id === 'straighten') this.bakeStraighten();
                     else this.updateImage();
                 } else {
-                    slider._lastTapTs = isTap ? now : 0;
+                    holder._tapTs = now;
                 }
             });
+
             this.updateValueDisplay(slider.id, slider.value);
         });
     }
@@ -1181,13 +1196,19 @@ class MobileFilmProcessor {
         // Long-press must not open the browser context menu
         pane.addEventListener('contextmenu', (e) => e.preventDefault());
 
-        // Clipping overlay toggle (highlights red, blacks blue)
+        // Clipping preview toggle: while it's on, HOLDING a tone slider
+        // shows the threshold view (like Alt-dragging in Photoshop)
         const clipBtn = document.getElementById('clipBtn');
-        this.showClipping = false;
+        this.clipEnabled = false;
         clipBtn.addEventListener('click', () => {
-            this.showClipping = !this.showClipping;
-            clipBtn.classList.toggle('active', this.showClipping);
-            if (this.renderer) this.renderer.updateParams({ showClipping: this.showClipping });
+            this.clipEnabled = !this.clipEnabled;
+            clipBtn.classList.toggle('active', this.clipEnabled);
+            if (!this.clipEnabled && this.renderer && this.renderer.params.clipMode) {
+                this.renderer.updateParams({ clipMode: 0 });
+            }
+            this.status(this.clipEnabled
+                ? 'Clip preview on: hold a tone slider to see clipped pixels'
+                : 'Clip preview off');
         });
 
         // Refit on any viewport change: rotating the phone, unfolding a
