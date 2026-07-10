@@ -30,6 +30,7 @@ class ProfessionalFilmProcessor {
         this.cropMode = false;
         this._cropWatchRaf = null;    // overlay-follows-image watcher handle
         this._cropScreenLock = null;  // screen rect the crop box is pinned to
+        this._straightenDragging = false; // straighten slider held right now
 
         // WebGL GPU rendering (client-side, instant updates)
         this.webglRenderer = null;
@@ -145,6 +146,17 @@ class ProfessionalFilmProcessor {
             if (slider.id === 'straighten') {
                 // Fires on release (and keyboard commit): bake the rotation
                 slider.addEventListener('change', () => this.updateImage());
+                // While the slider is held the crop overlay watcher must
+                // stay dormant even when the value passes exactly through
+                // the baked angle (delta 0), or the box snaps mid-drag
+                slider.addEventListener('pointerdown', () => {
+                    this._straightenDragging = true;
+                });
+                const endStraightenDrag = () => {
+                    this._straightenDragging = false;
+                };
+                slider.addEventListener('pointerup', endStraightenDrag);
+                slider.addEventListener('pointercancel', endStraightenDrag);
             }
 
             // Double-click the slider's LABEL to reset it - clicking the
@@ -874,8 +886,11 @@ class ProfessionalFilmProcessor {
                 return;
             }
             // While the straighten slider is mid-drag the image is CSS-rotated
-            // behind the (intentionally static) crop box - don't follow it
-            if (this.straightenDelta() === 0) {
+            // behind the (intentionally static) crop box - don't follow it.
+            // The drag flag matters too: delta passes exactly through 0 when
+            // the thumb crosses the baked angle, and a one-frame sync there
+            // visibly snaps the box mid-drag.
+            if (!this._straightenDragging && this.straightenDelta() === 0) {
                 this.syncCropOverlay();
                 // During/after a rotation rebake the box is locked to its
                 // screen position so the frame can be aligned against it
