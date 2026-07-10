@@ -405,6 +405,16 @@ try {
     check('straighten bar appears in crop mode', await page.evaluate(() =>
         document.getElementById('straightenBar').style.display === 'flex'));
 
+    // The crop box initially covers the FULL image
+    const fullBox = await page.evaluate(() => {
+        const a = document.getElementById('cropArea').getBoundingClientRect();
+        const o = document.getElementById('cropOverlay').getBoundingClientRect();
+        return { dl: a.left - o.left, dt: a.top - o.top,
+            dw: o.width - a.width, dh: o.height - a.height };
+    });
+    check('crop box opens covering the full image',
+        Object.values(fullBox).every(v => Math.abs(v) < 2), JSON.stringify(fullBox));
+
     // Straighten while cropping: the image rotates behind a FIXED crop box
     const cropRectBefore = await page.evaluate(() => {
         const r = document.getElementById('cropArea').getBoundingClientRect();
@@ -507,6 +517,61 @@ try {
     });
     await page.waitForFunction(() => processor.bakedStraighten === 0, null, { timeout: 120_000 });
     await page.waitForTimeout(600);
+
+    // --- Aspect ratio presets ---
+    const setRatio = (v) => page.evaluate((val) => {
+        const sel = document.getElementById('cropRatioSelect');
+        sel.value = val;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+    }, v);
+    const boxDims = () => page.evaluate(() => {
+        const a = document.getElementById('cropArea').getBoundingClientRect();
+        const o = document.getElementById('cropOverlay').getBoundingClientRect();
+        return { w: a.width, h: a.height, oW: o.width, oH: o.height };
+    });
+    await setRatio('1');
+    let bd = await boxDims();
+    check('1:1 ratio snaps to a max centered square',
+        Math.abs(bd.w - bd.h) < 1.5 && Math.abs(bd.h - Math.min(bd.oW, bd.oH)) < 2,
+        JSON.stringify(bd));
+    // Resizing with a ratio active keeps the ratio. Use the nw handle
+    // (the 1:1 box touches the image bottom, so se is half clipped) and
+    // aim slightly inside the box so the hit lands on the handle circle.
+    const preResize = bd.w;
+    const corner = await page.evaluate(() => {
+        const h = document.querySelector('#cropArea .crop-handle.nw');
+        const r = h.getBoundingClientRect();
+        return { x: r.left + r.width / 2 + 3, y: r.top + r.height / 2 + 3 };
+    });
+    await page.mouse.move(corner.x, corner.y);
+    await page.mouse.down();
+    await page.mouse.move(corner.x + 90, corner.y + 20, { steps: 6 });
+    await page.mouse.up();
+    bd = await boxDims();
+    check('ratio-locked resize keeps the box square',
+        bd.w < preResize - 40 && Math.abs(bd.w - bd.h) < 1.5,
+        `${preResize.toFixed(0)} -> ${bd.w.toFixed(1)}x${bd.h.toFixed(1)}`);
+    await setRatio('1.5');
+    bd = await boxDims();
+    check('3:2 ratio applies', Math.abs(bd.w / bd.h - 1.5) < 0.02,
+        (bd.w / bd.h).toFixed(3));
+    await page.click('#cropRatioSwapBtn');
+    bd = await boxDims();
+    check('ratio swap flips to 2:3', Math.abs(bd.w / bd.h - 2 / 3) < 0.02,
+        (bd.w / bd.h).toFixed(3));
+    await page.click('#cropRatioSwapBtn'); // swap back
+    await setRatio('free');
+
+    // Set the classic 80% box for the crop round-trip below
+    await page.evaluate(() => {
+        const o = document.getElementById('cropOverlay');
+        const a = document.getElementById('cropArea');
+        a.style.left = (o.offsetWidth * 0.1) + 'px';
+        a.style.top = (o.offsetHeight * 0.1) + 'px';
+        a.style.width = (o.offsetWidth * 0.8) + 'px';
+        a.style.height = (o.offsetHeight * 0.8) + 'px';
+    });
+    await page.waitForTimeout(200);
 
     await page.click('#applyCropBtn');
     await page.waitForFunction((prev) => {

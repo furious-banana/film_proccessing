@@ -25,6 +25,8 @@ class MobileFilmProcessor {
         this.grayPoint = null;
         this.cropMode = false;
         this.showingOriginal = false;
+        this.cropRatio = null;         // crop aspect ratio (w/h), null = free
+        this.cropRatioSwapped = false; // ⇄ orientation flip
 
         // View zoom (inspection only - never affects the pipeline/exports)
         this.viewZoom = 1;
@@ -640,10 +642,11 @@ class MobileFilmProcessor {
             const MIN = 40;
             let { left, top, width, height } = drag;
 
+            const ratio = this.effectiveCropRatio();
             if (drag.handle === 'move') {
                 left = Math.max(0, Math.min(left + dx, maxW - width));
                 top = Math.max(0, Math.min(top + dy, maxH - height));
-            } else {
+            } else if (!ratio) {
                 if (drag.handle.includes('e')) width = Math.max(MIN, Math.min(width + dx, maxW - left));
                 if (drag.handle.includes('s')) height = Math.max(MIN, Math.min(height + dy, maxH - top));
                 if (drag.handle.includes('w')) {
@@ -656,6 +659,25 @@ class MobileFilmProcessor {
                     height = top + height - newTop;
                     top = newTop;
                 }
+            } else {
+                // Fixed aspect ratio: the anchored (opposite) corner stays
+                // put; follow the dominant axis of the drag
+                const right = drag.left + drag.width;
+                const bottom = drag.top + drag.height;
+                const anchorW = drag.handle.includes('w');
+                const anchorN = drag.handle.includes('n');
+                // Follow the axis the pointer moved most along
+                const pw = drag.width + (anchorW ? -dx : dx);
+                const ph = drag.height + (anchorN ? -dy : dy);
+                let w = Math.abs(dx) >= Math.abs(dy * ratio) ? pw : ph * ratio;
+                const boundW = Math.min(
+                    anchorW ? right : maxW - drag.left,
+                    (anchorN ? bottom : maxH - drag.top) * ratio);
+                w = Math.max(Math.max(MIN, MIN * ratio), Math.min(w, boundW));
+                width = w;
+                height = w / ratio;
+                left = anchorW ? right - width : drag.left;
+                top = anchorN ? bottom - height : drag.top;
             }
             box.style.left = left + 'px';
             box.style.top = top + 'px';
@@ -666,6 +688,26 @@ class MobileFilmProcessor {
         const endDrag = () => { drag = null; };
         box.addEventListener('pointerup', endDrag);
         box.addEventListener('pointercancel', endDrag);
+
+        // Aspect ratio chips
+        document.querySelectorAll('.ratio-btn').forEach(btn => {
+            if (btn.id === 'ratioSwapBtn') return;
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.ratio-btn').forEach(b => {
+                    if (b.id !== 'ratioSwapBtn') b.classList.remove('active');
+                });
+                btn.classList.add('active');
+                this.cropRatio = btn.dataset.ratio === 'free'
+                    ? null : parseFloat(btn.dataset.ratio);
+                this.snapCropToRatio();
+            });
+        });
+        document.getElementById('ratioSwapBtn').addEventListener('click', () => {
+            this.cropRatioSwapped = !this.cropRatioSwapped;
+            document.getElementById('ratioSwapBtn')
+                .classList.toggle('active', this.cropRatioSwapped);
+            this.snapCropToRatio();
+        });
     }
 
     toggleCrop() {
@@ -708,15 +750,38 @@ class MobileFilmProcessor {
         canvas.style.height = 'auto';
     }
 
-    // Reset the crop box to 80% of the (fixed-size) crop viewport
+    // Reset the crop box to the FULL (fixed-size) crop viewport, then apply
+    // a still-selected aspect ratio
     syncCropOverlayBox(resetBox = false) {
         if (!this.cropMode || !resetBox) return;
         const wrap = document.getElementById('canvasWrap');
         const box = document.getElementById('cropBox');
-        box.style.left = (wrap.clientWidth * 0.1) + 'px';
-        box.style.top = (wrap.clientHeight * 0.1) + 'px';
-        box.style.width = (wrap.clientWidth * 0.8) + 'px';
-        box.style.height = (wrap.clientHeight * 0.8) + 'px';
+        box.style.left = '0px';
+        box.style.top = '0px';
+        box.style.width = wrap.clientWidth + 'px';
+        box.style.height = wrap.clientHeight + 'px';
+        this.snapCropToRatio();
+    }
+
+    // Selected crop ratio as width/height, honoring the ⇄ swap; null = free
+    effectiveCropRatio() {
+        if (!this.cropRatio) return null;
+        return this.cropRatioSwapped ? 1 / this.cropRatio : this.cropRatio;
+    }
+
+    // Reshape the crop box to the largest centered rect of the chosen ratio
+    snapCropToRatio() {
+        const ratio = this.effectiveCropRatio();
+        if (!ratio || !this.cropMode) return;
+        const wrap = document.getElementById('canvasWrap');
+        const box = document.getElementById('cropBox');
+        const W = wrap.clientWidth, H = wrap.clientHeight;
+        let w = W, h = w / ratio;
+        if (h > H) { h = H; w = h * ratio; }
+        box.style.left = ((W - w) / 2) + 'px';
+        box.style.top = ((H - h) / 2) + 'px';
+        box.style.width = w + 'px';
+        box.style.height = h + 'px';
     }
 
     cancelCrop() {

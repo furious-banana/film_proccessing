@@ -208,6 +208,18 @@ main {
     padding: 10px 12px;
 }
 .straighten-row { display: flex; align-items: center; gap: 10px; }
+.ratio-row { display: flex; gap: 4px; margin-top: 10px; }
+.ratio-btn {
+    flex: 1;
+    background: var(--bg3);
+    color: var(--text2);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 7px 0;
+    font-size: 11px;
+    touch-action: manipulation;
+}
+.ratio-btn.active { color: var(--text); outline: 2px solid var(--accent); }
 .crop-actions { display: flex; gap: 8px; margin-top: 10px; }
 .crop-actions .tb-btn { flex: 1; }
 

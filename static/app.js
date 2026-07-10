@@ -31,6 +31,8 @@ class ProfessionalFilmProcessor {
         this._cropWatchRaf = null;    // overlay-follows-image watcher handle
         this._cropScreenLock = null;  // screen rect the crop box is pinned to
         this._straightenDragging = false; // straighten slider held right now
+        this.cropRatio = null;        // crop aspect ratio (w/h), null = free
+        this.cropRatioSwapped = false; // ⇄ orientation flip
 
         // WebGL GPU rendering (client-side, instant updates)
         this.webglRenderer = null;
@@ -844,7 +846,7 @@ class ProfessionalFilmProcessor {
                 const newTop = Math.max(0, Math.min(startTop + dy, maxHeight - startHeight));
                 cropArea.style.left = newLeft + 'px';
                 cropArea.style.top = newTop + 'px';
-            } else {
+            } else if (!this.effectiveCropRatio()) {
                 if (resizeHandle.includes('e')) {
                     cropArea.style.width = Math.max(50, Math.min(startWidth + dx, maxWidth - startLeft)) + 'px';
                 }
@@ -863,6 +865,36 @@ class ProfessionalFilmProcessor {
                     cropArea.style.top = newTop + 'px';
                     cropArea.style.height = (startTop + startHeight - newTop) + 'px';
                 }
+            } else {
+                // Fixed aspect ratio: the anchored (opposite) corner stays
+                // put; edge handles anchor left/top
+                const ratio = this.effectiveCropRatio();
+                const right = startLeft + startWidth;
+                const bottom = startTop + startHeight;
+                const anchorW = resizeHandle.includes('w'); // left edge moves
+                const anchorN = resizeHandle.includes('n'); // top edge moves
+                const horiz = resizeHandle.includes('e') || anchorW;
+                const vert = resizeHandle.includes('s') || anchorN;
+                let w;
+                if (horiz && vert) {
+                    // Corner: follow the axis the pointer moved most along
+                    const pw = startWidth + (anchorW ? -dx : dx);
+                    const ph = startHeight + (anchorN ? -dy : dy);
+                    w = Math.abs(dx) >= Math.abs(dy * ratio) ? pw : ph * ratio;
+                } else if (horiz) {
+                    w = startWidth + (anchorW ? -dx : dx);
+                } else {
+                    w = (startHeight + (anchorN ? -dy : dy)) * ratio;
+                }
+                const boundW = Math.min(
+                    anchorW ? right : maxWidth - startLeft,
+                    (anchorN ? bottom : maxHeight - startTop) * ratio);
+                w = Math.max(Math.max(50, 50 * ratio), Math.min(w, boundW));
+                const h = w / ratio;
+                cropArea.style.left = (anchorW ? right - w : startLeft) + 'px';
+                cropArea.style.top = (anchorN ? bottom - h : startTop) + 'px';
+                cropArea.style.width = w + 'px';
+                cropArea.style.height = h + 'px';
             }
             e.preventDefault();
         });
@@ -872,6 +904,46 @@ class ProfessionalFilmProcessor {
             isResizing = false;
             resizeHandle = null;
         });
+
+        // Aspect ratio presets
+        const ratioSel = document.getElementById('cropRatioSelect');
+        const swapBtn = document.getElementById('cropRatioSwapBtn');
+        if (ratioSel) {
+            ratioSel.addEventListener('change', () => {
+                this.cropRatio = ratioSel.value === 'free' ? null : parseFloat(ratioSel.value);
+                this.snapCropToRatio();
+            });
+        }
+        if (swapBtn) {
+            swapBtn.addEventListener('click', () => {
+                this.cropRatioSwapped = !this.cropRatioSwapped;
+                swapBtn.classList.toggle('active', this.cropRatioSwapped);
+                this.snapCropToRatio();
+            });
+        }
+    }
+
+    // Selected crop ratio as width/height, honoring the ⇄ swap; null = free
+    effectiveCropRatio() {
+        if (!this.cropRatio) return null;
+        return this.cropRatioSwapped ? 1 / this.cropRatio : this.cropRatio;
+    }
+
+    // Reshape the crop box to the largest centered rect of the chosen ratio
+    snapCropToRatio() {
+        const ratio = this.effectiveCropRatio();
+        if (!ratio || !this.cropMode) return;
+        this._cropScreenLock = null; // the user takes over
+        const overlay = document.getElementById('cropOverlay');
+        const area = document.getElementById('cropArea');
+        if (!overlay || !area) return;
+        const W = overlay.offsetWidth, H = overlay.offsetHeight;
+        let w = W, h = w / ratio;
+        if (h > H) { h = H; w = h * ratio; }
+        area.style.left = ((W - w) / 2) + 'px';
+        area.style.top = ((H - h) / 2) + 'px';
+        area.style.width = w + 'px';
+        area.style.height = h + 'px';
     }
 
     // Keep the crop overlay glued to the image for as long as crop mode is
@@ -955,8 +1027,11 @@ class ProfessionalFilmProcessor {
         }
     }
 
-    // Pin the crop box to a saved screen rect (clamped to the image) while
-    // the image is rebaked/rotated underneath it
+    // Pin the crop box to a saved screen rect while the image is
+    // rebaked/rotated underneath it. NO clamping here: mid-bake the overlay
+    // passes through transient layouts, and clamping against those wobbles
+    // a box that touches the image edges. clampCropAreaToOverlay() runs
+    // once when the lock is released.
     applyCropScreenLock() {
         const cropArea = document.getElementById('cropArea');
         const cropOverlay = document.getElementById('cropOverlay');
@@ -964,14 +1039,24 @@ class ProfessionalFilmProcessor {
 
         const screenRect = this._cropScreenLock;
         const overlayRect = cropOverlay.getBoundingClientRect();
-        let w = Math.min(screenRect.width, overlayRect.width);
-        let h = Math.min(screenRect.height, overlayRect.height);
-        let left = screenRect.left - overlayRect.left;
-        let top = screenRect.top - overlayRect.top;
-        left = Math.max(0, Math.min(left, overlayRect.width - w));
-        top = Math.max(0, Math.min(top, overlayRect.height - h));
-        cropArea.style.left = left + 'px';
-        cropArea.style.top = top + 'px';
+        cropArea.style.left = (screenRect.left - overlayRect.left) + 'px';
+        cropArea.style.top = (screenRect.top - overlayRect.top) + 'px';
+        cropArea.style.width = screenRect.width + 'px';
+        cropArea.style.height = screenRect.height + 'px';
+    }
+
+    // Bring the crop box fully inside the image (used after the screen
+    // lock releases, when the settled image may be smaller than the box)
+    clampCropAreaToOverlay() {
+        const cropArea = document.getElementById('cropArea');
+        const cropOverlay = document.getElementById('cropOverlay');
+        if (!cropArea || !cropOverlay) return;
+        const W = cropOverlay.offsetWidth, H = cropOverlay.offsetHeight;
+        if (W === 0 || H === 0) return;
+        const w = Math.min(cropArea.offsetWidth, W);
+        const h = Math.min(cropArea.offsetHeight, H);
+        cropArea.style.left = Math.max(0, Math.min(cropArea.offsetLeft, W - w)) + 'px';
+        cropArea.style.top = Math.max(0, Math.min(cropArea.offsetTop, H - h)) + 'px';
         cropArea.style.width = w + 'px';
         cropArea.style.height = h + 'px';
     }
@@ -991,8 +1076,8 @@ class ProfessionalFilmProcessor {
         cropOverlay.style.width = img.offsetWidth + 'px';
         cropOverlay.style.height = img.offsetHeight + 'px';
 
-        // Restore relative crop area, or default to 80% centered
-        const rel = cropRelative || { left: 0.1, top: 0.1, width: 0.8, height: 0.8 };
+        // Restore relative crop area, or default to the FULL image
+        const rel = cropRelative || { left: 0, top: 0, width: 1, height: 1 };
         cropArea.style.left = (rel.left * img.offsetWidth) + 'px';
         cropArea.style.top = (rel.top * img.offsetHeight) + 'px';
         cropArea.style.width = (rel.width * img.offsetWidth) + 'px';
@@ -1010,6 +1095,7 @@ class ProfessionalFilmProcessor {
             if (bar) bar.style.display = 'flex';
             setTimeout(() => {
                 this.positionCropOverlay();
+                this.snapCropToRatio(); // apply a still-selected ratio
                 this.startCropOverlayWatcher();
             }, 0);
             document.getElementById('cropBtn').style.display = 'none';
@@ -2001,9 +2087,13 @@ class ProfessionalFilmProcessor {
                 }
 
                 // Release the lock once layout has settled (the watcher
-                // holds the box in place until then)
+                // holds the box in place until then), then make sure the
+                // box sits fully inside the settled image
                 if (this._cropScreenLock) {
-                    setTimeout(() => { this._cropScreenLock = null; }, 400);
+                    setTimeout(() => {
+                        this._cropScreenLock = null;
+                        if (this.cropMode) this.clampCropAreaToOverlay();
+                    }, 400);
                 }
             }
 
