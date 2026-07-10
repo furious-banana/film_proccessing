@@ -452,6 +452,62 @@ try {
     await page.waitForFunction(() => processor.bakedStraighten === 0, null, { timeout: 120_000 });
     await page.waitForTimeout(600);
 
+    // Regression: a REAL held drag that crosses the baked angle (0) must
+    // not snap the crop box - the watcher used to wake for the one frame
+    // where delta == 0 and "correct" the overlay mid-drag
+    const sweepJumps = await page.evaluate(() => {
+        window._sweepMon = { jumps: 0, prev: null };
+        const tick = () => {
+            const a = document.getElementById('cropArea');
+            if (a && processor.cropMode) {
+                const r = a.getBoundingClientRect();
+                const p = window._sweepMon.prev;
+                if (p && Math.max(Math.abs(r.left - p.left), Math.abs(r.top - p.top),
+                    Math.abs(r.width - p.width), Math.abs(r.height - p.height)) > 2) {
+                    window._sweepMon.jumps++;
+                }
+                window._sweepMon.prev = r;
+                window._sweepMon.raf = requestAnimationFrame(tick);
+            }
+        };
+        tick();
+        return true;
+    });
+    const sBox = await page.evaluate(() => {
+        const r = document.getElementById('straighten').getBoundingClientRect();
+        return { x: r.left, y: r.top + r.height / 2, w: r.width };
+    });
+    const xForVal = (v) => sBox.x + ((v + 45) / 90) * sBox.w;
+    await page.mouse.move(xForVal(2), sBox.y);
+    await page.mouse.down();
+    for (let i = 0; i <= 30; i++) {
+        await page.mouse.move(xForVal(2 - (4 * i) / 30), sBox.y); // 2 -> -2
+        await page.waitForTimeout(15);
+    }
+    for (let i = 0; i <= 15; i++) {
+        await page.mouse.move(xForVal(-2 + (3 * i) / 15), sBox.y); // -2 -> +1
+        await page.waitForTimeout(15);
+    }
+    await page.mouse.up(); // release bakes at ~+1 (screen lock pins the box)
+    await page.waitForFunction(() => processor.bakedStraighten > 0.5, null, { timeout: 120_000 });
+    await page.waitForTimeout(1000); // bake + lock window settle
+    const jumps = await page.evaluate(() => {
+        cancelAnimationFrame(window._sweepMon.raf);
+        return window._sweepMon.jumps;
+    });
+    check('crop box never jumps while dragging through zero',
+        sweepJumps && jumps === 0, `${jumps} jumps`);
+
+    // Normalize back to exactly 0 for the crop steps below
+    await page.evaluate(() => {
+        const s = document.getElementById('straighten');
+        s.value = 0;
+        s.dispatchEvent(new Event('input', { bubbles: true }));
+        s.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await page.waitForFunction(() => processor.bakedStraighten === 0, null, { timeout: 120_000 });
+    await page.waitForTimeout(600);
+
     await page.click('#applyCropBtn');
     await page.waitForFunction((prev) => {
         const r = processor.webglRenderer;
