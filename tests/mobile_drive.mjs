@@ -160,6 +160,44 @@ try {
     await page.waitForTimeout(300);
     check('crop mode opens', await page.evaluate(() => mobileApp.cropMode));
 
+    // The crop box initially covers the FULL image
+    const fullBox = await page.evaluate(() => {
+        const b = document.getElementById('cropBox').getBoundingClientRect();
+        const w = document.getElementById('canvasWrap').getBoundingClientRect();
+        return { dl: b.left - w.left, dt: b.top - w.top,
+            dw: w.width - b.width, dh: w.height - b.height };
+    });
+    check('crop box opens covering the full image',
+        Object.values(fullBox).every(v => Math.abs(v) < 3), JSON.stringify(fullBox));
+
+    // Aspect ratio chips constrain the box
+    await page.evaluate(() => document.querySelector('.ratio-btn[data-ratio="1"]').click());
+    const sq = await page.evaluate(() => {
+        const b = document.getElementById('cropBox').getBoundingClientRect();
+        const w = document.getElementById('canvasWrap').getBoundingClientRect();
+        return { w: b.width, h: b.height, min: Math.min(w.width, w.height) };
+    });
+    check('1:1 chip snaps to a max centered square',
+        Math.abs(sq.w - sq.h) < 1.5 && Math.abs(sq.h - sq.min) < 2, JSON.stringify(sq));
+    await page.evaluate(() => document.querySelector('.ratio-btn[data-ratio="1.5"]').click());
+    const r32 = await page.evaluate(() => {
+        const b = document.getElementById('cropBox').getBoundingClientRect();
+        return b.width / b.height;
+    });
+    check('3:2 chip applies', Math.abs(r32 - 1.5) < 0.02, r32.toFixed(3));
+    await page.evaluate(() => {
+        document.getElementById('ratioSwapBtn').click();
+    });
+    const r23 = await page.evaluate(() => {
+        const b = document.getElementById('cropBox').getBoundingClientRect();
+        return b.width / b.height;
+    });
+    check('ratio swap flips to 2:3', Math.abs(r23 - 2 / 3) < 0.02, r23.toFixed(3));
+    await page.evaluate(() => {
+        document.getElementById('ratioSwapBtn').click(); // swap back
+        document.querySelector('.ratio-btn[data-ratio="free"]').click();
+    });
+
     // Viewport lock: record content scale + viewport size before rotating
     const scaleBefore = await page.evaluate(() => {
         const r = document.getElementById('viewCanvas').getBoundingClientRect();
@@ -200,7 +238,15 @@ try {
         mobileApp.renderer.imageWidth === 1200, null, { timeout: 30_000 });
     check('straighten reset restores dims', true);
 
-    // --- Crop: apply default 80% box, then undo ---
+    // --- Crop: set the classic 80% box, apply, then undo ---
+    await page.evaluate(() => {
+        const wrap = document.getElementById('canvasWrap');
+        const box = document.getElementById('cropBox');
+        box.style.left = (wrap.clientWidth * 0.1) + 'px';
+        box.style.top = (wrap.clientHeight * 0.1) + 'px';
+        box.style.width = (wrap.clientWidth * 0.8) + 'px';
+        box.style.height = (wrap.clientHeight * 0.8) + 'px';
+    });
     await page.click('#applyCropBtn');
     await page.waitForTimeout(500);
     const cropDims = await page.evaluate(() =>
