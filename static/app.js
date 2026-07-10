@@ -108,10 +108,22 @@ class ProfessionalFilmProcessor {
                 this.isSliderActive = true;
             });
 
+            // Threshold clipping preview while a tone slider is held
+            // (when the Clip toggle is on): 1 = highlights, 2 = shadows
+            const CLIP_MODES = { exposure: 1, highlights: 1, whites: 1, shadows: 2, blacks: 2 };
             slider.addEventListener('pointerdown', () => {
-                slider._downValue = slider.value;
-                slider._downTs = Date.now();
+                if (this.clipEnabled && CLIP_MODES[slider.id]
+                    && this.webglEnabled && this.webglRenderer) {
+                    this.webglRenderer.updateParams({ clipMode: CLIP_MODES[slider.id] });
+                }
             });
+            const endClipPreview = () => {
+                if (this.webglRenderer && this.webglRenderer.params.clipMode) {
+                    this.webglRenderer.updateParams({ clipMode: 0 });
+                }
+            };
+            slider.addEventListener('pointerup', endClipPreview);
+            slider.addEventListener('pointercancel', endClipPreview);
 
             slider.addEventListener('input', () => {
                 this.updateValueDisplay(slider.id, slider.value);
@@ -135,24 +147,18 @@ class ProfessionalFilmProcessor {
                 slider.addEventListener('change', () => this.updateImage());
             }
 
-            // Double-click/double-tap the thumb resets to 0. A tap is a
-            // quick press that did NOT change the value - so micro-drags
-            // (which do, and on touchscreens fire input events even for
-            // tiny taps) can never trigger the reset.
-            slider.addEventListener('pointerup', () => {
-                const now = Date.now();
-                const isTap = slider.value === slider._downValue
-                    && now - (slider._downTs || 0) < 350;
-                if (isTap && now - (slider._lastTapTs || 0) < 450) {
-                    slider._lastTapTs = 0;
+            // Double-click the slider's LABEL to reset it - clicking the
+            // thumb itself is too easy to nudge
+            const label = slider.closest('.control-row')?.querySelector('.control-label');
+            if (label) {
+                label.title = 'Double-click to reset';
+                label.addEventListener('dblclick', () => {
                     this.saveHistory();
                     slider.value = 0;
                     this.updateValueDisplay(slider.id, 0);
                     this.updateImage();
-                } else {
-                    slider._lastTapTs = isTap ? now : 0;
-                }
-            });
+                });
+            }
 
             slider.addEventListener('mouseup', () => {
                 this.isSliderActive = false;
@@ -173,15 +179,17 @@ class ProfessionalFilmProcessor {
             this.updateValueDisplay(slider.id, slider.value);
         });
 
-        // Clipping overlay toggle (display only: highlights red, blacks blue)
-        this.showClipping = false;
+        // Clipping preview toggle: while it's on, HOLDING a tone slider
+        // shows the threshold view (like Alt-dragging in Photoshop)
+        this.clipEnabled = false;
         const clippingBtn = document.getElementById('clippingBtn');
         if (clippingBtn) {
             clippingBtn.addEventListener('click', () => {
-                this.showClipping = !this.showClipping;
-                clippingBtn.classList.toggle('active', this.showClipping);
-                if (this.webglEnabled && this.webglRenderer) {
-                    this.webglRenderer.updateParams({ showClipping: this.showClipping });
+                this.clipEnabled = !this.clipEnabled;
+                clippingBtn.classList.toggle('active', this.clipEnabled);
+                if (!this.clipEnabled && this.webglRenderer
+                    && this.webglRenderer.params.clipMode) {
+                    this.webglRenderer.updateParams({ clipMode: 0 });
                 }
             });
         }
@@ -2003,8 +2011,7 @@ class ProfessionalFilmProcessor {
                 hasBlackPoint: !!this.blackPoint,
                 hasWhitePoint: !!this.whitePoint,
                 hasGrayPoint: !!this.grayPoint,
-                curves: params.curves,
-                showClipping: !!this.showClipping
+                curves: params.curves
             });
 
             const previewImage = document.getElementById('previewImage');

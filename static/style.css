@@ -229,6 +229,8 @@
             font-weight: 500;
             min-width: 90px;
             flex-shrink: 0;
+            user-select: none; /* double-click the label resets the slider */
+            cursor: default;
         }
 
         .control-wrapper {
