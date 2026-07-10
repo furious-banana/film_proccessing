@@ -760,7 +760,8 @@ class ProfessionalFilmProcessor {
                     defaultName = base + '_processed.tif';
                 }
 
-                const savePath = await window.electronAPI.saveFileDialog(defaultName);
+                const savePath = await window.electronAPI.saveFileDialog(
+                    defaultName, this.originalFilePath);
                 if (savePath) {
                     const arrayBuffer = await blob.arrayBuffer();
                     const result = await window.electronAPI.writeFile(savePath, arrayBuffer);
@@ -1616,7 +1617,8 @@ class ProfessionalFilmProcessor {
         }
 
         if (window.electronAPI) {
-            const savePath = await window.electronAPI.saveFileDialog(defaultName);
+            const savePath = await window.electronAPI.saveFileDialog(
+                defaultName, this.originalFilePath);
             if (savePath) {
                 const buffer = new TextEncoder().encode(json);
                 const result = await window.electronAPI.writeFile(savePath, buffer);
@@ -1659,7 +1661,7 @@ class ProfessionalFilmProcessor {
 
     async loadSettings() {
         if (window.electronAPI) {
-            const result = await window.electronAPI.openFileDialog();
+            const result = await window.electronAPI.openFileDialog(this.originalFilePath);
             if (result && result.filePath) {
                 const jsonData = await window.electronAPI.readFile(result.filePath);
                 if (jsonData.success) {
