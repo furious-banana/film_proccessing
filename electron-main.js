@@ -85,9 +85,20 @@ function createWindow() {
     });
 }
 
+// Start dialogs in the folder of the image being edited when known;
+// fall back to the last directory used, then Documents
+function dialogStartDir(sourcePath) {
+    if (sourcePath) {
+        const dir = path.dirname(sourcePath);
+        if (fs.existsSync(dir)) return dir;
+    }
+    return store.get('lastOpenDirectory', app.getPath('documents'));
+}
+
 // File picker for opening images
-ipcMain.handle('open-file-dialog', async () => {
+ipcMain.handle('open-file-dialog', async (event, sourcePath) => {
     const result = await dialog.showOpenDialog(mainWindow, {
+        defaultPath: dialogStartDir(sourcePath),
         properties: ['openFile'],
         filters: [
             { name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'tif', 'tiff', 'bmp'] },
@@ -106,17 +117,15 @@ ipcMain.handle('open-file-dialog', async () => {
 });
 
 // Save file dialog for export
-ipcMain.handle('save-file-dialog', async (event, defaultName) => {
-    const lastDir = store.get('lastOpenDirectory', app.getPath('documents'));
-    
+ipcMain.handle('save-file-dialog', async (event, defaultName, sourcePath) => {
     // Determine file type from extension
     const ext = path.extname(defaultName).toLowerCase();
-    const filters = ext === '.json' ? 
+    const filters = ext === '.json' ?
         [{ name: 'Settings', extensions: ['json'] }] :
         [{ name: 'TIFF Image', extensions: ['tif', 'tiff'] }];
-    
+
     const result = await dialog.showSaveDialog(mainWindow, {
-        defaultPath: path.join(lastDir, defaultName),
+        defaultPath: path.join(dialogStartDir(sourcePath), defaultName),
         filters: filters
     });
     
