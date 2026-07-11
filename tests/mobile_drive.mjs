@@ -299,6 +299,81 @@ try {
         s.dispatchEvent(new Event('input', { bubbles: true }));
     });
 
+    // --- Settings file (per-photo JSON, desktop-compatible) ---
+    const settingsRT = await page.evaluate(() => {
+        // Edit, capture, reset, re-apply - a full save/load round trip
+        for (const [id, v] of [['contrast', 0.2], ['whites', 0.4]]) {
+            const s = document.getElementById(id);
+            s.value = v;
+            s.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        mobileApp.blackPoint = [12, 10, 8];
+        mobileApp.curves.rgb.splice(1, 0, { x: 0.5, y: 0.6 });
+        const json = JSON.stringify(mobileApp.getParameters(), null, 2);
+
+        for (const id of ['contrast', 'whites']) {
+            const s = document.getElementById(id);
+            s.value = 0;
+            s.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        mobileApp.blackPoint = null;
+        mobileApp.curves = mobileApp.defaultCurves();
+        mobileApp.drawCurves();
+
+        mobileApp.applySettings(JSON.parse(json));
+        return {
+            contrast: document.getElementById('contrast').value,
+            whites: document.getElementById('whites').value,
+            black: mobileApp.blackPoint && [...mobileApp.blackPoint],
+            curvePts: mobileApp.curves.rgb.length,
+        };
+    });
+    check('settings JSON round-trips (sliders, points, curves)',
+        settingsRT.contrast === '0.2' && settingsRT.whites === '0.4'
+        && JSON.stringify(settingsRT.black) === '[12,10,8]' && settingsRT.curvePts === 3,
+        JSON.stringify(settingsRT));
+
+    // Save button delivers a <name>_settings.json with the current edits
+    const savedFile = await page.evaluate(async () => {
+        const orig = mobileApp.deliverFile;
+        let captured = null;
+        mobileApp.deliverFile = async (blob, filename) => {
+            captured = { filename, text: await blob.text() };
+            return true;
+        };
+        document.getElementById('saveSettingsBtn').click();
+        await new Promise(res => setTimeout(res, 150));
+        mobileApp.deliverFile = orig;
+        return captured && { filename: captured.filename,
+            contrast: JSON.parse(captured.text).contrast };
+    });
+    check('save settings delivers <name>_settings.json',
+        !!savedFile && savedFile.filename.endsWith('_settings.json')
+        && savedFile.contrast === 0.2,
+        JSON.stringify(savedFile));
+
+    // Settings restore straighten by baking it (presets skip straighten)
+    await page.evaluate(() => mobileApp.applySettings({ straighten: 1.5 }));
+    await page.waitForFunction(() => mobileApp.bakedStraighten === 1.5,
+        null, { timeout: 30_000 });
+    check('settings restore straighten (baked)', true);
+    await page.evaluate(() => mobileApp.applySettings({ straighten: 0 }));
+    await page.waitForFunction(() => mobileApp.renderer.imageWidth === 1200,
+        null, { timeout: 30_000 });
+
+    // Clean up the edits this block made
+    await page.evaluate(() => {
+        for (const id of ['contrast', 'whites']) {
+            const s = document.getElementById(id);
+            s.value = 0;
+            s.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        mobileApp.blackPoint = null;
+        mobileApp.curves = mobileApp.defaultCurves();
+        mobileApp.drawCurves();
+        mobileApp.updateImage();
+    });
+
     // --- Press-and-hold the IMAGE shows the original ---
     const cmp = await page.evaluate(async () => {
         const pane = document.getElementById('viewerPane');

@@ -379,6 +379,9 @@ details > *:not(summary) { padding: 0 14px 12px; }
     font-size: 16px;
 }
 
+.settings-row { display: flex; gap: 6px; }
+.settings-row .tb-btn { flex: 1; }
+
 .export-row { margin-top: 12px; }
 
 #loupe {
