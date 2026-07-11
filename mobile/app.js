@@ -61,6 +61,7 @@ class MobileFilmProcessor {
         this.setupCurves();
         this.setupCropTool();
         this.setupPresets();
+        this.setupSettingsFile();
         this.setupExport();
         this.setupViewZoom();
         this.setupMisc();
@@ -1002,6 +1003,92 @@ class MobileFilmProcessor {
     }
 
     // ------------------------------------------------------------------
+    // Settings file (per-photo JSON; same format as the desktop app, so
+    // files move freely between phone and PC)
+    // ------------------------------------------------------------------
+
+    setupSettingsFile() {
+        document.getElementById('saveSettingsBtn').addEventListener('click', async () => {
+            if (!this.original) { this.status('Load an image first'); return; }
+            const json = JSON.stringify(this.getParameters(), null, 2);
+            const base = this.sourceFile
+                ? this.sourceFile.name.replace(/\.[^.]+$/, '') : 'image';
+            const ok = await this.deliverFile(
+                new Blob([json], { type: 'application/json' }),
+                base + '_settings.json');
+            this.status(ok ? 'Settings saved' : 'Save cancelled');
+        });
+
+        document.getElementById('loadSettingsBtn').addEventListener('click', () => {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.json,application/json';
+            input.onchange = async () => {
+                const file = input.files[0];
+                if (!file) return;
+                try {
+                    this.applySettings(JSON.parse(await file.text()));
+                    this.status('Settings loaded');
+                } catch (err) {
+                    this.status('Could not read settings: ' + err.message);
+                }
+            };
+            input.click();
+        });
+    }
+
+    applySettings(params) {
+        this.saveHistory(); // Undo restores the previous edit
+
+        for (const [key, value] of Object.entries(params)) {
+            const s = document.getElementById(key);
+            if (s && s.classList.contains('pro-slider') && key !== 'straighten') {
+                s.value = value;
+                this.updateValueDisplay(key, value);
+            }
+        }
+
+        if (params.black_point_r !== undefined) {
+            this.blackPoint = [params.black_point_r, params.black_point_g, params.black_point_b];
+        }
+        if (params.white_point_r !== undefined) {
+            this.whitePoint = [params.white_point_r, params.white_point_g, params.white_point_b];
+        }
+        if (params.gray_point_r !== undefined) {
+            this.grayPoint = [params.gray_point_r, params.gray_point_g, params.gray_point_b];
+        }
+
+        if (params.curves) {
+            try {
+                this.curves = typeof params.curves === 'string'
+                    ? JSON.parse(params.curves) : params.curves;
+                this.drawCurves();
+            } catch { /* keep current curves */ }
+        }
+
+        if (typeof params.film_correction === 'number' && this.isNegative) {
+            const fc = params.film_correction ? 1 : 0;
+            if (fc !== this.filmCorrection) {
+                this.filmCorrection = fc;
+                document.getElementById('filmCorrToggle').checked = fc === 1;
+                if (this.original) this.rebuildSource();
+            }
+        }
+
+        // Straighten is per-photo, so settings restore it (presets don't)
+        if (typeof params.straighten === 'number') {
+            const s = document.getElementById('straighten');
+            if (parseFloat(s.value) !== params.straighten) {
+                s.value = params.straighten;
+                this.updateValueDisplay('straighten', params.straighten);
+                this.bakeStraighten();
+            }
+        }
+
+        this.updateImage();
+    }
+
+    // ------------------------------------------------------------------
     // Export
     // ------------------------------------------------------------------
 
@@ -1063,9 +1150,9 @@ class MobileFilmProcessor {
         if (navigator.canShare && navigator.canShare({ files: [file] })) {
             try {
                 await navigator.share({ files: [file] });
-                return;
+                return true;
             } catch (e) {
-                if (e.name === 'AbortError') return; // user cancelled
+                if (e.name === 'AbortError') return false; // user cancelled
             }
         }
         const url = URL.createObjectURL(blob);
@@ -1074,6 +1161,7 @@ class MobileFilmProcessor {
         a.download = filename;
         a.click();
         setTimeout(() => URL.revokeObjectURL(url), 5000);
+        return true;
     }
 
     setupExport() {
