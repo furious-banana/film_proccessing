@@ -756,6 +756,110 @@ print(f'RESULT max={diff.max()} mean={diff.mean():.2f}')
         mobileApp.renderer.imageWidth === 600, null, { timeout: 30_000 });
     check('re-picking a file works', true);
 
+    // --- Folder browser (fake directory handle; no native picker) ---
+    const tiffB64 = fs.readFileSync(TIFF).toString('base64');
+    const jpegB64 = fs.readFileSync(JPEG).toString('base64');
+    await page.evaluate(([tb, jb]) => {
+        const bytes = (b64) => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+        const mk = (name, data, type) => {
+            const file = new File([data], name, { type, lastModified: 1234567 });
+            return { kind: 'file', name, getFile: async () => file };
+        };
+        window.__browseDir = {
+            name: 'test-scans',
+            values: async function* () {
+                // Out of order + one non-image: tests sorting and filtering
+                yield mk('b_frame2.jpg', bytes(jb), 'image/jpeg');
+                yield mk('notes.txt', new Uint8Array([1]), 'text/plain');
+                yield mk('a_frame1.tif', bytes(tb), 'image/tiff');
+            },
+        };
+    }, [tiffB64, jpegB64]);
+
+    // The fast reader handles the 16-bit TIFF without a full decode
+    const fastThumb = await page.evaluate(async () => {
+        let tif = null;
+        for await (const e of window.__browseDir.values()) {
+            if (e.name.endsWith('.tif')) tif = await e.getFile();
+        }
+        const c = await readTiffSubsampled(tif, 320);
+        if (!c) return null;
+        const px = c.getContext('2d').getImageData(
+            Math.floor(c.width / 2), Math.floor(c.height / 2), 1, 1).data;
+        return { w: c.width, h: c.height, px: Array.from(px.slice(0, 3)) };
+    });
+    check('subsampled TIFF reader thumbnails without full decode',
+        !!fastThumb && fastThumb.w === 320 && fastThumb.h === 213
+        && fastThumb.px.every(v => v > 100 && v < 155),
+        JSON.stringify(fastThumb));
+
+    await page.evaluate(() => mobileApp.browser.openWithHandle(window.__browseDir));
+    await page.waitForFunction(() =>
+        document.querySelectorAll('#browseGrid .browse-cell img').length === 2,
+        null, { timeout: 60_000 });
+    const gridState = await page.evaluate(() => ({
+        cells: document.querySelectorAll('#browseGrid .browse-cell').length,
+        names: [...document.querySelectorAll('#browseGrid .browse-name')]
+            .map(e => e.textContent),
+        title: document.getElementById('browseTitle').textContent,
+    }));
+    check('browser grid lists images sorted, non-images filtered',
+        gridState.cells === 2 && gridState.title === 'test-scans'
+        && gridState.names[0] === 'a_frame1.tif' && gridState.names[1] === 'b_frame2.jpg',
+        JSON.stringify(gridState));
+
+    // Thumbnails are cached in IndexedDB for instant revisits
+    const cached = await page.evaluate(async () => {
+        const db = await new Promise((res, rej) => {
+            const r = indexedDB.open('filmBrowser', 1);
+            r.onsuccess = () => res(r.result);
+            r.onerror = () => rej(r.error);
+        });
+        return new Promise((res) => {
+            const r = db.transaction('thumbs').objectStore('thumbs').count();
+            r.onsuccess = () => res(r.result);
+        });
+    });
+    check('thumbnails cached in IndexedDB', cached === 2, `${cached} cached`);
+
+    // Tap -> full-screen preview with prev/next
+    await page.click('#browseGrid .browse-cell');
+    await page.waitForFunction(() => {
+        const img = document.getElementById('browsePreviewImg');
+        return document.getElementById('browsePreview').style.display !== 'none'
+            && img.naturalWidth > 0 && getComputedStyle(img).opacity === '1';
+    }, null, { timeout: 60_000 });
+    const preview1 = await page.evaluate(() => ({
+        name: document.getElementById('previewName').textContent,
+        w: document.getElementById('browsePreviewImg').naturalWidth,
+    }));
+    check('tap opens a full-screen preview',
+        preview1.name === 'a_frame1.tif (1/2)' && preview1.w === 1200,
+        JSON.stringify(preview1));
+
+    await page.click('#previewNextBtn');
+    await page.waitForFunction(() =>
+        document.getElementById('previewName').textContent.startsWith('b_frame2.jpg'),
+        null, { timeout: 60_000 });
+    check('next moves to the following frame', true);
+    await page.click('#previewPrevBtn');
+    await page.waitForFunction(() =>
+        document.getElementById('previewName').textContent.startsWith('a_frame1.tif'),
+        null, { timeout: 60_000 });
+
+    // Edit opens the frame in the editor and closes the browser
+    await page.click('#previewEditBtn');
+    await page.waitForFunction(() =>
+        mobileApp.renderer.imageWidth === 1200 && mobileApp.renderer.imageHeight === 800,
+        null, { timeout: 60_000 });
+    const closed = await page.evaluate(() => ({
+        panel: document.getElementById('browsePanel').style.display,
+        preview: document.getElementById('browsePreview').style.display,
+    }));
+    check('edit loads the frame and closes the browser',
+        closed.panel === 'none' && closed.preview === 'none',
+        JSON.stringify(closed));
+
     const realErrors = consoleErrors.filter(e => !e.includes('favicon') && !e.includes('Autofill'));
     check('no console/page errors', realErrors.length === 0, realErrors.slice(0, 3).join(' | '));
 } finally {

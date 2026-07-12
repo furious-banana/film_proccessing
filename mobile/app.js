@@ -65,6 +65,7 @@ class MobileFilmProcessor {
         this.setupExport();
         this.setupViewZoom();
         this.setupMisc();
+        this.browser = new FolderBrowser(this);
     }
 
     status(msg) {

@@ -23,6 +23,7 @@
     <main>
         <div class="toolbar">
             <button id="loadBtn" class="tb-btn primary">📂 Load</button>
+            <button id="browseBtn" class="tb-btn">🖼 Browse</button>
             <button id="cropBtn" class="tb-btn">✂️ Crop</button>
             <button id="rotate90Btn" class="tb-btn" title="Rotate 90°">↷ 90°</button>
             <button id="undoCropBtn" class="tb-btn" style="display:none">↩ Un-crop</button>
@@ -191,6 +192,32 @@
         </div>
     </main>
 
+    <!-- Folder browser: thumbnail grid of the picked scans folder -->
+    <div id="browsePanel" style="display:none">
+        <div class="browse-bar">
+            <button id="browseCloseBtn" class="tb-btn">✕</button>
+            <span id="browseTitle" class="browse-title">Browse</span>
+            <button id="browseFolderBtn" class="tb-btn">📁 Folder</button>
+        </div>
+        <div id="browseGrid"></div>
+        <div id="browseEmpty" class="browse-empty" style="display:none">
+            <p id="browseEmptyMsg"></p>
+            <button id="browsePickBtn" class="tb-btn primary">📁 Pick folder</button>
+        </div>
+    </div>
+
+    <!-- Full-screen preview: swipe between frames, ✎ opens the editor -->
+    <div id="browsePreview" style="display:none">
+        <img id="browsePreviewImg" alt="">
+        <div class="browse-preview-bar">
+            <button id="previewCloseBtn" class="tb-btn">✕</button>
+            <span id="previewName"></span>
+            <button id="previewEditBtn" class="tb-btn primary">✎ Edit</button>
+        </div>
+        <button class="browse-nav prev" id="previewPrevBtn">‹</button>
+        <button class="browse-nav next" id="previewNextBtn">›</button>
+    </div>
+
     <div id="loupe" style="display:none">
         <canvas id="loupeCanvas" width="120" height="120"></canvas>
         <div class="crosshair-v"></div>
@@ -202,6 +229,7 @@
     <script src="pipeline.js"></script>
     <script src="tiff.js"></script>
     <script src="webgl-renderer.js"></script>
+    <script src="browse.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

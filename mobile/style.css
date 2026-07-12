@@ -384,6 +384,111 @@ details > *:not(summary) { padding: 0 14px 12px; }
 
 .export-row { margin-top: 12px; }
 
+/* ------------------------------------------------------------------ */
+/* Folder browser                                                      */
+/* ------------------------------------------------------------------ */
+
+#browsePanel {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    padding-top: env(safe-area-inset-top);
+}
+.browse-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+}
+.browse-title {
+    flex: 1;
+    text-align: center;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+#browseGrid {
+    flex: 1;
+    overflow-y: auto;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+    gap: 8px;
+    padding: 10px;
+    align-content: start;
+}
+.browse-cell { display: flex; flex-direction: column; gap: 4px; }
+.browse-thumb {
+    width: 100%;
+    aspect-ratio: 1;
+    object-fit: cover;      /* thumbnails are <img>; placeholders <div> */
+    background: var(--bg3);
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text2);
+}
+.browse-name {
+    font-size: 10px;
+    color: var(--text2);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.browse-empty { margin: auto; text-align: center; color: var(--text2); padding: 20px; }
+.browse-empty .tb-btn { margin-top: 12px; }
+
+#browsePreview {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    background: #000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    touch-action: none;
+}
+#browsePreviewImg { max-width: 100%; max-height: 100%; }
+.browse-preview-bar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: calc(10px + env(safe-area-inset-top)) 12px 10px;
+    background: linear-gradient(rgba(0, 0, 0, 0.7), transparent);
+}
+#previewName {
+    flex: 1;
+    text-align: center;
+    font-size: 12px;
+    color: #fff;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.browse-nav {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 44px;
+    height: 64px;
+    background: rgba(0, 0, 0, 0.35);
+    color: #fff;
+    border: none;
+    font-size: 28px;
+    border-radius: 8px;
+}
+.browse-nav.prev { left: 6px; }
+.browse-nav.next { right: 6px; }
+
 #loupe {
     position: fixed;
     width: 120px;
