@@ -333,21 +333,27 @@ try {
         && JSON.stringify(settingsRT.black) === '[12,10,8]' && settingsRT.curvePts === 3,
         JSON.stringify(settingsRT));
 
-    // Save button delivers a <name>_settings.json with the current edits
+    // Save button opens a save dialog for <name>_settings.json with the
+    // current edits (showSaveFilePicker stubbed - Electron would show a
+    // real native dialog)
     const savedFile = await page.evaluate(async () => {
-        const orig = mobileApp.deliverFile;
+        const orig = window.showSaveFilePicker;
         let captured = null;
-        mobileApp.deliverFile = async (blob, filename) => {
-            captured = { filename, text: await blob.text() };
-            return true;
-        };
+        window.showSaveFilePicker = async (opts) => ({
+            createWritable: async () => ({
+                write: async (blob) => {
+                    captured = { filename: opts.suggestedName, text: await blob.text() };
+                },
+                close: async () => {},
+            }),
+        });
         document.getElementById('saveSettingsBtn').click();
         await new Promise(res => setTimeout(res, 150));
-        mobileApp.deliverFile = orig;
+        window.showSaveFilePicker = orig;
         return captured && { filename: captured.filename,
             contrast: JSON.parse(captured.text).contrast };
     });
-    check('save settings delivers <name>_settings.json',
+    check('save settings opens a save dialog for <name>_settings.json',
         !!savedFile && savedFile.filename.endsWith('_settings.json')
         && savedFile.contrast === 0.2,
         JSON.stringify(savedFile));
@@ -361,8 +367,33 @@ try {
     await page.waitForFunction(() => mobileApp.renderer.imageWidth === 1200,
         null, { timeout: 30_000 });
 
-    // Clean up the edits this block made
+    // Reopening the same photo auto-loads the settings the save button
+    // remembered (contrast 0.2, whites 0.4, black point, extra curve point)
     await page.evaluate(() => {
+        for (const id of ['contrast', 'whites']) {
+            const s = document.getElementById(id);
+            s.value = 0;
+            s.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+    });
+    await page.setInputFiles('#fileInput', TIFF);
+    await page.waitForFunction(() =>
+        document.getElementById('contrast').value === '0.2', null, { timeout: 60_000 });
+    const autoLoaded = await page.evaluate(() => ({
+        whites: document.getElementById('whites').value,
+        black: mobileApp.blackPoint && [...mobileApp.blackPoint],
+        curvePts: mobileApp.curves.rgb.length,
+    }));
+    check('reopening a photo auto-loads its saved settings',
+        autoLoaded.whites === '0.4' && JSON.stringify(autoLoaded.black) === '[12,10,8]'
+        && autoLoaded.curvePts === 3,
+        JSON.stringify(autoLoaded));
+
+    // Clean up the edits and remembered settings this block made
+    await page.evaluate(() => {
+        Object.keys(localStorage)
+            .filter(k => k.startsWith('filmSettings:'))
+            .forEach(k => localStorage.removeItem(k));
         for (const id of ['contrast', 'whites']) {
             const s = document.getElementById(id);
             s.value = 0;

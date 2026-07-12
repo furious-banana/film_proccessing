@@ -106,9 +106,13 @@ class MobileFilmProcessor {
             document.getElementById('emptyHint').style.display = 'none';
             this.rebuildSource();
             this.updateImage();
+            // Same behaviour as the desktop app: a photo with previously
+            // saved settings opens with them already applied
+            const restored = this.autoLoadSettings();
             this.status(`${this.original.width}×${this.original.height}`
                 + ` · ${this.original.bitDepth}-bit`
-                + (this.original.colorConverted ? ' · ' + this.original.colorConverted : ''));
+                + (this.original.colorConverted ? ' · ' + this.original.colorConverted : '')
+                + (restored ? ' · settings restored' : ''));
         } catch (err) {
             console.error(err);
             this.status('Failed to load: ' + err.message);
@@ -1010,12 +1014,15 @@ class MobileFilmProcessor {
     setupSettingsFile() {
         document.getElementById('saveSettingsBtn').addEventListener('click', async () => {
             if (!this.original) { this.status('Load an image first'); return; }
-            const json = JSON.stringify(this.getParameters(), null, 2);
+            const params = this.getParameters();
+            // Remembered locally so reopening this photo restores its edits
+            this.rememberSettings(params);
             const base = this.sourceFile
                 ? this.sourceFile.name.replace(/\.[^.]+$/, '') : 'image';
-            const ok = await this.deliverFile(
-                new Blob([json], { type: 'application/json' }),
-                base + '_settings.json');
+            const ok = await this.saveFileAs(
+                new Blob([JSON.stringify(params, null, 2)], { type: 'application/json' }),
+                base + '_settings.json',
+                [{ description: 'Film settings', accept: { 'application/json': ['.json'] } }]);
             this.status(ok ? 'Settings saved' : 'Save cancelled');
         });
 
@@ -1027,7 +1034,9 @@ class MobileFilmProcessor {
                 const file = input.files[0];
                 if (!file) return;
                 try {
-                    this.applySettings(JSON.parse(await file.text()));
+                    const params = JSON.parse(await file.text());
+                    this.applySettings(params);
+                    this.rememberSettings(params);
                     this.status('Settings loaded');
                 } catch (err) {
                     this.status('Could not read settings: ' + err.message);
@@ -1035,6 +1044,34 @@ class MobileFilmProcessor {
             };
             input.click();
         });
+    }
+
+    // The browser can't read a sidecar file next to the photo (it only
+    // gets the one file the user picked), so per-photo settings are also
+    // kept in localStorage keyed by the file's name and size.
+    settingsStorageKey() {
+        const f = this.sourceFile;
+        return f ? `filmSettings:${f.name}:${f.size}` : null;
+    }
+
+    rememberSettings(params) {
+        const key = this.settingsStorageKey();
+        if (!key) return;
+        try {
+            localStorage.setItem(key, JSON.stringify(params));
+        } catch { /* storage full - the settings file still works */ }
+    }
+
+    autoLoadSettings() {
+        const key = this.settingsStorageKey();
+        const json = key && localStorage.getItem(key);
+        if (!json) return false;
+        try {
+            this.applySettings(JSON.parse(json));
+            return true;
+        } catch {
+            return false;
+        }
     }
 
     applySettings(params) {
@@ -1145,6 +1182,28 @@ class MobileFilmProcessor {
         return new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.95));
     }
 
+    // Save with a real pick-the-location dialog where the browser has one
+    // (Chrome on Android since M132); otherwise fall back to the share
+    // sheet / a download. Returns false if the user cancelled.
+    async saveFileAs(blob, filename, types) {
+        if (window.showSaveFilePicker) {
+            try {
+                const handle = await window.showSaveFilePicker({
+                    suggestedName: filename,
+                    types,
+                });
+                const writable = await handle.createWritable();
+                await writable.write(blob);
+                await writable.close();
+                return true;
+            } catch (e) {
+                if (e.name === 'AbortError') return false; // user cancelled
+                console.warn('Save dialog failed; falling back to share/download', e);
+            }
+        }
+        return this.deliverFile(blob, filename);
+    }
+
     async deliverFile(blob, filename) {
         const file = new File([blob], filename, { type: blob.type });
         if (navigator.canShare && navigator.canShare({ files: [file] })) {
@@ -1165,18 +1224,22 @@ class MobileFilmProcessor {
     }
 
     setupExport() {
-        const stamp = () => new Date().toISOString().replace(/[:T-]/g, '').slice(0, 14);
+        const base = () => this.sourceFile
+            ? this.sourceFile.name.replace(/\.[^.]+$/, '') + '_edit'
+            : 'film_' + new Date().toISOString().replace(/[:T-]/g, '').slice(0, 14);
         document.getElementById('exportTiffBtn').addEventListener('click', async () => {
             if (!this.original) return;
             this.status('Exporting TIFF…');
-            await this.deliverFile(await this.makeTiffBlob(), `film_${stamp()}.tif`);
-            this.status('Exported 16-bit TIFF');
+            const ok = await this.saveFileAs(await this.makeTiffBlob(), base() + '.tif',
+                [{ description: '16-bit TIFF image', accept: { 'image/tiff': ['.tif', '.tiff'] } }]);
+            this.status(ok ? 'Exported 16-bit TIFF' : 'Export cancelled');
         });
         document.getElementById('exportJpegBtn').addEventListener('click', async () => {
             if (!this.original) return;
             this.status('Exporting JPEG…');
-            await this.deliverFile(await this.makeJpegBlob(), `film_${stamp()}.jpg`);
-            this.status('Exported JPEG');
+            const ok = await this.saveFileAs(await this.makeJpegBlob(), base() + '.jpg',
+                [{ description: 'JPEG image', accept: { 'image/jpeg': ['.jpg', '.jpeg'] } }]);
+            this.status(ok ? 'Exported JPEG' : 'Export cancelled');
         });
     }
 
