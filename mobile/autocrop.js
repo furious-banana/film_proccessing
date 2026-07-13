@@ -131,11 +131,12 @@ function detectFrame(img, opts = {}) {
             if (kept.length < minPts / 2) return null;
             cur = kept;
         }
-        let shift = 0;
-        for (const [c, v] of cur) {
-            shift = Math.max(shift, (v - (a + slope * c)) * inward);
-        }
-        return { a, slope, shift: Math.min(shift, 8) };
+        // 90th percentile, not the max: one stray point must not drag
+        // the whole edge inward (over-cropping)
+        const inw = cur.map(([c, v]) => (v - (a + slope * c)) * inward)
+            .sort((p, q) => p - q);
+        const shift = Math.max(0, inw[Math.floor(inw.length * 0.9)]);
+        return { a, slope, shift: Math.min(shift, 4) };
     };
     const L = fitLine(leftPts, 1), R = fitLine(rightPts, -1);
     const T = fitLine(topPts, 1), B = fitLine(botPts, -1);
@@ -163,21 +164,46 @@ function detectFrame(img, opts = {}) {
     // --- 6. Conservative inner rect from the fitted lines (valid once
     // straightened; residual slant is covered by the margin) ---
     // Inside means: below the top envelope's highest point, above the
-    // bottom's lowest, right of the left's rightmost, and so on - plus
-    // ~2 small pixels for the on-screen crop box quantization
-    const yTop = Math.max(T.a + T.slope * x0, T.a + T.slope * x1) + T.shift + 2;
-    const yBot = Math.min(B.a + B.slope * x0, B.a + B.slope * x1) - B.shift - 2;
-    const xL = Math.max(L.a + L.slope * y0, L.a + L.slope * y1) + L.shift + 2;
-    const xR = Math.min(R.a + R.slope * y0, R.a + R.slope * y1) - R.shift - 2;
-    if (xR - xL < W * 0.4 || yBot - yTop < H * 0.4) {
-        return fail('rect', { xL, xR, yTop, yBot, W, H, angle });
+    // bottom's lowest, right of the left's rightmost, and so on
+    const yTop = Math.max(T.a + T.slope * x0, T.a + T.slope * x1) + T.shift;
+    const yBot = Math.min(B.a + B.slope * x0, B.a + B.slope * x1) - B.shift;
+    const xL = Math.max(L.a + L.slope * y0, L.a + L.slope * y1) + L.shift;
+    const xR = Math.min(R.a + R.slope * y0, R.a + R.slope * y1) - R.shift;
+
+    // --- 7. Recover any over-tightening: push each side back outward
+    // until the band just outside it touches border pixels. Past the
+    // true frame edge everything is border, so this cannot overshoot. ---
+    let li = Math.max(0, Math.round(xL)), ri = Math.min(W - 1, Math.round(xR));
+    let ti = Math.max(0, Math.round(yTop)), bi = Math.min(H - 1, Math.round(yBot));
+    if (ri - li < W * 0.4 || bi - ti < H * 0.4) {
+        return fail('rect', { li, ri, ti, bi, W, H, angle });
     }
+    const DIRTY = 0.02;
+    const rowClean = (y, xa, xb) => {
+        let c = 0;
+        for (let x = xa; x <= xb; x++) if (!isContent(x, y)) c++;
+        return c / (xb - xa + 1) <= DIRTY;
+    };
+    const colClean = (x, ya, yb) => {
+        let c = 0;
+        for (let y = ya; y <= yb; y++) if (!isContent(x, y)) c++;
+        return c / (yb - ya + 1) <= DIRTY;
+    };
+    const capX = Math.ceil(W * 0.03), capY = Math.ceil(H * 0.03);
+    let k = 0;
+    while (li > 0 && k++ < capX && colClean(li - 1, ti, bi)) li--;
+    k = 0;
+    while (ri < W - 1 && k++ < capX && colClean(ri + 1, ti, bi)) ri++;
+    k = 0;
+    while (ti > 0 && k++ < capY && rowClean(ti - 1, li, ri)) ti--;
+    k = 0;
+    while (bi < H - 1 && k++ < capY && rowClean(bi + 1, li, ri)) bi++;
 
     const rect = {
-        x: Math.max(0, xL * stride),
-        y: Math.max(0, yTop * stride),
-        width: Math.min(width, (xR - xL) * stride),
-        height: Math.min(height, (yBot - yTop) * stride),
+        x: Math.max(0, li * stride),
+        y: Math.max(0, ti * stride),
+        width: Math.min(width, (ri - li) * stride),
+        height: Math.min(height, (bi - ti) * stride),
     };
     return { angle, rect };
 }
