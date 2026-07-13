@@ -860,6 +860,48 @@ print(f'RESULT max={diff.max()} mean={diff.mean():.2f}')
         closed.panel === 'none' && closed.preview === 'none',
         JSON.stringify(closed));
 
+    // --- Auto crop: synthetic scan, white border, frame slanted 0.6°,
+    // with a bright blob inside the frame (the "white flag" trap that
+    // must not shrink the crop) ---
+    const FRAME_TIFF = path.join(os.tmpdir(), 'film_mobile_test_frame.tif');
+    execSync(`uv run python -c "import numpy as np, tifffile, math; h,w=1100,1600; phi=math.radians(0.6); c,s=math.cos(phi),math.sin(phi); yy,xx=np.mgrid[0:h,0:w]; dx=xx-w/2; dy=yy-h/2; qx=dx*c+dy*s; qy=-dx*s+dy*c; inside=(np.abs(qx)<700)&(np.abs(qy)<460); grad=(0.2+0.5*xx/(w-1)).astype(np.float32); img=np.where(inside[...,None], np.stack([grad]*3,axis=-1), np.float32(1.0)); blob=inside&(qx>-690)&(qx<-640)&(np.abs(qy)<80); img[blob]=0.9; tifffile.imwrite(r'${FRAME_TIFF.replace(/\\/g, '/')}', np.round(img*65535).astype(np.uint16), photometric='rgb')"`,
+        { cwd: APP_DIR, stdio: 'inherit' });
+    await page.click('.mode-btn[data-mode="photo"]');
+    await page.setInputFiles('#fileInput', FRAME_TIFF);
+    await page.waitForFunction(() =>
+        mobileApp.renderer.imageWidth === 1600, null, { timeout: 60_000 });
+    const detSynth = await page.evaluate(() => {
+        const r = mobileApp.renderer;
+        return detectFrame({ data: r.imageData, width: r.imageWidth, height: r.imageHeight });
+    });
+    check('detector measures the 0.6° slant',
+        !!detSynth && Math.abs(detSynth.angle + 0.6) < 0.1,
+        detSynth ? detSynth.angle.toFixed(3) + '°' : 'null');
+    await page.evaluate(() => mobileApp.autoCrop());
+    await page.waitForFunction(() =>
+        document.getElementById('status').textContent.includes('Frame detected'),
+        null, { timeout: 60_000 });
+    await page.click('#applyCropBtn');
+    await page.waitForFunction(() =>
+        document.getElementById('status').textContent === 'Cropped', null, { timeout: 60_000 });
+    const autoRes = await page.evaluate(() => {
+        const r = mobileApp.renderer, d = r.imageData, W = r.imageWidth, H = r.imageHeight;
+        let sat = 0;
+        const chk = (x, y) => {
+            const i = (y * W + x) * 3;
+            if (Math.min(d[i], d[i + 1], d[i + 2]) > 0.97) sat++;
+        };
+        for (let x = 0; x < W; x++) for (let k = 0; k < 3; k++) { chk(x, k); chk(x, H - 1 - k); }
+        for (let y = 0; y < H; y++) for (let k = 0; k < 3; k++) { chk(k, y); chk(W - 1 - k, y); }
+        return { W, H, sat, angle: mobileApp.bakedOps[0] && mobileApp.bakedOps[0].angle };
+    });
+    check('auto crop straightens the frame and excludes the whole border',
+        Math.abs(autoRes.angle + 0.6) < 0.11
+        && autoRes.W >= 1330 && autoRes.W <= 1400
+        && autoRes.H >= 850 && autoRes.H <= 920
+        && autoRes.sat === 0,
+        JSON.stringify(autoRes));
+
     const realErrors = consoleErrors.filter(e => !e.includes('favicon') && !e.includes('Autofill'));
     check('no console/page errors', realErrors.length === 0, realErrors.slice(0, 3).join(' | '));
 } finally {

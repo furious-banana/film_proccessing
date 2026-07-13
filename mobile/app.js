@@ -619,6 +619,7 @@ class MobileFilmProcessor {
     setupCropTool() {
         document.getElementById('cropBtn').addEventListener('click', () => this.toggleCrop());
         document.getElementById('applyCropBtn').addEventListener('click', () => this.applyCrop());
+        document.getElementById('autoCropBtn').addEventListener('click', () => this.autoCrop());
         document.getElementById('cancelCropBtn').addEventListener('click', () => this.cancelCrop());
         document.getElementById('undoCropBtn').addEventListener('click', () => this.undoCrop());
         document.getElementById('rotate90Btn').addEventListener('click', () => this.rotate90());
@@ -856,6 +857,66 @@ class MobileFilmProcessor {
         this.updateValueDisplay('straighten', angle);
         this.bakedStraighten = angle;
         document.getElementById('viewCanvas').style.removeProperty('--rot');
+    }
+
+    // ✨ Auto: detect the frame inside the holder border and propose a
+    // straighten angle + crop box; the user reviews, then taps Apply
+    async autoCrop() {
+        if (!this.original) return;
+        if (!this.cropMode) this.toggleCrop();
+        this.status('Detecting frame…');
+        await new Promise(res => setTimeout(res, 30)); // let the status paint
+        const src = () => ({
+            data: this.renderer.imageData,
+            width: this.renderer.imageWidth,
+            height: this.renderer.imageHeight,
+        });
+        // A baked straighten leaves black fill wedges outside the scan
+        // boundary; the detector must not mistake that boundary (which is
+        // slanted by exactly -bake) for the frame edge
+        const fillIgnore = { ignore: [[0, 0, 0]] };
+        let det = detectFrame(src(), this.bakedStraighten ? fillIgnore : {});
+        if (!det) { this.status('No frame border detected'); return; }
+        if (Math.abs(det.angle) > 0.02) {
+            const s = document.getElementById('straighten');
+            const target = this.bakedStraighten + det.angle;
+            s.value = target;
+            this.updateValueDisplay('straighten', target);
+            this.bakeStraightenNow();
+            // The bake changed the geometry: re-measure the rect on the
+            // straightened source, where the crop will actually apply
+            det = detectFrame(src(), fillIgnore) || det;
+        }
+        // The detected box is free-form; clear any selected ratio chip
+        this.cropRatio = null;
+        document.querySelectorAll('.ratio-btn').forEach(b => {
+            if (b.id !== 'ratioSwapBtn') {
+                b.classList.toggle('active', b.dataset.ratio === 'free');
+            }
+        });
+        this.setCropBoxToSourceRect(det.rect);
+        this.status('Frame detected — adjust if needed, then Apply');
+    }
+
+    setCropBoxToSourceRect(rect) {
+        const canvas = document.getElementById('viewCanvas');
+        const wrap = document.getElementById('canvasWrap');
+        const box = document.getElementById('cropBox');
+        const cRect = canvas.getBoundingClientRect();
+        const wRect = wrap.getBoundingClientRect();
+        const scale = cRect.width / this.renderer.imageWidth;
+        let left = cRect.left - wRect.left + rect.x * scale;
+        let top = cRect.top - wRect.top + rect.y * scale;
+        let right = left + rect.width * scale;
+        let bottom = top + rect.height * scale;
+        left = Math.max(0, left);
+        top = Math.max(0, top);
+        right = Math.min(wrap.clientWidth, right);
+        bottom = Math.min(wrap.clientHeight, bottom);
+        box.style.left = left + 'px';
+        box.style.top = top + 'px';
+        box.style.width = Math.max(40, right - left) + 'px';
+        box.style.height = Math.max(40, bottom - top) + 'px';
     }
 
     applyCrop() {
