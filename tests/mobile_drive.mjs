@@ -902,6 +902,186 @@ print(f'RESULT max={diff.max()} mean={diff.mean():.2f}')
         && autoRes.sat === 0,
         JSON.stringify(autoRes));
 
+    // --- Batch: long-press multi-select, badges, copy/paste settings ---
+    const tiffSize = fs.statSync(TIFF).size;
+    const jpegSize = fs.statSync(JPEG).size;
+    await page.evaluate(([ts]) => {
+        // a_frame1 gets saved settings incl. a baked crop (mobile extension)
+        localStorage.setItem(`filmSettings:a_frame1.tif:${ts}`, JSON.stringify({
+            contrast: 0.2, straighten: 0,
+            baked_ops: [{ angle: 1.5, rect: { x: 10, y: 10, width: 500, height: 400 } }],
+            ops_width: 1200,
+        }));
+        return mobileApp.browser.openWithHandle(window.__browseDir);
+    }, [tiffSize]);
+    await page.waitForFunction(() =>
+        document.querySelectorAll('#browseGrid .browse-cell img').length === 2,
+        null, { timeout: 60_000 });
+    check('edited badge shows on frames with saved settings',
+        await page.evaluate(() => {
+            const cells = document.querySelectorAll('#browseGrid .browse-cell');
+            return !!cells[0].querySelector('.dot.edited')
+                && !cells[1].querySelector('.dot.edited');
+        }));
+
+    const lp = await page.evaluate(async () => {
+        const cell = document.querySelectorAll('#browseGrid .browse-cell')[0];
+        cell.dispatchEvent(new PointerEvent('pointerdown',
+            { bubbles: true, clientX: 60, clientY: 200 }));
+        await new Promise(r => setTimeout(r, 600));
+        cell.dispatchEvent(new PointerEvent('pointerup',
+            { bubbles: true, clientX: 60, clientY: 200 }));
+        cell.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        return {
+            mode: mobileApp.browser.selectMode,
+            count: document.getElementById('batchCount').textContent,
+            bar: document.getElementById('batchBar').style.display,
+            marked: cell.classList.contains('selected'),
+        };
+    });
+    check('long-press enters select mode with the frame selected',
+        lp.mode && lp.count === '1 selected' && lp.bar === '' && lp.marked,
+        JSON.stringify(lp));
+
+    await page.evaluate(() => document.getElementById('batchCopyBtn').click());
+    await page.waitForFunction(() => !!mobileApp.browser.copied, null, { timeout: 30_000 });
+    check('copy takes the selected frame\'s settings',
+        await page.evaluate(() => mobileApp.browser.copied.contrast) === 0.2);
+
+    const pasted = await page.evaluate(async ([js]) => {
+        document.querySelectorAll('#browseGrid .browse-cell')[1]
+            .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        document.getElementById('batchPasteBtn').click();
+        await new Promise(r => setTimeout(r, 400));
+        return {
+            count: document.getElementById('batchCount').textContent,
+            s: JSON.parse(localStorage.getItem(`filmSettings:b_frame2.jpg:${js}`)),
+        };
+    }, [jpegSize]);
+    check('paste copies the look but never the geometry',
+        pasted.count === '2 selected' && pasted.s && pasted.s.contrast === 0.2
+        && pasted.s.baked_ops === undefined && pasted.s.straighten === undefined,
+        JSON.stringify(pasted));
+
+    const allT = await page.evaluate(() => {
+        document.getElementById('batchAllBtn').click(); // all selected -> clears
+        const a = document.getElementById('batchCount').textContent;
+        document.getElementById('batchAllBtn').click(); // -> selects all
+        const b = document.getElementById('batchCount').textContent;
+        document.getElementById('batchDoneBtn').click();
+        return { a, b, mode: mobileApp.browser.selectMode,
+            bar: document.getElementById('batchBar').style.display };
+    });
+    check('select-all toggles and ✕ leaves select mode',
+        allT.a === '0 selected' && allT.b === '2 selected'
+        && !allT.mode && allT.bar === 'none', JSON.stringify(allT));
+
+    // Opening a photo whose settings carry a baked crop restores the crop
+    await page.evaluate(async () => {
+        let f = null;
+        for await (const e of window.__browseDir.values()) {
+            if (e.name === 'a_frame1.tif') f = await e.getFile();
+        }
+        await mobileApp.loadFile(f);
+    });
+    await page.waitForFunction(() =>
+        mobileApp.renderer.imageWidth === 500 && mobileApp.renderer.imageHeight === 400,
+        null, { timeout: 60_000 });
+    const opsLoaded = await page.evaluate(() => ({
+        ops: mobileApp.bakedOps.length,
+        contrast: document.getElementById('contrast').value,
+        undoBtn: document.getElementById('undoCropBtn').style.display,
+    }));
+    check('auto-loaded settings restore the saved crop',
+        opsLoaded.ops === 1 && opsLoaded.contrast === '0.2' && opsLoaded.undoBtn === '',
+        JSON.stringify(opsLoaded));
+
+    // --- Batch: auto-crop all + export all (framed synthetic, photo mode) ---
+    const frameB64 = fs.readFileSync(FRAME_TIFF).toString('base64');
+    const frameSize = fs.statSync(FRAME_TIFF).size;
+    await page.evaluate(([fb]) => {
+        const bytes = Uint8Array.from(atob(fb), c => c.charCodeAt(0));
+        const file = new File([bytes], 'roll_01.tif',
+            { type: 'image/tiff', lastModified: 42 });
+        window.__rollDir = {
+            name: 'roll',
+            values: async function* () {
+                yield { kind: 'file', name: 'roll_01.tif', getFile: async () => file };
+            },
+        };
+        window.__batchOut = {};
+        window.__batchOutDir = {
+            getFileHandle: async (name) => ({
+                createWritable: async () => ({
+                    write: async (blob) => { window.__batchOut[name] = blob; },
+                    close: async () => {},
+                }),
+            }),
+        };
+        // A pasted-in look: the exported file must come out brighter
+        localStorage.setItem(`filmSettings:roll_01.tif:${bytes.length}`,
+            JSON.stringify({ exposure: 1 }));
+        return mobileApp.browser.openWithHandle(window.__rollDir);
+    }, [frameB64]);
+    await page.waitForFunction(() =>
+        document.querySelectorAll('#browseGrid .browse-cell img').length === 1,
+        null, { timeout: 60_000 });
+
+    await page.evaluate(() => {
+        mobileApp.browser.enterSelect(0);
+        document.getElementById('batchCropBtn').click();
+    });
+    await page.waitForFunction((fsz) => {
+        const s = JSON.parse(
+            localStorage.getItem(`filmSettings:roll_01.tif:${fsz}`) || '{}');
+        return !!s.baked_ops;
+    }, frameSize, { timeout: 120_000 });
+    const bops = await page.evaluate((fsz) =>
+        JSON.parse(localStorage.getItem(`filmSettings:roll_01.tif:${fsz}`)), frameSize);
+    check('batch auto-crop saves the detected crop into the frame\'s settings',
+        Math.abs(bops.baked_ops[0].angle + 0.6) < 0.11
+        && bops.baked_ops[0].rect.width >= 1330 && bops.baked_ops[0].rect.width <= 1400
+        && bops.baked_ops[0].rect.height >= 850 && bops.baked_ops[0].rect.height <= 920
+        && bops.ops_width === 1600 && bops.exposure === 1 && bops.straighten === 0,
+        JSON.stringify(bops.baked_ops) + ` exposure=${bops.exposure}`);
+
+    await page.evaluate(() => {
+        document.getElementById('batchExportBtn').click(); // opens the dialog
+        document.getElementById('batchDialogGo').click();  // 16-bit TIFF default
+    });
+    await page.waitForFunction(() =>
+        window.__batchOut && Object.keys(window.__batchOut).length === 1,
+        null, { timeout: 120_000 });
+    const exp = await page.evaluate(async (fsz) => {
+        const blob = window.__batchOut['roll_01_edit.tif'];
+        if (!blob) return { names: Object.keys(window.__batchOut) };
+        await mobileApp.loadFile(new File([blob], 'roll_01_edit.tif',
+            { type: 'image/tiff' }));
+        const r = mobileApp.renderer;
+        let sum = 0, n = 0;
+        for (let i = 0; i < r.imageData.length; i += 997) { sum += r.imageData[i]; n++; }
+        return {
+            w: r.imageWidth, h: r.imageHeight, mean: sum / n,
+            exported: !!localStorage.getItem(`filmExported:roll_01.tif:${fsz}`),
+            badge: !!document.querySelector('#browseGrid .browse-cell .dot.exported'),
+        };
+    }, frameSize);
+    check('batch export writes the auto-cropped frame at the right size',
+        exp.w >= 1330 && exp.w <= 1400 && exp.h >= 850 && exp.h <= 920,
+        JSON.stringify(exp));
+    check('batch export applies the frame\'s saved look (exposure +1)',
+        exp.mean > 0.55, `mean ${exp.mean && exp.mean.toFixed(3)}`);
+    check('exported flag recorded and badge shown', exp.exported && exp.badge,
+        JSON.stringify(exp));
+
+    // Clean up batch-test state
+    await page.evaluate(() => {
+        mobileApp.browser.close();
+        Object.keys(localStorage)
+            .filter(k => k.startsWith('filmSettings:') || k.startsWith('filmExported:'))
+            .forEach(k => localStorage.removeItem(k));
+    });
+
     const realErrors = consoleErrors.filter(e => !e.includes('favicon') && !e.includes('Autofill'));
     check('no console/page errors', realErrors.length === 0, realErrors.slice(0, 3).join(' | '));
 } finally {

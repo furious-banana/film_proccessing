@@ -1073,10 +1073,26 @@ class MobileFilmProcessor {
     // files move freely between phone and PC)
     // ------------------------------------------------------------------
 
+    // Full per-photo settings: the shared slider/point/curve parameters
+    // plus the baked geometry (crops + 90° turns) as a mobile extension
+    // the desktop app simply ignores. Rects are recorded in working-res
+    // pixels; ops_width lets another device rescale them.
+    settingsPayload() {
+        const params = this.getParameters();
+        if (this.bakedOps.length && this.original) {
+            params.baked_ops = this.bakedOps.map(op => ({
+                angle: op.angle,
+                rect: op.rect ? { ...op.rect } : null,
+            }));
+            params.ops_width = this.original.width;
+        }
+        return params;
+    }
+
     setupSettingsFile() {
         document.getElementById('saveSettingsBtn').addEventListener('click', async () => {
             if (!this.original) { this.status('Load an image first'); return; }
-            const params = this.getParameters();
+            const params = this.settingsPayload();
             // Remembered locally so reopening this photo restores its edits
             this.rememberSettings(params);
             const base = this.sourceFile
@@ -1113,7 +1129,7 @@ class MobileFilmProcessor {
     // kept in localStorage keyed by the file's name and size.
     settingsStorageKey() {
         const f = this.sourceFile;
-        return f ? `filmSettings:${f.name}:${f.size}` : null;
+        return f ? filmSettingsKey(f.name, f.size) : null; // batch.js helper
     }
 
     rememberSettings(params) {
@@ -1172,6 +1188,22 @@ class MobileFilmProcessor {
                 document.getElementById('filmCorrToggle').checked = fc === 1;
                 if (this.original) this.rebuildSource();
             }
+        }
+
+        // Baked geometry (mobile extension): restore crops / 90° turns,
+        // rescaling rects if this device decodes at a different working res
+        if (Array.isArray(params.baked_ops) && this.original) {
+            const k = params.ops_width ? this.original.width / params.ops_width : 1;
+            this.bakedOps = params.baked_ops.map(op => ({
+                angle: op.angle || 0,
+                rect: op.rect ? {
+                    x: op.rect.x * k, y: op.rect.y * k,
+                    width: op.rect.width * k, height: op.rect.height * k,
+                } : null,
+            }));
+            document.getElementById('undoCropBtn').style.display =
+                this.bakedOps.length ? '' : 'none';
+            this.rebuildSource();
         }
 
         // Straighten is per-photo, so settings restore it (presets don't)

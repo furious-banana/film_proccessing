@@ -1,6 +1,6 @@
 ﻿// Cache-first service worker: after the first visit the app works fully
 // offline. Bump CACHE_VERSION when any app file changes.
-const CACHE_VERSION = 'film-mobile-v18';
+const CACHE_VERSION = 'film-mobile-v19';
 
 const ASSETS = [
     './',
@@ -11,6 +11,7 @@ const ASSETS = [
     './tiff.js',
     './webgl-renderer.js',
     './autocrop.js',
+    './batch.js',
     './browse.js',
     './vendor/UTIF.js',
     './manifest.webmanifest',
