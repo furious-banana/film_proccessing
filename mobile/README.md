@@ -28,6 +28,8 @@ Negative/Photo modes, film base correction, tone + RGB sliders,
 black/gray/white eyedroppers with a magnifying loupe, RGB + per-channel
 curves, crop with degree-level straightening, 90° rotation, undo,
 presets (same format as the desktop app), press-and-hold before/after.
+Folder browser with batch tools: long-press thumbnails to multi-select,
+then apply a preset, auto-crop, or export the whole selection.
 
 ## Putting it on your phone
 
