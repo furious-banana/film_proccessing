@@ -765,6 +765,7 @@ print(f'RESULT max={diff.max()} mean={diff.mean():.2f}')
             const file = new File([data], name, { type, lastModified: 1234567 });
             return { kind: 'file', name, getFile: async () => file };
         };
+        window.__sideFiles = {}; // sidecars written into the fake folder
         window.__browseDir = {
             name: 'test-scans',
             values: async function* () {
@@ -772,6 +773,24 @@ print(f'RESULT max={diff.max()} mean={diff.mean():.2f}')
                 yield mk('b_frame2.jpg', bytes(jb), 'image/jpeg');
                 yield mk('notes.txt', new Uint8Array([1]), 'text/plain');
                 yield mk('a_frame1.tif', bytes(tb), 'image/tiff');
+                for (const [n, f] of Object.entries(window.__sideFiles)) {
+                    yield { kind: 'file', name: n, getFile: async () => f };
+                }
+            },
+            getFileHandle: async (name, opts) => {
+                if (!window.__sideFiles[name] && !(opts && opts.create)) {
+                    throw new DOMException(name, 'NotFoundError');
+                }
+                return {
+                    getFile: async () => window.__sideFiles[name],
+                    createWritable: async () => ({
+                        write: async (blob) => {
+                            window.__sideFiles[name] = new File([blob], name,
+                                { type: 'application/json', lastModified: Date.now() });
+                        },
+                        close: async () => {},
+                    }),
+                };
             },
         };
     }, [tiffB64, jpegB64]);
@@ -1004,6 +1023,13 @@ print(f'RESULT max={diff.max()} mean={diff.mean():.2f}')
         && preset.a.straighten === 0
         && preset.b.baked_ops === undefined && preset.b.straighten === undefined,
         JSON.stringify({ a: preset.a, b: preset.b }));
+    check('batch edits write settings sidecars into the folder',
+        await page.evaluate(async () => {
+            const f = window.__sideFiles['a_frame1_settings.json'];
+            if (!f || !window.__sideFiles['b_frame2_settings.json']) return false;
+            const p = JSON.parse(await f.text());
+            return p.contrast === 0.35 && typeof p.saved_at === 'number';
+        }));
 
     const deselExit = await page.evaluate(() => {
         const cells = document.querySelectorAll('#browseGrid .browse-cell');
@@ -1048,6 +1074,81 @@ print(f'RESULT max={diff.max()} mean={diff.mean():.2f}')
     check('auto-loaded settings restore the saved crop',
         opsLoaded.ops === 1 && opsLoaded.contrast === '0.35' && opsLoaded.undoBtn === '',
         JSON.stringify(opsLoaded));
+
+    // --- Phone<->PC sync via settings sidecars ---
+    // A newer sidecar (as the desktop app writes: look only, no
+    // baked_ops, no saved_at) wins over the phone's local copy, and the
+    // phone's baked crop is merged back in rather than lost
+    const sync1 = await page.evaluate(async () => {
+        window.__sideFiles['a_frame1_settings.json'] = new File(
+            [JSON.stringify({ contrast: -0.1, exposure: 0.55 })],
+            'a_frame1_settings.json',
+            { type: 'application/json', lastModified: Date.now() + 60_000 });
+        let f = null;
+        for await (const e of window.__browseDir.values()) {
+            if (e.name === 'a_frame1.tif') f = await e.getFile();
+        }
+        await mobileApp.loadFile(f, { dir: window.__browseDir, canWrite: true });
+        return {
+            contrast: document.getElementById('contrast').value,
+            exposure: document.getElementById('exposure').value,
+            ops: mobileApp.bakedOps.length,
+            w: mobileApp.renderer.imageWidth,
+        };
+    });
+    check('newer PC sidecar wins and keeps the phone\'s crop',
+        sync1.contrast === '-0.1' && sync1.exposure === '0.55'
+        && sync1.ops === 1 && sync1.w === 500,
+        JSON.stringify(sync1));
+
+    // Save settings on a browse-opened photo writes the sidecar in
+    // place (no save dialog), stamped for the freshness comparison
+    const sync2 = await page.evaluate(async () => {
+        const s = document.getElementById('exposure');
+        s.value = 0.8;
+        s.dispatchEvent(new Event('input', { bubbles: true }));
+        document.getElementById('saveSettingsBtn').click();
+        await new Promise(r => setTimeout(r, 400));
+        const p = JSON.parse(
+            await window.__sideFiles['a_frame1_settings.json'].text());
+        return {
+            status: document.getElementById('status').textContent,
+            exposure: p.exposure, savedAt: typeof p.saved_at,
+            ops: Array.isArray(p.baked_ops),
+        };
+    });
+    check('Save settings writes the sidecar next to the photo',
+        sync2.status === 'Settings saved next to the photo'
+        && sync2.exposure === 0.8 && sync2.savedAt === 'number' && sync2.ops,
+        JSON.stringify(sync2));
+
+    // When the phone's local copy is the newer one, it wins
+    const sync3 = await page.evaluate(async ([js]) => {
+        const key = `filmSettings:b_frame2.jpg:${js}`;
+        const local = JSON.parse(localStorage.getItem(key));
+        local.contrast = 0.11;
+        local.saved_at = Date.now() + 120_000;
+        localStorage.setItem(key, JSON.stringify(local));
+        const p = await resolveSettings(window.__browseDir, 'b_frame2.jpg', js);
+        return p.contrast;
+    }, [jpegSize]);
+    check('newer phone edit wins over an older sidecar', sync3 === 0.11,
+        String(sync3));
+
+    // A frame edited only on the PC (sidecar, nothing local) still gets
+    // the edited badge in the grid
+    await page.evaluate(async ([js]) => {
+        localStorage.removeItem(`filmSettings:b_frame2.jpg:${js}`);
+        return mobileApp.browser.openWithHandle(window.__browseDir);
+    }, [jpegSize]);
+    await page.waitForFunction(() =>
+        document.querySelectorAll('#browseGrid .browse-cell img').length === 2,
+        null, { timeout: 60_000 });
+    check('sidecar-only (PC-edited) frames show the edited badge',
+        await page.evaluate(() => {
+            const cells = document.querySelectorAll('#browseGrid .browse-cell');
+            return !!cells[1].querySelector('.dot.edited');
+        }));
 
     // --- Batch: auto-crop all + export all (framed synthetic, photo mode) ---
     const frameB64 = fs.readFileSync(FRAME_TIFF).toString('base64');

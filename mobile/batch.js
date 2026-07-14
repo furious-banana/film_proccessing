@@ -25,6 +25,59 @@ function saveSavedSettings(name, size, params) {
     } catch { /* storage full - batch actions still run */ }
 }
 
+// --- Settings sidecars: <image>_settings.json next to the scan ---
+// The desktop app auto-loads (and saves) the same files, so edits sync
+// between phone and PC through the scans folder itself.
+
+function sidecarName(imageName) {
+    return imageName.replace(/\.[^.]+$/, '') + '_settings.json';
+}
+
+async function readSidecar(dirHandle, imageName) {
+    try {
+        const fh = await dirHandle.getFileHandle(sidecarName(imageName));
+        const file = await fh.getFile();
+        const params = JSON.parse(await file.text());
+        // Phone-written sidecars carry saved_at; desktop-written ones
+        // don't, so the file's own timestamp stands in
+        return { params, mtime: params.saved_at || file.lastModified || 0 };
+    } catch {
+        return null; // no sidecar (normal) or unreadable
+    }
+}
+
+async function writeSidecar(dirHandle, imageName, params) {
+    try {
+        const fh = await dirHandle.getFileHandle(sidecarName(imageName),
+            { create: true });
+        const w = await fh.createWritable();
+        await w.write(new Blob([JSON.stringify(params, null, 2)],
+            { type: 'application/json' }));
+        await w.close();
+        return true;
+    } catch (e) {
+        console.warn('Could not write settings sidecar for ' + imageName, e);
+        return false;
+    }
+}
+
+// The freshest settings for a frame: the folder sidecar (shared with
+// the PC) vs this phone's local copy, whichever was saved last. The
+// desktop app doesn't know about baked_ops, so a sidecar it saved
+// gets the phone's crop merged back in - a PC round-trip never loses
+// a crop made on the phone.
+async function resolveSettings(dirHandle, name, size) {
+    const local = loadSavedSettings(name, size);
+    const side = dirHandle ? await readSidecar(dirHandle, name) : null;
+    if (!side) return local;
+    if (local && (local.saved_at || 0) > side.mtime) return local;
+    if (local && local.baked_ops && !side.params.baked_ops) {
+        side.params.baked_ops = local.baked_ops;
+        side.params.ops_width = local.ops_width;
+    }
+    return side.params;
+}
+
 // Pasting settings copies the LOOK, never the geometry: crop and
 // straighten are per-frame (every scan sits differently in the holder)
 function stripGeometry(params) {
@@ -85,6 +138,18 @@ class BatchProcessor {
         this.app = app;
         this.renderer = null; // offscreen, created once, reused across runs
         this.cancelled = false;
+        this.srcDir = null;   // browse folder handle (sidecar reads)
+        this.canWrite = false; // readwrite granted (sidecar writes)
+    }
+
+    // Save a frame's settings locally AND to its folder sidecar, so the
+    // desktop app picks the edit up from the scans folder
+    async persistSettings(name, size, settings) {
+        settings.saved_at = Date.now();
+        saveSavedSettings(name, size, settings);
+        if (this.srcDir && this.canWrite) {
+            await writeSidecar(this.srcDir, name, settings);
+        }
     }
 
     offscreen() {
@@ -132,13 +197,14 @@ class BatchProcessor {
             try {
                 const file = await entry.handle.getFile();
                 const img = await decodeImageFile(file);
-                const settings = loadSavedSettings(file.name, file.size) || {};
+                const settings =
+                    await resolveSettings(this.srcDir, file.name, file.size) || {};
                 const ops = this.detectOps(img, this.stateFor(settings));
                 if (!ops) { failed.push(entry.name); continue; }
                 settings.baked_ops = ops;
                 settings.ops_width = img.width;
                 settings.straighten = 0; // the op bakes the angle
-                saveSavedSettings(file.name, file.size, settings);
+                await this.persistSettings(file.name, file.size, settings);
                 done++;
             } catch (e) {
                 console.warn('Auto-crop failed for ' + entry.name, e);
@@ -193,7 +259,8 @@ class BatchProcessor {
             await nextPaint();
             try {
                 const file = await entry.handle.getFile();
-                const settings = loadSavedSettings(file.name, file.size) || {};
+                const settings =
+                    await resolveSettings(this.srcDir, file.name, file.size) || {};
                 let img = null;
                 if (opts.autoCrop && !settings.baked_ops) {
                     img = await decodeImageFile(file);
@@ -202,7 +269,7 @@ class BatchProcessor {
                         settings.baked_ops = ops;
                         settings.ops_width = img.width;
                         settings.straighten = 0;
-                        saveSavedSettings(file.name, file.size, settings);
+                        await this.persistSettings(file.name, file.size, settings);
                     }
                 }
                 const blob = await this.exportOne(file, settings, opts.format, img);
