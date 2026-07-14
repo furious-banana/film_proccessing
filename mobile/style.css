@@ -472,6 +472,9 @@ details > *:not(summary) { padding: 0 14px 12px; }
     border-bottom: 1px solid var(--border);
     background: var(--bg2);
 }
+/* Wrap on narrow phones so no button (especially ✕ Done) is pushed
+   off-screen - an unwrapped row of 6 doesn't fit a 360px display */
+#batchBar { flex-wrap: wrap; }
 #batchCount {
     flex: 1;
     font-size: 13px;
@@ -500,7 +503,7 @@ details > *:not(summary) { padding: 0 14px 12px; }
     z-index: 80;
     max-width: 90vw;
 }
-#batchDialog {
+#batchDialog, #presetDialog {
     position: fixed;
     inset: 0;
     z-index: 70;
@@ -509,6 +512,14 @@ details > *:not(summary) { padding: 0 14px 12px; }
     align-items: center;
     justify-content: center;
 }
+#presetDialogList {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 45vh;
+    overflow-y: auto;
+}
+#presetDialogList .tb-btn { text-align: left; }
 .batch-dialog-card {
     background: var(--bg2);
     border: 1px solid var(--border);

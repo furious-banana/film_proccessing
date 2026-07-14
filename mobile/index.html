@@ -204,11 +204,10 @@
         <div id="batchBar" style="display:none">
             <span id="batchCount">0 selected</span>
             <button id="batchAllBtn" class="tb-btn">All</button>
-            <button id="batchCopyBtn" class="tb-btn" title="Copy settings">📋</button>
-            <button id="batchPasteBtn" class="tb-btn" title="Paste settings">📥</button>
+            <button id="batchPresetBtn" class="tb-btn" title="Apply a preset">🎨 Preset</button>
             <button id="batchCropBtn" class="tb-btn" title="Auto-crop">✨</button>
             <button id="batchExportBtn" class="tb-btn primary">💾 Export</button>
-            <button id="batchDoneBtn" class="tb-btn">✕</button>
+            <button id="batchDoneBtn" class="tb-btn">✕ Done</button>
         </div>
         <div id="batchProgress" style="display:none">
             <span id="batchProgressText"></span>
@@ -232,6 +231,19 @@
         </div>
         <button class="browse-nav prev" id="previewPrevBtn">‹</button>
         <button class="browse-nav next" id="previewNextBtn">›</button>
+    </div>
+
+    <!-- Batch preset picker: apply a saved preset to the selected frames -->
+    <div id="presetDialog" style="display:none">
+        <div class="batch-dialog-card">
+            <h3>Apply preset</h3>
+            <div id="presetDialogList"></div>
+            <p class="hint">Applies the preset's look to every selected frame.
+            Crops and eyedropper picks stay per-frame.</p>
+            <div class="batch-dialog-actions">
+                <button id="presetDialogCancel" class="tb-btn">Cancel</button>
+            </div>
+        </div>
     </div>
 
     <!-- Batch export options -->

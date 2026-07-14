@@ -931,7 +931,7 @@ print(f'RESULT max={diff.max()} mean={diff.mean():.2f}')
         && autoRes.sat === 0,
         JSON.stringify(autoRes));
 
-    // --- Batch: long-press multi-select, badges, copy/paste settings ---
+    // --- Batch: long-press multi-select, badges, preset apply ---
     const tiffSize = fs.statSync(TIFF).size;
     const jpegSize = fs.statSync(JPEG).size;
     await page.evaluate(([ts]) => {
@@ -972,37 +972,61 @@ print(f'RESULT max={diff.max()} mean={diff.mean():.2f}')
         lp.mode && lp.count === '1 selected' && lp.bar === '' && lp.marked,
         JSON.stringify(lp));
 
-    await page.evaluate(() => document.getElementById('batchCopyBtn').click());
-    await page.waitForFunction(() => !!mobileApp.browser.copied, null, { timeout: 30_000 });
-    check('copy takes the selected frame\'s settings',
-        await page.evaluate(() => mobileApp.browser.copied.contrast) === 0.2);
-
-    const pasted = await page.evaluate(async ([js]) => {
+    // Presets saved in the editor apply to the whole selection; a
+    // straighten smuggled into a preset must never move a frame's crop
+    const preset = await page.evaluate(async ([ts, js]) => {
+        localStorage.setItem('filmProcessorPresets', JSON.stringify({
+            warm: { contrast: 0.35, exposure: 0.3, straighten: 5 },
+        }));
         document.querySelectorAll('#browseGrid .browse-cell')[1]
             .dispatchEvent(new MouseEvent('click', { bubbles: true }));
-        document.getElementById('batchPasteBtn').click();
+        document.getElementById('batchPresetBtn').click();
+        const dialogShown = document.getElementById('presetDialog').style.display === '';
+        const btns = [...document.querySelectorAll('#presetDialogList .tb-btn')];
+        btns[0].click();
         await new Promise(r => setTimeout(r, 400));
         return {
+            dialogShown, names: btns.map(b => b.textContent),
             count: document.getElementById('batchCount').textContent,
-            s: JSON.parse(localStorage.getItem(`filmSettings:b_frame2.jpg:${js}`)),
+            dialogAfter: document.getElementById('presetDialog').style.display,
+            a: JSON.parse(localStorage.getItem(`filmSettings:a_frame1.tif:${ts}`)),
+            b: JSON.parse(localStorage.getItem(`filmSettings:b_frame2.jpg:${js}`)),
         };
-    }, [jpegSize]);
-    check('paste copies the look but never the geometry',
-        pasted.count === '2 selected' && pasted.s && pasted.s.contrast === 0.2
-        && pasted.s.baked_ops === undefined && pasted.s.straighten === undefined,
-        JSON.stringify(pasted));
+    }, [tiffSize, jpegSize]);
+    check('preset applies its look to every selected frame',
+        preset.dialogShown && preset.names.join() === 'warm'
+        && preset.dialogAfter === 'none' && preset.count === '2 selected'
+        && preset.a.contrast === 0.35 && preset.b.contrast === 0.35
+        && preset.b.exposure === 0.3,
+        JSON.stringify(preset));
+    check('preset never touches a frame\'s geometry',
+        preset.a.baked_ops && preset.a.baked_ops.length === 1
+        && preset.a.straighten === 0
+        && preset.b.baked_ops === undefined && preset.b.straighten === undefined,
+        JSON.stringify({ a: preset.a, b: preset.b }));
+
+    const deselExit = await page.evaluate(() => {
+        const cells = document.querySelectorAll('#browseGrid .browse-cell');
+        cells[1].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        cells[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        return { mode: mobileApp.browser.selectMode,
+            bar: document.getElementById('batchBar').style.display };
+    });
+    check('deselecting the last frame leaves select mode',
+        !deselExit.mode && deselExit.bar === 'none', JSON.stringify(deselExit));
 
     const allT = await page.evaluate(() => {
-        document.getElementById('batchAllBtn').click(); // all selected -> clears
-        const a = document.getElementById('batchCount').textContent;
+        mobileApp.browser.enterSelect(0);
         document.getElementById('batchAllBtn').click(); // -> selects all
+        const a = document.getElementById('batchCount').textContent;
+        document.getElementById('batchAllBtn').click(); // all selected -> clears
         const b = document.getElementById('batchCount').textContent;
         document.getElementById('batchDoneBtn').click();
         return { a, b, mode: mobileApp.browser.selectMode,
             bar: document.getElementById('batchBar').style.display };
     });
-    check('select-all toggles and ✕ leaves select mode',
-        allT.a === '0 selected' && allT.b === '2 selected'
+    check('select-all toggles and ✕ Done leaves select mode',
+        allT.a === '2 selected' && allT.b === '0 selected'
         && !allT.mode && allT.bar === 'none', JSON.stringify(allT));
 
     // Opening a photo whose settings carry a baked crop restores the crop
@@ -1022,7 +1046,7 @@ print(f'RESULT max={diff.max()} mean={diff.mean():.2f}')
         undoBtn: document.getElementById('undoCropBtn').style.display,
     }));
     check('auto-loaded settings restore the saved crop',
-        opsLoaded.ops === 1 && opsLoaded.contrast === '0.2' && opsLoaded.undoBtn === '',
+        opsLoaded.ops === 1 && opsLoaded.contrast === '0.35' && opsLoaded.undoBtn === '',
         JSON.stringify(opsLoaded));
 
     // --- Batch: auto-crop all + export all (framed synthetic, photo mode) ---
@@ -1047,7 +1071,7 @@ print(f'RESULT max={diff.max()} mean={diff.mean():.2f}')
                 }),
             }),
         };
-        // A pasted-in look: the exported file must come out brighter
+        // A saved look: the exported file must come out brighter
         localStorage.setItem(`filmSettings:roll_01.tif:${bytes.length}`,
             JSON.stringify({ exposure: 1 }));
         return mobileApp.browser.openWithHandle(window.__rollDir);
@@ -1106,6 +1130,7 @@ print(f'RESULT max={diff.max()} mean={diff.mean():.2f}')
     // Clean up batch-test state
     await page.evaluate(() => {
         mobileApp.browser.close();
+        localStorage.removeItem('filmProcessorPresets');
         Object.keys(localStorage)
             .filter(k => k.startsWith('filmSettings:') || k.startsWith('filmExported:'))
             .forEach(k => localStorage.removeItem(k));

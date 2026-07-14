@@ -218,7 +218,6 @@ class FolderBrowser {
         this.previewUrl = null;
         this.selectMode = false; // long-press a cell to enter
         this.selected = new Set(); // entry names
-        this.copied = null;      // settings copied for pasting
         this.batch = new BatchProcessor(app);
         this.wire();
     }
@@ -236,8 +235,10 @@ class FolderBrowser {
         // Batch bar (select mode)
         document.getElementById('batchDoneBtn').addEventListener('click', () => this.exitSelect());
         document.getElementById('batchAllBtn').addEventListener('click', () => this.selectAllToggle());
-        document.getElementById('batchCopyBtn').addEventListener('click', () => this.copySettings());
-        document.getElementById('batchPasteBtn').addEventListener('click', () => this.pasteSettings());
+        document.getElementById('batchPresetBtn').addEventListener('click', () => this.showPresetDialog());
+        document.getElementById('presetDialogCancel').addEventListener('click', () => {
+            document.getElementById('presetDialog').style.display = 'none';
+        });
         document.getElementById('batchCropBtn').addEventListener('click', () => this.autoCropSelected());
         document.getElementById('batchExportBtn').addEventListener('click', () => this.showExportDialog());
         document.getElementById('batchStopBtn').addEventListener('click', () => {
@@ -441,6 +442,9 @@ class FolderBrowser {
     toggleSelect(i) {
         const name = this.entries[i].name;
         if (!this.selected.delete(name)) this.selected.add(name);
+        // Deselecting the last frame leaves select mode - a natural way
+        // out in addition to the ✕ Done button
+        if (!this.selected.size) { this.exitSelect(); return; }
         this.updateSelectionUI();
     }
 
@@ -500,24 +504,34 @@ class FolderBrowser {
         document.getElementById('batchProgressText').textContent = msg;
     }
 
-    async copySettings() {
-        const sel = this.selectedEntries();
-        if (sel.length !== 1) {
-            this.toast('Select exactly one frame to copy from');
+    showPresetDialog() {
+        if (!this.selectedEntries().length) { this.toast('Select frames first'); return; }
+        const names = Object.keys(this.app.loadPresets()).sort();
+        if (!names.length) {
+            this.toast('No presets yet — save one in the editor first');
             return;
         }
-        const file = await sel[0].handle.getFile();
-        const s = loadSavedSettings(file.name, file.size);
-        if (!s) { this.toast('No saved settings on ' + file.name); return; }
-        this.copied = s;
-        this.toast('Copied settings from ' + file.name);
+        const list = document.getElementById('presetDialogList');
+        list.innerHTML = '';
+        for (const name of names) {
+            const btn = document.createElement('button');
+            btn.className = 'tb-btn';
+            btn.textContent = name;
+            btn.addEventListener('click', () => this.applyPresetToSelected(name));
+            list.appendChild(btn);
+        }
+        document.getElementById('presetDialog').style.display = '';
     }
 
-    async pasteSettings() {
-        if (!this.copied) { this.toast('Copy settings from a frame first'); return; }
+    async applyPresetToSelected(name) {
+        document.getElementById('presetDialog').style.display = 'none';
+        const preset = this.app.loadPresets()[name];
         const sel = this.selectedEntries();
-        if (!sel.length) { this.toast('Select the frames to paste to'); return; }
-        const look = stripGeometry(this.copied); // crop stays per-frame
+        if (!preset || !sel.length) return;
+        // Presets are saved without geometry or eyedropper points, but old
+        // ones (or desktop-made ones) might carry straighten - strip it so
+        // a preset never moves a frame's crop
+        const look = stripGeometry(preset);
         for (const entry of sel) {
             const file = await entry.handle.getFile();
             entry.size = file.size;
@@ -525,7 +539,7 @@ class FolderBrowser {
             saveSavedSettings(file.name, file.size, merged);
         }
         this.updateBadges();
-        this.toast(`Settings pasted to ${sel.length} frame${sel.length > 1 ? 's' : ''}`);
+        this.toast(`"${name}" applied to ${sel.length} frame${sel.length > 1 ? 's' : ''}`);
     }
 
     async autoCropSelected() {
