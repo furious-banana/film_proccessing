@@ -6,7 +6,7 @@
 // before taking over (no skipWaiting/claim). A page can therefore never
 // end up with half old / half new files - which used to break the app
 // mid-update when the old HTML met a newer script.
-const CACHE_VERSION = 'film-mobile-v22';
+const CACHE_VERSION = 'film-mobile-v23';
 
 const ASSETS = [
     './',

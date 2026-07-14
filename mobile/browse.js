@@ -218,6 +218,8 @@ class FolderBrowser {
         this.previewUrl = null;
         this.selectMode = false; // long-press a cell to enter
         this.selected = new Set(); // entry names
+        this.sidecars = new Set(); // *_settings.json files seen in the folder
+        this.canWrite = false;   // readwrite granted: settings sync to folder
         this.batch = new BatchProcessor(app);
         this.wire();
     }
@@ -275,25 +277,45 @@ class FolderBrowser {
         }
         // The Browse tap is a user gesture, so a permission re-prompt is
         // allowed right here (Android forgets grants between sessions)
-        if (this.dirHandle.queryPermission) {
-            let perm = await this.dirHandle.queryPermission({ mode: 'read' });
-            if (perm === 'prompt') {
-                try {
-                    perm = await this.dirHandle.requestPermission({ mode: 'read' });
-                } catch { perm = 'denied'; }
-            }
-            if (perm !== 'granted') {
-                this.showEmpty('Access to the folder was not granted — pick it again.');
-                return;
-            }
+        if (await this.ensurePermission() !== 'granted') {
+            this.showEmpty('Access to the folder was not granted — pick it again.');
+            return;
         }
         await this.list();
+    }
+
+    // Ask for read-write so settings sidecars sync with the PC through
+    // the scans folder; fall back to read-only browsing if that's all
+    // the user grants
+    async ensurePermission() {
+        const h = this.dirHandle;
+        if (!h.queryPermission) { this.canWrite = true; return 'granted'; }
+        let rw = await h.queryPermission({ mode: 'readwrite' });
+        if (rw === 'prompt') {
+            try { rw = await h.requestPermission({ mode: 'readwrite' }); }
+            catch { rw = 'denied'; }
+        }
+        this.canWrite = rw === 'granted';
+        if (this.canWrite) return 'granted';
+        let r = await h.queryPermission({ mode: 'read' });
+        if (r === 'prompt') {
+            try { r = await h.requestPermission({ mode: 'read' }); }
+            catch { r = 'denied'; }
+        }
+        return r;
+    }
+
+    // The batch processor reads/writes sidecars in the browsed folder
+    syncBatchDir() {
+        this.batch.srcDir = this.dirHandle;
+        this.batch.canWrite = this.canWrite;
     }
 
     // Test hook: browse a fake directory handle without any picker
     async openWithHandle(handle) {
         this.dirHandle = handle;
         this.entries = [];
+        await this.ensurePermission();
         document.getElementById('browsePanel').style.display = '';
         await this.list();
     }
@@ -318,8 +340,10 @@ class FolderBrowser {
             return;
         }
         try {
-            const handle = await window.showDirectoryPicker({ mode: 'read' });
+            // readwrite lets edits sync to the folder as settings sidecars
+            const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
             this.dirHandle = handle;
+            this.canWrite = true;
             dbSet('handles', 'dir', handle).catch(() => {});
             this.entries = [];
             await this.list();
@@ -337,10 +361,15 @@ class FolderBrowser {
         grid.innerHTML = '';
 
         this.entries = [];
+        this.sidecars = new Set();
         try {
             for await (const entry of this.dirHandle.values()) {
-                if (entry.kind === 'file' && IMAGE_EXT.test(entry.name)) {
+                if (entry.kind !== 'file') continue;
+                if (IMAGE_EXT.test(entry.name)) {
                     this.entries.push({ name: entry.name, handle: entry });
+                } else if (/_settings\.json$/i.test(entry.name)) {
+                    // Sidecars mark frames edited on the PC (or here)
+                    this.sidecars.add(entry.name.toLowerCase());
                 }
             }
         } catch (e) {
@@ -478,6 +507,7 @@ class FolderBrowser {
             `<span class="dot ${cls}" title="${title}"></span>`;
         dots.innerHTML =
             (localStorage.getItem(filmSettingsKey(entry.name, entry.size))
+                || this.sidecars.has(sidecarName(entry.name).toLowerCase())
                 ? dot('edited', 'has settings') : '')
             + (localStorage.getItem(filmExportedKey(entry.name, entry.size))
                 ? dot('exported', 'exported') : '');
@@ -528,6 +558,7 @@ class FolderBrowser {
         const preset = this.app.loadPresets()[name];
         const sel = this.selectedEntries();
         if (!preset || !sel.length) return;
+        this.syncBatchDir();
         // Presets are saved without geometry or eyedropper points, but old
         // ones (or desktop-made ones) might carry straighten - strip it so
         // a preset never moves a frame's crop
@@ -535,8 +566,10 @@ class FolderBrowser {
         for (const entry of sel) {
             const file = await entry.handle.getFile();
             entry.size = file.size;
-            const merged = { ...(loadSavedSettings(file.name, file.size) || {}), ...look };
-            saveSavedSettings(file.name, file.size, merged);
+            const base =
+                await resolveSettings(this.dirHandle, file.name, file.size) || {};
+            await this.batch.persistSettings(file.name, file.size,
+                { ...base, ...look });
         }
         this.updateBadges();
         this.toast(`"${name}" applied to ${sel.length} frame${sel.length > 1 ? 's' : ''}`);
@@ -545,6 +578,7 @@ class FolderBrowser {
     async autoCropSelected() {
         const sel = this.selectedEntries();
         if (!sel.length) { this.toast('Select frames first'); return; }
+        this.syncBatchDir();
         this.showProgress(true);
         const res = await this.batch.autoCropAll(sel, (i, n, name) =>
             this.progressText(`Auto-cropping ${i + 1}/${n} — ${name}`));
@@ -581,6 +615,7 @@ class FolderBrowser {
                 return;
             }
         }
+        this.syncBatchDir();
         this.showProgress(true);
         const res = await this.batch.exportAll(sel, { format, autoCrop, dir },
             (i, n, name) => this.progressText(`Exporting ${i + 1}/${n} — ${name}`));
@@ -655,6 +690,9 @@ class FolderBrowser {
         this.closePreview();
         this.close();
         const file = await entry.handle.getFile();
-        await this.app.loadFile(file);
+        // The folder context lets the editor read/write the settings
+        // sidecar next to the photo (shared with the desktop app)
+        await this.app.loadFile(file,
+            { dir: this.dirHandle, canWrite: this.canWrite });
     }
 }

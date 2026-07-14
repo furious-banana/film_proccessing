@@ -96,13 +96,16 @@ class MobileFilmProcessor {
         });
     }
 
-    async loadFile(file) {
+    // folder ({ dir, canWrite }) is set when the file was opened from the
+    // folder browser: it lets settings sync via a sidecar next to the photo
+    async loadFile(file, folder = null) {
         try {
             this.status('Loading ' + file.name + '…');
             this.original = await decodeImageFile(file);
             // Kept so exports can re-decode at native resolution (the
             // working copy above is capped for phone memory/perf)
             this.sourceFile = file;
+            this.sourceFolder = folder;
             this.bakedOps = [];
             this.bakedStraighten = 0;
             this.filmCorrection = this.isNegative ? 1 : 0;
@@ -119,7 +122,7 @@ class MobileFilmProcessor {
             this.updateImage();
             // Same behaviour as the desktop app: a photo with previously
             // saved settings opens with them already applied
-            const restored = this.autoLoadSettings();
+            const restored = await this.autoLoadSettings();
             this.status(`${this.original.width}×${this.original.height}`
                 + ` · ${this.original.bitDepth}-bit`
                 + (this.original.colorConverted ? ' · ' + this.original.colorConverted : '')
@@ -1103,8 +1106,18 @@ class MobileFilmProcessor {
         document.getElementById('saveSettingsBtn').addEventListener('click', async () => {
             if (!this.original) { this.status('Load an image first'); return; }
             const params = this.settingsPayload();
+            params.saved_at = Date.now(); // freshness for phone<->PC sync
             // Remembered locally so reopening this photo restores its edits
             this.rememberSettings(params);
+            // Opened from the folder browser with write access: save the
+            // sidecar next to the photo, where the desktop app auto-loads
+            // it - no save dialog needed
+            const folder = this.sourceFolder;
+            if (folder && folder.canWrite && this.sourceFile
+                && await writeSidecar(folder.dir, this.sourceFile.name, params)) {
+                this.status('Settings saved next to the photo');
+                return;
+            }
             const base = this.sourceFile
                 ? this.sourceFile.name.replace(/\.[^.]+$/, '') : 'image';
             const ok = await this.saveFileAs(
@@ -1124,6 +1137,7 @@ class MobileFilmProcessor {
                 try {
                     const params = JSON.parse(await file.text());
                     this.applySettings(params);
+                    params.saved_at = Date.now(); // loading = a fresh edit
                     this.rememberSettings(params);
                     this.status('Settings loaded');
                 } catch (err) {
@@ -1150,12 +1164,16 @@ class MobileFilmProcessor {
         } catch { /* storage full - the settings file still works */ }
     }
 
-    autoLoadSettings() {
-        const key = this.settingsStorageKey();
-        const json = key && localStorage.getItem(key);
-        if (!json) return false;
+    async autoLoadSettings() {
+        const f = this.sourceFile;
+        if (!f) return false;
         try {
-            this.applySettings(JSON.parse(json));
+            // Freshest of the folder sidecar (synced with the PC) and
+            // this phone's local copy - batch.js resolveSettings picks
+            const params = await resolveSettings(
+                this.sourceFolder && this.sourceFolder.dir, f.name, f.size);
+            if (!params) return false;
+            this.applySettings(params);
             return true;
         } catch {
             return false;
