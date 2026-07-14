@@ -1,6 +1,12 @@
-﻿// Cache-first service worker: after the first visit the app works fully
+// Cache-first service worker: after the first visit the app works fully
 // offline. Bump CACHE_VERSION when any app file changes.
-const CACHE_VERSION = 'film-mobile-v19';
+//
+// Updates are ATOMIC: fetches only ever come from THIS version's cache,
+// and a freshly installed version waits until the app is fully closed
+// before taking over (no skipWaiting/claim). A page can therefore never
+// end up with half old / half new files - which used to break the app
+// mid-update when the old HTML met a newer script.
+const CACHE_VERSION = 'film-mobile-v20';
 
 const ASSETS = [
     './',
@@ -20,23 +26,23 @@ const ASSETS = [
 ];
 
 self.addEventListener('install', (e) => {
-    e.waitUntil(
-        caches.open(CACHE_VERSION).then(cache => cache.addAll(ASSETS))
-            .then(() => self.skipWaiting())
-    );
+    e.waitUntil(caches.open(CACHE_VERSION).then(cache => cache.addAll(ASSETS)));
 });
 
+// Runs only once every page from the previous version is closed, so
+// deleting the old caches can't yank files from under a live page
 self.addEventListener('activate', (e) => {
     e.waitUntil(
         caches.keys().then(keys =>
             Promise.all(keys.filter(k => k !== CACHE_VERSION).map(k => caches.delete(k)))
-        ).then(() => self.clients.claim())
+        )
     );
 });
 
 self.addEventListener('fetch', (e) => {
     e.respondWith(
-        caches.match(e.request).then(cached => cached || fetch(e.request))
+        caches.open(CACHE_VERSION)
+            .then(cache => cache.match(e.request))
+            .then(cached => cached || fetch(e.request))
     );
 });
-
