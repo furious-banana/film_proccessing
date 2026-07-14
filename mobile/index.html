@@ -200,7 +200,22 @@
             <span id="browseTitle" class="browse-title">Browse</span>
             <button id="browseFolderBtn" class="tb-btn">📁 Folder</button>
         </div>
+        <!-- Batch bar: appears in select mode (long-press a thumbnail) -->
+        <div id="batchBar" style="display:none">
+            <span id="batchCount">0 selected</span>
+            <button id="batchAllBtn" class="tb-btn">All</button>
+            <button id="batchCopyBtn" class="tb-btn" title="Copy settings">📋</button>
+            <button id="batchPasteBtn" class="tb-btn" title="Paste settings">📥</button>
+            <button id="batchCropBtn" class="tb-btn" title="Auto-crop">✨</button>
+            <button id="batchExportBtn" class="tb-btn primary">💾 Export</button>
+            <button id="batchDoneBtn" class="tb-btn">✕</button>
+        </div>
+        <div id="batchProgress" style="display:none">
+            <span id="batchProgressText"></span>
+            <button id="batchStopBtn" class="tb-btn">Stop</button>
+        </div>
         <div id="browseGrid"></div>
+        <div id="browseToast" style="display:none"></div>
         <div id="browseEmpty" class="browse-empty" style="display:none">
             <p id="browseEmptyMsg"></p>
             <button id="browsePickBtn" class="tb-btn primary">📁 Pick folder</button>
@@ -219,6 +234,22 @@
         <button class="browse-nav next" id="previewNextBtn">›</button>
     </div>
 
+    <!-- Batch export options -->
+    <div id="batchDialog" style="display:none">
+        <div class="batch-dialog-card">
+            <h3>Batch export</h3>
+            <label class="choice-row"><input type="radio" name="batchFormat" value="tiff" checked> 16-bit TIFF</label>
+            <label class="choice-row"><input type="radio" name="batchFormat" value="jpeg"> JPEG</label>
+            <label class="choice-row"><input type="checkbox" id="batchAutoCrop" checked> Auto-crop frames without a saved crop</label>
+            <p class="hint">Each frame exports with its own saved settings.
+            You'll pick the destination folder next.</p>
+            <div class="batch-dialog-actions">
+                <button id="batchDialogGo" class="tb-btn primary">Export</button>
+                <button id="batchDialogCancel" class="tb-btn">Cancel</button>
+            </div>
+        </div>
+    </div>
+
     <div id="loupe" style="display:none">
         <canvas id="loupeCanvas" width="120" height="120"></canvas>
         <div class="crosshair-v"></div>
@@ -231,6 +262,7 @@
     <script src="tiff.js"></script>
     <script src="webgl-renderer.js"></script>
     <script src="autocrop.js"></script>
+    <script src="batch.js"></script>
     <script src="browse.js"></script>
     <script src="app.js"></script>
 </body>

@@ -210,11 +210,16 @@ class FolderBrowser {
     constructor(app) {
         this.app = app;
         this.dirHandle = null;
-        this.entries = [];       // [{ name, handle }]
+        this.entries = [];       // [{ name, handle, size? }]
+        this.cells = [];         // grid cells, parallel to entries
         this.generation = 0;     // cancels stale thumbnail work
         this.previewGen = 0;     // cancels stale preview loads
         this.previewIndex = -1;
         this.previewUrl = null;
+        this.selectMode = false; // long-press a cell to enter
+        this.selected = new Set(); // entry names
+        this.copied = null;      // settings copied for pasting
+        this.batch = new BatchProcessor(app);
         this.wire();
     }
 
@@ -227,6 +232,21 @@ class FolderBrowser {
         document.getElementById('previewEditBtn').addEventListener('click', () => this.editCurrent());
         document.getElementById('previewPrevBtn').addEventListener('click', () => this.movePreview(-1));
         document.getElementById('previewNextBtn').addEventListener('click', () => this.movePreview(1));
+
+        // Batch bar (select mode)
+        document.getElementById('batchDoneBtn').addEventListener('click', () => this.exitSelect());
+        document.getElementById('batchAllBtn').addEventListener('click', () => this.selectAllToggle());
+        document.getElementById('batchCopyBtn').addEventListener('click', () => this.copySettings());
+        document.getElementById('batchPasteBtn').addEventListener('click', () => this.pasteSettings());
+        document.getElementById('batchCropBtn').addEventListener('click', () => this.autoCropSelected());
+        document.getElementById('batchExportBtn').addEventListener('click', () => this.showExportDialog());
+        document.getElementById('batchStopBtn').addEventListener('click', () => {
+            this.batch.cancelled = true;
+        });
+        document.getElementById('batchDialogCancel').addEventListener('click', () => {
+            document.getElementById('batchDialog').style.display = 'none';
+        });
+        document.getElementById('batchDialogGo').addEventListener('click', () => this.runExport());
 
         // Swipe between frames in the preview
         const pv = document.getElementById('browsePreview');
@@ -279,6 +299,7 @@ class FolderBrowser {
 
     close() {
         this.generation++;
+        this.exitSelect();
         document.getElementById('browsePanel').style.display = 'none';
         this.closePreview();
     }
@@ -308,6 +329,7 @@ class FolderBrowser {
 
     async list() {
         const gen = ++this.generation;
+        this.exitSelect();
         document.getElementById('browseEmpty').style.display = 'none';
         document.getElementById('browseTitle').textContent = this.dirHandle.name || 'Browse';
         const grid = document.getElementById('browseGrid');
@@ -337,15 +359,19 @@ class FolderBrowser {
             cell.className = 'browse-cell';
             const ph = document.createElement('div');
             ph.className = 'browse-thumb';
+            const dots = document.createElement('span');
+            dots.className = 'browse-dots';
             const label = document.createElement('span');
             label.className = 'browse-name';
             label.textContent = entry.name;
             cell.appendChild(ph);
+            cell.appendChild(dots);
             cell.appendChild(label);
-            cell.addEventListener('click', () => this.openPreview(i));
+            this.wireCell(cell, i);
             grid.appendChild(cell);
             return cell;
         });
+        this.cells = cells;
 
         // Thumbnails fill in one by one; cached ones are instant
         for (let i = 0; i < this.entries.length; i++) {
@@ -358,6 +384,7 @@ class FolderBrowser {
                 img.onload = () => URL.revokeObjectURL(url);
                 cells[i].replaceChild(img, cells[i].firstChild);
                 img.className = 'browse-thumb';
+                this.updateBadge(i); // thumbUrl learned the file size
             } catch (e) {
                 cells[i].firstChild.textContent = '⚠';
                 console.warn('Thumbnail failed for ' + this.entries[i].name, e);
@@ -365,8 +392,193 @@ class FolderBrowser {
         }
     }
 
+    // --- Multi-select (long-press a cell) + batch actions ---
+
+    // Tap = preview (or toggle in select mode); a long, still press
+    // enters select mode. The context menu Android shows on long-press
+    // is suppressed.
+    wireCell(cell, i) {
+        let timer = null, start = null, fired = false;
+        const cancel = () => { clearTimeout(timer); timer = null; };
+        cell.addEventListener('pointerdown', (e) => {
+            start = { x: e.clientX, y: e.clientY };
+            fired = false;
+            clearTimeout(timer);
+            timer = setTimeout(() => {
+                fired = true;
+                this.enterSelect(i);
+            }, 450);
+        });
+        cell.addEventListener('pointermove', (e) => {
+            // A drag (scrolling the grid) is never a long-press
+            if (timer && start
+                && Math.hypot(e.clientX - start.x, e.clientY - start.y) > 12) cancel();
+        });
+        cell.addEventListener('pointerup', cancel);
+        cell.addEventListener('pointercancel', cancel);
+        cell.addEventListener('contextmenu', (e) => e.preventDefault());
+        cell.addEventListener('click', () => {
+            if (fired) { fired = false; return; } // the long-press ate this tap
+            if (this.selectMode) this.toggleSelect(i);
+            else this.openPreview(i);
+        });
+    }
+
+    enterSelect(i) {
+        this.selectMode = true;
+        if (i !== undefined) this.selected.add(this.entries[i].name);
+        document.getElementById('batchBar').style.display = '';
+        this.updateSelectionUI();
+    }
+
+    exitSelect() {
+        this.selectMode = false;
+        this.selected.clear();
+        document.getElementById('batchBar').style.display = 'none';
+        this.updateSelectionUI();
+    }
+
+    toggleSelect(i) {
+        const name = this.entries[i].name;
+        if (!this.selected.delete(name)) this.selected.add(name);
+        this.updateSelectionUI();
+    }
+
+    selectAllToggle() {
+        if (this.selected.size === this.entries.length) this.selected.clear();
+        else this.entries.forEach(e => this.selected.add(e.name));
+        this.updateSelectionUI();
+    }
+
+    updateSelectionUI() {
+        document.getElementById('batchCount').textContent =
+            this.selected.size + ' selected';
+        this.cells.forEach((cell, i) => {
+            cell.classList.toggle('selected',
+                this.selectMode && this.selected.has(this.entries[i].name));
+        });
+    }
+
+    selectedEntries() {
+        return this.entries.filter(e => this.selected.has(e.name));
+    }
+
+    // Corner dots: green = has saved settings, blue = exported
+    updateBadge(i) {
+        const entry = this.entries[i];
+        const cell = this.cells[i];
+        if (!cell || entry.size === undefined) return;
+        const dots = cell.querySelector('.browse-dots');
+        if (!dots) return;
+        const dot = (cls, title) =>
+            `<span class="dot ${cls}" title="${title}"></span>`;
+        dots.innerHTML =
+            (localStorage.getItem(filmSettingsKey(entry.name, entry.size))
+                ? dot('edited', 'has settings') : '')
+            + (localStorage.getItem(filmExportedKey(entry.name, entry.size))
+                ? dot('exported', 'exported') : '');
+    }
+
+    updateBadges() {
+        for (let i = 0; i < this.entries.length; i++) this.updateBadge(i);
+    }
+
+    toast(msg) {
+        const el = document.getElementById('browseToast');
+        el.textContent = msg;
+        el.style.display = '';
+        clearTimeout(this._toastTimer);
+        this._toastTimer = setTimeout(() => { el.style.display = 'none'; }, 3000);
+    }
+
+    showProgress(on) {
+        document.getElementById('batchBar').style.display = on ? 'none' : '';
+        document.getElementById('batchProgress').style.display = on ? '' : 'none';
+    }
+
+    progressText(msg) {
+        document.getElementById('batchProgressText').textContent = msg;
+    }
+
+    async copySettings() {
+        const sel = this.selectedEntries();
+        if (sel.length !== 1) {
+            this.toast('Select exactly one frame to copy from');
+            return;
+        }
+        const file = await sel[0].handle.getFile();
+        const s = loadSavedSettings(file.name, file.size);
+        if (!s) { this.toast('No saved settings on ' + file.name); return; }
+        this.copied = s;
+        this.toast('Copied settings from ' + file.name);
+    }
+
+    async pasteSettings() {
+        if (!this.copied) { this.toast('Copy settings from a frame first'); return; }
+        const sel = this.selectedEntries();
+        if (!sel.length) { this.toast('Select the frames to paste to'); return; }
+        const look = stripGeometry(this.copied); // crop stays per-frame
+        for (const entry of sel) {
+            const file = await entry.handle.getFile();
+            entry.size = file.size;
+            const merged = { ...(loadSavedSettings(file.name, file.size) || {}), ...look };
+            saveSavedSettings(file.name, file.size, merged);
+        }
+        this.updateBadges();
+        this.toast(`Settings pasted to ${sel.length} frame${sel.length > 1 ? 's' : ''}`);
+    }
+
+    async autoCropSelected() {
+        const sel = this.selectedEntries();
+        if (!sel.length) { this.toast('Select frames first'); return; }
+        this.showProgress(true);
+        const res = await this.batch.autoCropAll(sel, (i, n, name) =>
+            this.progressText(`Auto-cropping ${i + 1}/${n} — ${name}`));
+        this.showProgress(false);
+        this.updateBadges();
+        this.toast(`Auto-cropped ${res.done}/${sel.length}`
+            + (res.failed.length ? ` — no frame found in ${res.failed.length}` : ''));
+    }
+
+    showExportDialog() {
+        if (!this.selectedEntries().length) { this.toast('Select frames first'); return; }
+        document.getElementById('batchDialog').style.display = '';
+    }
+
+    async runExport() {
+        document.getElementById('batchDialog').style.display = 'none';
+        const sel = this.selectedEntries();
+        if (!sel.length) return;
+        const format = document.querySelector('input[name="batchFormat"]:checked').value;
+        const autoCrop = document.getElementById('batchAutoCrop').checked;
+        let dir = window.__batchOutDir || null; // test hook
+        if (!dir) {
+            if (!window.showDirectoryPicker) {
+                this.toast('This browser cannot save to a folder');
+                return;
+            }
+            try {
+                // Called inside the Export tap: the picker needs a gesture
+                dir = await window.showDirectoryPicker({
+                    mode: 'readwrite', id: 'batch-export',
+                });
+            } catch (e) {
+                if (e.name !== 'AbortError') this.toast('Could not open folder: ' + e.message);
+                return;
+            }
+        }
+        this.showProgress(true);
+        const res = await this.batch.exportAll(sel, { format, autoCrop, dir },
+            (i, n, name) => this.progressText(`Exporting ${i + 1}/${n} — ${name}`));
+        this.showProgress(false);
+        this.updateBadges();
+        this.toast(`Exported ${res.done}/${sel.length}`
+            + (res.failed.length ? ` — ${res.failed.length} failed` : ''));
+    }
+
     async thumbUrl(entry) {
         const file = await entry.handle.getFile();
+        entry.size = file.size; // needed for the settings/exported badges
         const key = `${file.name}|${file.size}|${file.lastModified}`;
         try {
             const cached = await dbGet('thumbs', key);
