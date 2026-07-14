@@ -65,7 +65,17 @@ class MobileFilmProcessor {
         this.setupExport();
         this.setupViewZoom();
         this.setupMisc();
-        this.browser = new FolderBrowser(this);
+        try {
+            this.browser = new FolderBrowser(this);
+        } catch (e) {
+            // A half-applied update (mixed-version cache) must not leave a
+            // dead button with no explanation
+            console.error('Folder browser failed to start', e);
+            document.getElementById('browseBtn').addEventListener('click', () =>
+                alert('Browse could not start — the app update was only half '
+                    + 'applied. Close the app fully and reopen it while online '
+                    + 'to finish updating.\n\n(' + e.message + ')'));
+        }
     }
 
     status(msg) {

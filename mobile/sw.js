@@ -6,7 +6,7 @@
 // before taking over (no skipWaiting/claim). A page can therefore never
 // end up with half old / half new files - which used to break the app
 // mid-update when the old HTML met a newer script.
-const CACHE_VERSION = 'film-mobile-v20';
+const CACHE_VERSION = 'film-mobile-v21';
 
 const ASSETS = [
     './',
@@ -26,7 +26,12 @@ const ASSETS = [
 ];
 
 self.addEventListener('install', (e) => {
-    e.waitUntil(caches.open(CACHE_VERSION).then(cache => cache.addAll(ASSETS)));
+    // cache: 'reload' bypasses the HTTP cache. GitHub Pages serves with
+    // max-age=600, so a plain addAll could freeze a 10-minutes-stale
+    // index.html together with fresh scripts into one version - a mix
+    // that crashed the app until the next version shipped.
+    e.waitUntil(caches.open(CACHE_VERSION).then(cache =>
+        cache.addAll(ASSETS.map(u => new Request(u, { cache: 'reload' })))));
 });
 
 // Runs only once every page from the previous version is closed, so
