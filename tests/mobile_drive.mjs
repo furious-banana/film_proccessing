@@ -793,6 +793,35 @@ print(f'RESULT max={diff.max()} mean={diff.mean():.2f}')
         && fastThumb.px.every(v => v > 100 && v < 155),
         JSON.stringify(fastThumb));
 
+    // The thumbnail cache persists in the Electron profile across runs;
+    // clear it so the cache-count check below is deterministic
+    await page.evaluate(async () => {
+        const db = await new Promise((res, rej) => {
+            const r = indexedDB.open('filmBrowser', 1);
+            r.onupgradeneeded = () => {
+                r.result.createObjectStore('handles');
+                r.result.createObjectStore('thumbs');
+            };
+            r.onsuccess = () => res(r.result);
+            r.onerror = () => rej(r.error);
+        });
+        await new Promise((res) => {
+            const tx = db.transaction('thumbs', 'readwrite');
+            tx.objectStore('thumbs').clear();
+            tx.oncomplete = res;
+        });
+    });
+
+    // The real Browse BUTTON must open the panel (regression: a startup
+    // crash in the browser's constructor left the button silently dead)
+    await page.click('#browseBtn');
+    await page.waitForTimeout(500);
+    check('Browse button opens the panel',
+        await page.evaluate(() =>
+            document.getElementById('browsePanel').style.display === ''
+            && !!mobileApp.browser));
+    await page.click('#browseCloseBtn');
+
     await page.evaluate(() => mobileApp.browser.openWithHandle(window.__browseDir));
     await page.waitForFunction(() =>
         document.querySelectorAll('#browseGrid .browse-cell img').length === 2,
