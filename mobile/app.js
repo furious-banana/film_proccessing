@@ -9,7 +9,7 @@
 
 // Shown on the start screen so an update can be verified at a glance.
 // Keep in step with CACHE_VERSION in sw.js.
-const APP_VERSION = 'v28';
+const APP_VERSION = 'v29';
 
 class MobileFilmProcessor {
     constructor() {
@@ -1295,9 +1295,19 @@ class MobileFilmProcessor {
         });
     }
 
+    // Roll metadata line for exports - only when this photo came from
+    // the folder browser and that folder is still the one browsed
+    rollDescription() {
+        const b = this.browser;
+        return b && this.sourceFolder && this.sourceFolder.dir === b.dirHandle
+            ? b.rollLine(' - ') : '';
+    }
+
     async makeTiffBlob() {
         const { data16, width, height } = await this.exportPixels();
-        return new Blob([encodeTiff16(data16, width, height)], { type: 'image/tiff' });
+        return new Blob(
+            [encodeTiff16(data16, width, height, this.rollDescription())],
+            { type: 'image/tiff' });
     }
 
     async makeJpegBlob() {

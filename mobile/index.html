@@ -199,8 +199,11 @@
         <div class="browse-bar">
             <button id="browseCloseBtn" class="tb-btn">✕</button>
             <span id="browseTitle" class="browse-title">Browse</span>
+            <button id="rollBtn" class="tb-btn" title="Roll info">🎞️</button>
             <button id="browseFolderBtn" class="tb-btn">📁 Folder</button>
         </div>
+        <!-- Roll metadata summary (roll.json in the scans folder) -->
+        <div id="rollLine" style="display:none"></div>
         <!-- Batch bar: appears in select mode (long-press a thumbnail) -->
         <div id="batchBar" style="display:none">
             <span id="batchCount">0 selected</span>
@@ -243,6 +246,30 @@
             Crops and eyedropper picks stay per-frame.</p>
             <div class="batch-dialog-actions">
                 <button id="presetDialogCancel" class="tb-btn">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Roll info: one roll.json per scans folder, synced with the PC -->
+    <div id="rollDialog" style="display:none">
+        <div class="batch-dialog-card">
+            <h3>Roll info</h3>
+            <label class="roll-field">Film stock
+                <input id="rollFilm" placeholder="e.g. Portra 400"></label>
+            <label class="roll-field">Camera
+                <input id="rollCamera" placeholder="e.g. Canon AE-1"></label>
+            <label class="roll-field">Shot at ISO
+                <input id="rollIso" inputmode="numeric" placeholder="e.g. 800"></label>
+            <label class="roll-field">When
+                <input id="rollShot" placeholder="e.g. June 2026"></label>
+            <label class="roll-field">Notes
+                <input id="rollNotes" placeholder="e.g. Ellen &amp; Darren's wedding"></label>
+            <p class="hint">Saved as roll.json in the scans folder, so the
+            info travels with the roll (the desktop sees the same file).
+            Exported TIFFs carry it in their description tag.</p>
+            <div class="batch-dialog-actions">
+                <button id="rollSaveBtn" class="tb-btn primary">Save</button>
+                <button id="rollCancelBtn" class="tb-btn">Cancel</button>
             </div>
         </div>
     </div>

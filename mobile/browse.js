@@ -247,6 +247,7 @@ async function imageThumbCanvas(file, targetLongEdge) {
 const IMAGE_EXT = /\.(tiff?|jpe?g|png)$/i;
 const THUMB_SIZE = 320;
 const PREVIEW_SIZE = 1600;
+const ROLL_FIELDS = ['film', 'camera', 'iso', 'shot', 'notes'];
 
 class FolderBrowser {
     constructor(app) {
@@ -262,6 +263,7 @@ class FolderBrowser {
         this.selected = new Set(); // entry names
         this.sidecars = new Set(); // *_settings.json files seen in the folder
         this.canWrite = false;   // readwrite granted: settings sync to folder
+        this.roll = null;        // roll.json metadata for the open folder
         this.batch = new BatchProcessor(app);
         this.wire();
     }
@@ -270,6 +272,12 @@ class FolderBrowser {
         document.getElementById('browseBtn').addEventListener('click', () => this.open());
         document.getElementById('browseCloseBtn').addEventListener('click', () => this.close());
         document.getElementById('browseFolderBtn').addEventListener('click', () => this.pickFolder());
+        document.getElementById('rollBtn').addEventListener('click', () => this.showRollDialog());
+        document.getElementById('rollLine').addEventListener('click', () => this.showRollDialog());
+        document.getElementById('rollSaveBtn').addEventListener('click', () => this.saveRoll());
+        document.getElementById('rollCancelBtn').addEventListener('click', () => {
+            document.getElementById('rollDialog').style.display = 'none';
+        });
         document.getElementById('browsePickBtn').addEventListener('click', () => this.pickFolder());
         document.getElementById('previewCloseBtn').addEventListener('click', () => this.closePreview());
         document.getElementById('previewEditBtn').addEventListener('click', () => this.editCurrent());
@@ -417,6 +425,7 @@ class FolderBrowser {
         this.entries = [];
         this.sidecars = new Set();
         this._thumbErrToasted = false; // one diagnostic per listing
+        let rollEntry = null;
         try {
             for await (const entry of this.dirHandle.values()) {
                 if (entry.kind !== 'file') continue;
@@ -430,12 +439,15 @@ class FolderBrowser {
                 } else if (/_settings\.json$/i.test(entry.name)) {
                     // Sidecars mark frames edited on the PC (or here)
                     this.sidecars.add(entry.name.toLowerCase());
+                } else if (entry.name.toLowerCase() === 'roll.json') {
+                    rollEntry = entry; // roll metadata, shown under the bar
                 }
             }
         } catch (e) {
             this.showEmpty('Could not read the folder — pick it again. (' + e.message + ')');
             return;
         }
+        await this.loadRoll(rollEntry);
         this.entries.sort((a, b) =>
             a.name.localeCompare(b.name, undefined, { numeric: true }));
 
@@ -485,6 +497,84 @@ class FolderBrowser {
                     this.toast('Thumbnail failed: ' + e.message);
                 }
             }
+        }
+    }
+
+    // --- Roll metadata: one roll.json per scans folder, shared with
+    // the PC through the folder (like the settings sidecars). Also kept
+    // in localStorage so read-only folders still remember their roll. ---
+
+    rollKey() {
+        return 'filmRoll:' + ((this.dirHandle && this.dirHandle.name) || '');
+    }
+
+    async loadRoll(entry) {
+        this.roll = null;
+        try {
+            if (entry) {
+                const file = await entry.getFile();
+                this.roll = JSON.parse(await file.text());
+            } else {
+                this.roll = JSON.parse(localStorage.getItem(this.rollKey()));
+            }
+        } catch { /* no roll info for this folder */ }
+        this.updateRollUI();
+    }
+
+    // One line for the UI and for the exported TIFFs' description tag.
+    // Exports pass an ASCII separator: the TIFF description field is
+    // ASCII, and 'Â·' mojibake in other apps helps nobody.
+    rollLine(sep = ' · ') {
+        const r = this.roll;
+        if (!r) return '';
+        return [r.film, r.camera, r.iso && 'ISO ' + r.iso, r.shot, r.notes]
+            .filter(Boolean).join(sep);
+    }
+
+    updateRollUI() {
+        const el = document.getElementById('rollLine');
+        const line = this.rollLine();
+        el.textContent = line ? '🎞️ ' + line : '';
+        el.style.display = line ? '' : 'none';
+    }
+
+    rollFieldEl(f) {
+        return document.getElementById('roll' + f[0].toUpperCase() + f.slice(1));
+    }
+
+    showRollDialog() {
+        if (!this.dirHandle) { this.toast('Pick a folder first'); return; }
+        const r = this.roll || {};
+        for (const f of ROLL_FIELDS) this.rollFieldEl(f).value = r[f] || '';
+        document.getElementById('rollDialog').style.display = '';
+    }
+
+    async saveRoll() {
+        document.getElementById('rollDialog').style.display = 'none';
+        const roll = {};
+        for (const f of ROLL_FIELDS) {
+            const v = this.rollFieldEl(f).value.trim();
+            if (v) roll[f] = v;
+        }
+        this.roll = Object.keys(roll).length ? roll : null;
+        this.updateRollUI();
+        try {
+            if (this.roll) localStorage.setItem(this.rollKey(), JSON.stringify(roll));
+            else localStorage.removeItem(this.rollKey());
+        } catch { /* storage full - the file below still works */ }
+        if (!this.roll) {
+            // Cleared: remove the folder's roll.json too, if we may
+            if (await this.ensureWrite()) {
+                try { await this.dirHandle.removeEntry('roll.json'); } catch { }
+            }
+            this.toast('Roll info cleared');
+            return;
+        }
+        if (await this.ensureWrite()
+            && await writeJsonInDir(this.dirHandle, 'roll.json', this.roll)) {
+            this.toast('Roll info saved to the folder');
+        } else {
+            this.toast('Roll info saved on this phone (folder is read-only)');
         }
     }
 
@@ -685,7 +775,8 @@ class FolderBrowser {
         }
         this.syncBatchDir();
         this.showProgress(true);
-        const res = await this.batch.exportAll(sel, { format, autoCrop, dir },
+        const res = await this.batch.exportAll(sel,
+            { format, autoCrop, dir, desc: this.rollLine(' - ') },
             (i, n, name) => this.progressText(`Exporting ${i + 1}/${n} — ${name}`));
         this.showProgress(false);
         this.updateBadges();

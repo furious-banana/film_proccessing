@@ -34,7 +34,13 @@ then apply a preset, auto-crop, or export the whole selection.
 **Settings sync with the PC**: browsing is read-only; the first time an
 edit saves, the app asks for write access to the folder, and from then on
 every edit saves a `<image>_settings.json` sidecar next to the scan —
-the same file the desktop app auto-loads and saves. Whichever device
+the same file the desktop app auto-loads and saves.
+
+**Roll metadata**: the 🎞️ button in the browser records the roll's film
+stock, camera, ISO, date and notes as a `roll.json` in the scans folder,
+so the info travels with the roll. It shows under the folder name and is
+stamped into exported TIFFs as their description tag (JPEG exports carry
+no metadata). Whichever device
 saved last wins, and crops made on the phone survive a PC round-trip
 (the desktop app doesn't touch them).
 

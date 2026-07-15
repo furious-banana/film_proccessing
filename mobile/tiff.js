@@ -5,12 +5,18 @@
 
 // pixels: Float32Array RGB [0,1] (or Uint16Array, already quantized)
 // -> Uint8Array of a complete .tif file
-function encodeTiff16(pixels, width, height) {
-    const numTags = 8;
+// description: optional ImageDescription tag (roll metadata) - padded to
+// 5+ bytes so its value never falls in the confusing inline-value case
+function encodeTiff16(pixels, width, height, description = '') {
+    const desc = description
+        ? new TextEncoder().encode(description.padEnd(4, ' ') + '\0') : null;
+    const numTags = 8 + (desc ? 1 : 0);
     const headerSize = 8;
     const ifdSize = 2 + numTags * 12 + 4;
     const bitsOffset = headerSize + ifdSize;      // BitsPerSample [16,16,16]
-    const dataOffset = bitsOffset + 6;
+    const descOffset = bitsOffset + 6;
+    const descSize = desc ? Math.ceil(desc.length / 2) * 2 : 0; // word-align
+    const dataOffset = descOffset + descSize;
     const dataSize = width * height * 3 * 2;
 
     const buf = new ArrayBuffer(dataOffset + dataSize);
@@ -39,6 +45,7 @@ function encodeTiff16(pixels, width, height) {
     tag(258, 3, 3, bitsOffset);   // BitsPerSample -> [16,16,16]
     tag(259, 3, 1, 1);            // Compression: none
     tag(262, 3, 1, 2);            // Photometric: RGB
+    if (desc) tag(270, 2, desc.length, descOffset); // ImageDescription
     tag(273, 4, 1, dataOffset);   // StripOffsets
     tag(277, 3, 1, 3);            // SamplesPerPixel
     tag(279, 4, 1, dataSize);     // StripByteCounts
@@ -48,6 +55,8 @@ function encodeTiff16(pixels, width, height) {
     view.setUint16(bitsOffset, 16, true);
     view.setUint16(bitsOffset + 2, 16, true);
     view.setUint16(bitsOffset + 4, 16, true);
+
+    if (desc) new Uint8Array(buf, descOffset, desc.length).set(desc);
 
     // Pixel data: float [0,1] -> uint16, rounded (matches np.rint on desktop)
     const out16 = new Uint16Array(buf, dataOffset, width * height * 3);

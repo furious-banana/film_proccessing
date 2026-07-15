@@ -46,19 +46,22 @@ async function readSidecar(dirHandle, imageName) {
     }
 }
 
-async function writeSidecar(dirHandle, imageName, params) {
+async function writeJsonInDir(dirHandle, fileName, obj) {
     try {
-        const fh = await dirHandle.getFileHandle(sidecarName(imageName),
-            { create: true });
+        const fh = await dirHandle.getFileHandle(fileName, { create: true });
         const w = await fh.createWritable();
-        await w.write(new Blob([JSON.stringify(params, null, 2)],
+        await w.write(new Blob([JSON.stringify(obj, null, 2)],
             { type: 'application/json' }));
         await w.close();
         return true;
     } catch (e) {
-        console.warn('Could not write settings sidecar for ' + imageName, e);
+        console.warn('Could not write ' + fileName + ' into the folder', e);
         return false;
     }
+}
+
+function writeSidecar(dirHandle, imageName, params) {
+    return writeJsonInDir(dirHandle, sidecarName(imageName), params);
 }
 
 // The freshest settings for a frame: the folder sidecar (shared with
@@ -224,7 +227,7 @@ class BatchProcessor {
     // Render one frame exactly like the editor's export path: replay the
     // baked ops on a native-resolution decode when the working copy was
     // downscaled, run the shader in bands, encode
-    async exportOne(file, settings, format, img = null) {
+    async exportOne(file, settings, format, img = null, desc = '') {
         const r = this.offscreen();
         if (!img) img = await decodeImageFile(file);
         const k = settings.ops_width ? img.width / settings.ops_width : 1;
@@ -251,10 +254,13 @@ class BatchProcessor {
         r.updateParams(rendererParamsFor(settings));
         const { data16, width, height } = r.renderToPixels16(prepared);
         if (format === 'jpeg') return pixels16ToJpegBlob(data16, width, height);
-        return new Blob([encodeTiff16(data16, width, height)], { type: 'image/tiff' });
+        // desc: roll metadata, stamped as the TIFF's ImageDescription
+        return new Blob([encodeTiff16(data16, width, height, desc)],
+            { type: 'image/tiff' });
     }
 
-    // opts: { format: 'tiff'|'jpeg', autoCrop, dir: directory handle }
+    // opts: { format: 'tiff'|'jpeg', autoCrop, dir: directory handle,
+    //         desc: roll metadata line for the TIFFs' description tag }
     async exportAll(entries, opts, onProgress) {
         this.cancelled = false;
         let done = 0;
@@ -279,7 +285,8 @@ class BatchProcessor {
                         await this.persistSettings(file.name, file.size, settings);
                     }
                 }
-                const blob = await this.exportOne(file, settings, opts.format, img);
+                const blob = await this.exportOne(file, settings, opts.format,
+                    img, opts.desc || '');
                 const outName = file.name.replace(/\.[^.]+$/, '')
                     + '_edit.' + (opts.format === 'jpeg' ? 'jpg' : 'tif');
                 const fh = await opts.dir.getFileHandle(outName, { create: true });

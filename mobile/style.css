@@ -503,7 +503,7 @@ details > *:not(summary) { padding: 0 14px 12px; }
     z-index: 80;
     max-width: 90vw;
 }
-#batchDialog, #presetDialog {
+#batchDialog, #presetDialog, #rollDialog {
     position: fixed;
     inset: 0;
     z-index: 70;
@@ -511,6 +511,31 @@ details > *:not(summary) { padding: 0 14px 12px; }
     display: flex;
     align-items: center;
     justify-content: center;
+}
+/* Roll metadata: summary line under the browse bar + dialog fields */
+#rollLine {
+    padding: 6px 12px;
+    font-size: 12px;
+    color: var(--text2);
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.roll-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--text2);
+}
+.roll-field input {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 14px;
+    padding: 8px 10px;
 }
 #presetDialogList {
     display: flex;
