@@ -31,8 +31,9 @@ presets (same format as the desktop app), press-and-hold before/after.
 Folder browser with batch tools: long-press thumbnails to multi-select,
 then apply a preset, auto-crop, or export the whole selection.
 
-**Settings sync with the PC**: grant the browse folder read-write access
-and every edit saves a `<image>_settings.json` sidecar next to the scan —
+**Settings sync with the PC**: browsing is read-only; the first time an
+edit saves, the app asks for write access to the folder, and from then on
+every edit saves a `<image>_settings.json` sidecar next to the scan —
 the same file the desktop app auto-loads and saves. Whichever device
 saved last wins, and crops made on the phone survive a PC round-trip
 (the desktop app doesn't touch them).

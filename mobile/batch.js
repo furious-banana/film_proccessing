@@ -66,9 +66,13 @@ async function writeSidecar(dirHandle, imageName, params) {
 // desktop app doesn't know about baked_ops, so a sidecar it saved
 // gets the phone's crop merged back in - a PC round-trip never loses
 // a crop made on the phone.
-async function resolveSettings(dirHandle, name, size) {
+// `known` (a Set of lowercased sidecar names from the folder listing, if
+// the caller has one) skips the lookup for frames with no sidecar - on
+// some providers every by-name miss is a slow directory query.
+async function resolveSettings(dirHandle, name, size, known = null) {
     const local = loadSavedSettings(name, size);
-    const side = dirHandle ? await readSidecar(dirHandle, name) : null;
+    const exists = !known || known.has(sidecarName(name).toLowerCase());
+    const side = dirHandle && exists ? await readSidecar(dirHandle, name) : null;
     if (!side) return local;
     if (local && (local.saved_at || 0) > side.mtime) return local;
     if (local && local.baked_ops && !side.params.baked_ops) {
@@ -140,6 +144,7 @@ class BatchProcessor {
         this.cancelled = false;
         this.srcDir = null;   // browse folder handle (sidecar reads)
         this.canWrite = false; // readwrite granted (sidecar writes)
+        this.knownSidecars = null; // sidecar names seen in the listing
     }
 
     // Save a frame's settings locally AND to its folder sidecar, so the
@@ -147,8 +152,10 @@ class BatchProcessor {
     async persistSettings(name, size, settings) {
         settings.saved_at = Date.now();
         saveSavedSettings(name, size, settings);
-        if (this.srcDir && this.canWrite) {
-            await writeSidecar(this.srcDir, name, settings);
+        if (this.srcDir && this.canWrite
+            && await writeSidecar(this.srcDir, name, settings)
+            && this.knownSidecars) {
+            this.knownSidecars.add(sidecarName(name).toLowerCase());
         }
     }
 
@@ -197,8 +204,8 @@ class BatchProcessor {
             try {
                 const file = await entry.handle.getFile();
                 const img = await decodeImageFile(file);
-                const settings =
-                    await resolveSettings(this.srcDir, file.name, file.size) || {};
+                const settings = await resolveSettings(
+                    this.srcDir, file.name, file.size, this.knownSidecars) || {};
                 const ops = this.detectOps(img, this.stateFor(settings));
                 if (!ops) { failed.push(entry.name); continue; }
                 settings.baked_ops = ops;
@@ -259,8 +266,8 @@ class BatchProcessor {
             await nextPaint();
             try {
                 const file = await entry.handle.getFile();
-                const settings =
-                    await resolveSettings(this.srcDir, file.name, file.size) || {};
+                const settings = await resolveSettings(
+                    this.srcDir, file.name, file.size, this.knownSidecars) || {};
                 let img = null;
                 if (opts.autoCrop && !settings.baked_ops) {
                     img = await decodeImageFile(file);

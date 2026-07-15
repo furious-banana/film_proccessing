@@ -50,9 +50,16 @@ async function dbSet(store, key, value) {
 // the file's layout needs the full decoder.
 // ------------------------------------------------------------------
 
-async function readTiffSubsampled(file, targetLongEdge) {
+async function readTiffSubsampled(file, targetLongEdge, buf = null) {
+    // With `buf` (the whole file, already in memory) no byte-range reads
+    // are made - the retry path for storage providers that mis-serve
+    // slice() through a folder handle (USB drives on Android)
+    const size = buf ? buf.byteLength : file.size;
+    const read = (start, end) => buf
+        ? Promise.resolve(buf.slice(start, Math.min(end, buf.byteLength)))
+        : file.slice(start, end).arrayBuffer();
     const HEAD = 64 * 1024;
-    const head = new DataView(await file.slice(0, Math.min(HEAD, file.size)).arrayBuffer());
+    const head = new DataView(await read(0, Math.min(HEAD, size)));
     if (head.byteLength < 8) return null;
     const b0 = head.getUint16(0, false);
     if (b0 !== 0x4949 && b0 !== 0x4D4D) return null;
@@ -86,7 +93,7 @@ async function readTiffSubsampled(file, targetLongEdge) {
             if (off + size <= head.byteLength) {
                 view = new DataView(head.buffer, off, size);
             } else {
-                view = new DataView(await file.slice(off, off + size).arrayBuffer());
+                view = new DataView(await read(off, off + size));
             }
         }
         const out = new Array(tag.count);
@@ -127,7 +134,7 @@ async function readTiffSubsampled(file, targetLongEdge) {
     const fetchRow = async (srcY) => {
         const s = Math.floor(srcY / rowsPerStrip);
         const offset = stripOffsets[s] + (srcY - s * rowsPerStrip) * rowBytes;
-        return new DataView(await file.slice(offset, offset + rowBytes).arrayBuffer());
+        return new DataView(await read(offset, offset + rowBytes));
     };
 
     const rgba = new Uint8ClampedArray(outW * outH * 4);
@@ -171,7 +178,21 @@ async function readTiffSubsampled(file, targetLongEdge) {
 async function imageThumbCanvas(file, targetLongEdge) {
     const name = file.name.toLowerCase();
     if (name.endsWith('.tif') || name.endsWith('.tiff')) {
-        const fast = await readTiffSubsampled(file, targetLongEdge);
+        // Short/garbled range reads can also throw mid-parse - same story
+        // as returning null: retry from a whole-file read below
+        let fast = await readTiffSubsampled(file, targetLongEdge)
+            .catch(() => null);
+        if (!fast) {
+            // Range reads failed (some folder providers mis-serve them) or
+            // the layout is unusual: read the whole file once and retry
+            // from memory before resorting to a full decode
+            const buf = await file.arrayBuffer();
+            fast = await readTiffSubsampled(file, targetLongEdge, buf);
+            if (fast) return fast;
+            // Hand the full decoder the in-memory copy, not the provider
+            file = new File([buf], file.name,
+                { type: file.type, lastModified: file.lastModified });
+        }
         if (fast) return fast;
         // Unusual layout (compressed/tiled): full decode, then shrink
         const img = await decodeImageFile(file, targetLongEdge);
@@ -284,19 +305,14 @@ class FolderBrowser {
         await this.list();
     }
 
-    // Ask for read-write so settings sidecars sync with the PC through
-    // the scans folder; fall back to read-only browsing if that's all
-    // the user grants
+    // Browsing itself only ever asks to READ. Write access (for settings
+    // sidecars) is requested separately by ensureWrite() at the moment
+    // something saves - asking for readwrite up front broke reading
+    // entirely on some Android storage providers (USB drives).
     async ensurePermission() {
         const h = this.dirHandle;
         if (!h.queryPermission) { this.canWrite = true; return 'granted'; }
-        let rw = await h.queryPermission({ mode: 'readwrite' });
-        if (rw === 'prompt') {
-            try { rw = await h.requestPermission({ mode: 'readwrite' }); }
-            catch { rw = 'denied'; }
-        }
-        this.canWrite = rw === 'granted';
-        if (this.canWrite) return 'granted';
+        this.canWrite = false; // ensureWrite() re-checks when saving
         let r = await h.queryPermission({ mode: 'read' });
         if (r === 'prompt') {
             try { r = await h.requestPermission({ mode: 'read' }); }
@@ -305,10 +321,28 @@ class FolderBrowser {
         return r;
     }
 
+    // Ask for write access on demand (must be called from a user gesture,
+    // e.g. a button tap). Denied or unavailable -> edits stay on the phone
+    // (localStorage) exactly as before sync existed.
+    async ensureWrite() {
+        if (this.canWrite) return true;
+        const h = this.dirHandle;
+        if (!h) return false;
+        if (!h.queryPermission) { this.canWrite = true; return true; }
+        let rw = await h.queryPermission({ mode: 'readwrite' });
+        if (rw === 'prompt') {
+            try { rw = await h.requestPermission({ mode: 'readwrite' }); }
+            catch { rw = 'denied'; }
+        }
+        this.canWrite = rw === 'granted';
+        return this.canWrite;
+    }
+
     // The batch processor reads/writes sidecars in the browsed folder
     syncBatchDir() {
         this.batch.srcDir = this.dirHandle;
         this.batch.canWrite = this.canWrite;
+        this.batch.knownSidecars = this.sidecars;
     }
 
     // Test hook: browse a fake directory handle without any picker
@@ -340,10 +374,9 @@ class FolderBrowser {
             return;
         }
         try {
-            // readwrite lets edits sync to the folder as settings sidecars
-            const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+            const handle = await window.showDirectoryPicker({ mode: 'read' });
             this.dirHandle = handle;
-            this.canWrite = true;
+            this.canWrite = false; // write access is requested when saving
             dbSet('handles', 'dir', handle).catch(() => {});
             this.entries = [];
             await this.list();
@@ -558,6 +591,7 @@ class FolderBrowser {
         const preset = this.app.loadPresets()[name];
         const sel = this.selectedEntries();
         if (!preset || !sel.length) return;
+        await this.ensureWrite(); // sidecars sync only if the user allows
         this.syncBatchDir();
         // Presets are saved without geometry or eyedropper points, but old
         // ones (or desktop-made ones) might carry straighten - strip it so
@@ -566,8 +600,8 @@ class FolderBrowser {
         for (const entry of sel) {
             const file = await entry.handle.getFile();
             entry.size = file.size;
-            const base =
-                await resolveSettings(this.dirHandle, file.name, file.size) || {};
+            const base = await resolveSettings(
+                this.dirHandle, file.name, file.size, this.sidecars) || {};
             await this.batch.persistSettings(file.name, file.size,
                 { ...base, ...look });
         }
@@ -578,6 +612,7 @@ class FolderBrowser {
     async autoCropSelected() {
         const sel = this.selectedEntries();
         if (!sel.length) { this.toast('Select frames first'); return; }
+        await this.ensureWrite(); // sidecars sync only if the user allows
         this.syncBatchDir();
         this.showProgress(true);
         const res = await this.batch.autoCropAll(sel, (i, n, name) =>
@@ -691,8 +726,13 @@ class FolderBrowser {
         this.close();
         const file = await entry.handle.getFile();
         // The folder context lets the editor read/write the settings
-        // sidecar next to the photo (shared with the desktop app)
-        await this.app.loadFile(file,
-            { dir: this.dirHandle, canWrite: this.canWrite });
+        // sidecar next to the photo (shared with the desktop app).
+        // requestWrite defers the write-permission prompt to the moment
+        // the user hits Save settings.
+        await this.app.loadFile(file, {
+            dir: this.dirHandle,
+            sidecars: this.sidecars,
+            requestWrite: () => this.ensureWrite(),
+        });
     }
 }
