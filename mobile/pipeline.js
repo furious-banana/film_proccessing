@@ -45,22 +45,36 @@ function bufferContainsAscii(bytes, text) {
     return false;
 }
 
+// 49 49 2A 00 (little-endian) or 4D 4D 00 2A (big-endian)
+function looksLikeTiff(buf) {
+    const h = new Uint8Array(buf, 0, Math.min(4, buf.byteLength));
+    return h.length >= 4
+        && ((h[0] === 0x49 && h[1] === 0x49 && h[2] === 42 && h[3] === 0)
+            || (h[0] === 0x4D && h[1] === 0x4D && h[2] === 0 && h[3] === 42));
+}
+
 // Whole-file read that survives storage providers with unreliable reads
 // (USB drives browsed through a folder handle on Android). The direct
-// read is tried first; a short or failed result falls back to a
-// sequential stream, which SAF-backed providers serve far more
-// reliably than random access. Failure reports exactly what was read,
-// so "format isn't supported" can never mask a broken provider again.
-async function readFileBytes(file) {
+// read is tried first; a short, failed, or - with `validate` - garbled
+// result falls back to a sequential stream, which SAF-backed providers
+// serve far more reliably than random access. Length checks alone are
+// not enough: some providers report size 0 and then hand back junk
+// that decodes into a dimensionless image. Failure reports exactly
+// what was read (byte count + first bytes), so "format isn't
+// supported" can never mask a broken provider again.
+async function readFileBytes(file, validate = null) {
+    const ok = (buf) => buf && buf.byteLength
+        && (!file.size || buf.byteLength === file.size)
+        && (!validate || validate(buf));
+    let best = null;
     try {
         const buf = await file.arrayBuffer();
-        if (buf.byteLength && (!file.size || buf.byteLength === file.size)) {
-            return buf;
-        }
-    } catch { /* fall through to streaming */ }
-    let got = 0;
-    const chunks = [];
+        if (ok(buf)) return buf;
+        best = buf;
+    } catch { /* try the stream */ }
     try {
+        const chunks = [];
+        let got = 0;
         const reader = file.stream().getReader();
         for (;;) {
             const { done, value } = await reader.read();
@@ -68,16 +82,19 @@ async function readFileBytes(file) {
             chunks.push(value);
             got += value.byteLength;
         }
-    } catch { /* reported below */ }
-    if (got && (!file.size || got === file.size)) {
         const out = new Uint8Array(got);
         let o = 0;
         for (const c of chunks) { out.set(c, o); o += c.byteLength; }
-        return out.buffer;
-    }
+        if (ok(out.buffer)) return out.buffer;
+        if (!best || out.byteLength > best.byteLength) best = out.buffer;
+    } catch { /* reported below */ }
+    const got = best ? best.byteLength : 0;
+    const head = !got ? '' : Array.from(new Uint8Array(best, 0, Math.min(8, got)))
+        .map(b => b.toString(16).padStart(2, '0')).join(' ');
     throw new Error(`the folder returned ${got} of ${file.size} bytes for `
-        + `"${file.name}" - this storage doesn't serve folder reads `
-        + `properly; the Load button should still work`);
+        + `"${file.name}"` + (head ? ` starting [${head}]` : '')
+        + ' - this storage doesn\'t serve folder reads properly;'
+        + ' the Load button should still work');
 }
 
 function decodeTiff(arrayBuffer) {
@@ -92,6 +109,12 @@ function decodeTiff(arrayBuffer) {
     UTIF.decodeImage(arrayBuffer, ifd);
 
     const width = ifd.width, height = ifd.height;
+    // Bad reads can slip a header past UTIF yet decode to nothing; fail
+    // HERE with a real message, not "ImageData: width is zero" later
+    if (!width || !height || !ifd.data) {
+        throw new Error('TIFF decoded without image data - '
+            + 'the bytes read are corrupt or truncated');
+    }
     const bps = ifd.t258 ? (ifd.t258[0] || 8) : 8;
     const spp = ifd.t277 ? (ifd.t277[0] || 1) : 1;
     const n = width * height;
@@ -195,7 +218,7 @@ async function decodeImageFile(file, maxSize = MAX_WORK_SIZE) {
     }
 
     let img = isTiff
-        ? decodeTiff(await readFileBytes(file))
+        ? decodeTiff(await readFileBytes(file, looksLikeTiff))
         : await decodeBrowserImage(file);
 
     const fullWidth = img.width, fullHeight = img.height;
