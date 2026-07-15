@@ -399,6 +399,11 @@ class FolderBrowser {
         try {
             for await (const entry of this.dirHandle.values()) {
                 if (entry.kind !== 'file') continue;
+                // Skip hidden/system files. macOS leaves an AppleDouble
+                // "._foo.tif" metadata twin next to every real file on
+                // USB drives - a few KB of junk that would otherwise
+                // bury the real scans under screens of broken cells.
+                if (entry.name.startsWith('.')) continue;
                 if (IMAGE_EXT.test(entry.name)) {
                     this.entries.push({ name: entry.name, handle: entry });
                 } else if (/_settings\.json$/i.test(entry.name)) {
