@@ -778,7 +778,14 @@ print(f'RESULT max={diff.max()} mean={diff.mean():.2f}')
         window.__browseDir = {
             name: 'test-scans',
             values: async function* () {
-                // Out of order + one non-image: tests sorting and filtering
+                // Out of order + one non-image: tests sorting and filtering.
+                // The "._" entries are macOS AppleDouble junk (magic
+                // 00 05 16 07) left on USB drives - they must never
+                // reach the grid or the sidecar set.
+                yield mk('._a_frame1.tif',
+                    new Uint8Array([0, 5, 22, 7, 0, 2, 0, 0]), 'image/tiff');
+                yield mk('._b_settings.json',
+                    new Uint8Array([0, 5, 22, 7]), 'application/json');
                 yield mk('b_frame2.jpg', bytes(jb), 'image/jpeg');
                 yield mk('notes.txt', new Uint8Array([1]), 'text/plain');
                 yield mk('a_frame1.tif', bytes(tb), 'image/tiff');
@@ -860,9 +867,11 @@ print(f'RESULT max={diff.max()} mean={diff.mean():.2f}')
             .map(e => e.textContent),
         title: document.getElementById('browseTitle').textContent,
     }));
-    check('browser grid lists images sorted, non-images filtered',
+    check('grid lists images sorted; non-images and ._AppleDouble junk filtered',
         gridState.cells === 2 && gridState.title === 'test-scans'
-        && gridState.names[0] === 'a_frame1.tif' && gridState.names[1] === 'b_frame2.jpg',
+        && gridState.names[0] === 'a_frame1.tif' && gridState.names[1] === 'b_frame2.jpg'
+        && await page.evaluate(() => ![...mobileApp.browser.sidecars]
+            .some(n => n.startsWith('.'))),
         JSON.stringify(gridState));
 
     // Thumbnails are cached in IndexedDB for instant revisits
