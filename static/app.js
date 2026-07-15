@@ -262,6 +262,7 @@ class ProfessionalFilmProcessor {
         document.getElementById('rotateLeftBtn')?.addEventListener('click', () => this.rotateLeft());
         document.getElementById('rotateRightBtn')?.addEventListener('click', () => this.rotateRight());
         document.getElementById('cropBtn')?.addEventListener('click', () => this.toggleCropMode());
+        document.getElementById('autoCropBtn')?.addEventListener('click', () => this.autoCrop());
         document.getElementById('applyCropBtn')?.addEventListener('click', () => this.applyCrop());
         document.getElementById('cancelCropBtn')?.addEventListener('click', () => this.cancelCrop());
         document.getElementById('undoCropBtn')?.addEventListener('click', () => this.undoCrop());
@@ -650,6 +651,12 @@ class ProfessionalFilmProcessor {
         const naturalHeight = usingCanvas && this.webglRenderer ? this.webglRenderer.imageHeight
             : (img && img.naturalHeight ? img.naturalHeight : 1);
 
+        // At 90/270 the element is shown sideways: its CSS box must fit the
+        // container's SWAPPED dimensions or the rotated image (and the crop
+        // overlay with it) runs off the screen
+        const normalizedRotation = ((this.rotation % 360) + 360) % 360;
+        const sideways = normalizedRotation === 90 || normalizedRotation === 270;
+
         if (actualSize) {
             activeElement.style.width = naturalWidth + 'px';
             activeElement.style.height = naturalHeight + 'px';
@@ -657,7 +664,7 @@ class ProfessionalFilmProcessor {
             activeElement.style.maxHeight = 'none';
             wrapper.style.width = (naturalWidth * 3) + 'px';
             wrapper.style.height = (naturalHeight * 3) + 'px';
-        } else if (this.zoom === 1.0) {
+        } else if (this.zoom === 1.0 && !sideways) {
             // Fit to container
             activeElement.style.width = '';
             activeElement.style.height = '';
@@ -668,15 +675,17 @@ class ProfessionalFilmProcessor {
         } else {
             const containerWidth = container.clientWidth;
             const containerHeight = container.clientHeight;
+            const boxW = sideways ? containerHeight : containerWidth;
+            const boxH = sideways ? containerWidth : containerHeight;
             const imgAspect = naturalWidth / naturalHeight;
 
             let fittedWidth, fittedHeight;
-            if (imgAspect > containerWidth / containerHeight) {
-                fittedWidth = containerWidth;
-                fittedHeight = containerWidth / imgAspect;
+            if (imgAspect > boxW / boxH) {
+                fittedWidth = boxW;
+                fittedHeight = boxW / imgAspect;
             } else {
-                fittedHeight = containerHeight;
-                fittedWidth = containerHeight * imgAspect;
+                fittedHeight = boxH;
+                fittedWidth = boxH * imgAspect;
             }
 
             const zoomedWidth = fittedWidth * this.zoom;
@@ -686,9 +695,14 @@ class ProfessionalFilmProcessor {
             activeElement.style.height = zoomedHeight + 'px';
             activeElement.style.maxWidth = 'none';
             activeElement.style.maxHeight = 'none';
-            // 3x wrapper so the image can be scrolled in all directions
-            wrapper.style.width = (zoomedWidth * 3) + 'px';
-            wrapper.style.height = (zoomedHeight * 3) + 'px';
+            if (this.zoom === 1.0) {
+                wrapper.style.width = '100%';
+                wrapper.style.height = '100%';
+            } else {
+                // 3x wrapper so the image can be scrolled in all directions
+                wrapper.style.width = (zoomedWidth * 3) + 'px';
+                wrapper.style.height = (zoomedHeight * 3) + 'px';
+            }
         }
 
         wrapper.style.transform = `rotate(${this.rotation + this.straightenDelta()}deg)`;
@@ -996,8 +1010,10 @@ class ProfessionalFilmProcessor {
         const containerRect = container.getBoundingClientRect();
         const left = imgRect.left - containerRect.left + container.scrollLeft;
         const top = imgRect.top - containerRect.top + container.scrollTop;
-        const w = img.offsetWidth;
-        const h = img.offsetHeight;
+        // Bounding-box dims, not offsetWidth/Height: at 90/270 the element's
+        // layout box is sideways to what's on screen
+        const w = imgRect.width;
+        const h = imgRect.height;
         if (w === 0 || h === 0) return;
 
         const oldLeft = parseFloat(cropOverlay.style.left) || 0;
@@ -1068,31 +1084,39 @@ class ProfessionalFilmProcessor {
         const img = this.getActiveImageElement();
         if (!cropArea || !cropOverlay || !img || !container) return;
 
-        // Position overlay to exactly match the on-screen image
+        // Position overlay to exactly match the on-screen image. Bounding
+        // rect dims, not offsetWidth/Height: at 90/270 the layout box is
+        // sideways to what's on screen
         const imgRect = img.getBoundingClientRect();
         const containerRect = container.getBoundingClientRect();
         cropOverlay.style.left = (imgRect.left - containerRect.left + container.scrollLeft) + 'px';
         cropOverlay.style.top = (imgRect.top - containerRect.top + container.scrollTop) + 'px';
-        cropOverlay.style.width = img.offsetWidth + 'px';
-        cropOverlay.style.height = img.offsetHeight + 'px';
+        cropOverlay.style.width = imgRect.width + 'px';
+        cropOverlay.style.height = imgRect.height + 'px';
 
         // Restore relative crop area, or default to the FULL image
         const rel = cropRelative || { left: 0, top: 0, width: 1, height: 1 };
-        cropArea.style.left = (rel.left * img.offsetWidth) + 'px';
-        cropArea.style.top = (rel.top * img.offsetHeight) + 'px';
-        cropArea.style.width = (rel.width * img.offsetWidth) + 'px';
-        cropArea.style.height = (rel.height * img.offsetHeight) + 'px';
+        cropArea.style.left = (rel.left * imgRect.width) + 'px';
+        cropArea.style.top = (rel.top * imgRect.height) + 'px';
+        cropArea.style.width = (rel.width * imgRect.width) + 'px';
+        cropArea.style.height = (rel.height * imgRect.height) + 'px';
     }
 
     toggleCropMode() {
         this.cropMode = !this.cropMode;
 
         if (this.cropMode) {
-            document.getElementById('cropOverlay').style.display = 'block';
             // Show the straighten bar first (it shifts layout), THEN place
             // the overlay, and keep it glued from there on
             const bar = document.getElementById('straightenBar');
             if (bar) bar.style.display = 'flex';
+            // The bar shrank the container: a CSS percent fit tracks that by
+            // itself, but the explicit-pixel fit (rotated 90/270) does not -
+            // re-fit or the image (and crop box) sticks out of the view.
+            // cropMode is already set, but the overlay is still hidden, so
+            // applyZoom's crop-box preservation stays out of the way.
+            if (this.zoom === 1.0) this.applyZoom();
+            document.getElementById('cropOverlay').style.display = 'block';
             setTimeout(() => {
                 this.positionCropOverlay();
                 this.snapCropToRatio(); // apply a still-selected ratio
@@ -1104,6 +1128,115 @@ class ProfessionalFilmProcessor {
         } else {
             this.cancelCrop();
         }
+    }
+
+    // Raw source pixels (float32 RGB [0,1]) in the displayed image's
+    // space, for client-side analysis like frame detection
+    async rawImageSource() {
+        const r = this.webglRenderer;
+        if (this.webglEnabled && r && r.imageData) {
+            return { data: r.imageData, width: r.imageWidth, height: r.imageHeight };
+        }
+        const resp = await fetch('/get_raw_image');
+        if (!resp.ok) throw new Error('raw image unavailable');
+        return {
+            width: parseInt(resp.headers.get('X-Image-Width')),
+            height: parseInt(resp.headers.get('X-Image-Height')),
+            data: new Float32Array(await resp.arrayBuffer()),
+        };
+    }
+
+    // ✨ Auto: detect the frame inside the holder border and propose a
+    // straighten angle + crop box; the user reviews, then applies
+    async autoCrop() {
+        if (!this.currentImage) return;
+        if (this.bakePromise) {
+            try { await this.bakePromise; } catch { /* proceed */ }
+        }
+        if (!this.cropMode) {
+            this.toggleCropMode();
+            await new Promise(r => setTimeout(r, 50)); // overlay placement is deferred
+        }
+        this.updateProcessingStatus('Detecting frame...');
+        await new Promise(r => setTimeout(r, 30)); // let the status paint
+        try {
+            // A baked straighten leaves black fill wedges outside the scan
+            // boundary; the detector must not mistake that boundary (which
+            // is slanted by exactly -bake) for the frame edge
+            const fillIgnore = { ignore: [[0, 0, 0]] };
+            let det = detectFrame(await this.rawImageSource(),
+                this.bakedStraighten ? fillIgnore : {});
+            if (!det) {
+                this.updateProcessingStatus('No frame border detected');
+                return;
+            }
+            if (Math.abs(det.angle) > 0.02) {
+                this.saveHistory();
+                const s = document.getElementById('straighten');
+                s.value = (parseFloat(s.value) || 0) + det.angle;
+                this.updateValueDisplay('straighten', s.value);
+                await this.updateImage(); // bakes the angle server-side
+                this._cropScreenLock = null; // the box is set anew below
+                await new Promise(r => setTimeout(r, 50)); // overlay re-glues
+                // The bake changed the geometry: re-measure the rect on the
+                // straightened source, where the crop will actually apply
+                det = detectFrame(await this.rawImageSource(), fillIgnore) || det;
+            }
+            // The detected box is free-form; clear any selected ratio
+            this.cropRatio = null;
+            this.cropRatioSwapped = false;
+            const ratioSel = document.getElementById('cropRatioSelect');
+            if (ratioSel) ratioSel.value = 'free';
+            document.getElementById('cropRatioSwapBtn')?.classList.remove('active');
+            this.setCropAreaToImageRect(det.rect);
+            this.updateProcessingStatus('Frame detected - adjust if needed, then Apply Crop');
+        } catch (error) {
+            console.error('Auto crop failed:', error);
+            this.updateProcessingStatus('Auto crop failed: ' + error.message);
+        }
+    }
+
+    // Place the crop box over a rect given in source image pixels (the
+    // displayed image's space), honoring the current quarter rotation
+    setCropAreaToImageRect(rect) {
+        const cropArea = document.getElementById('cropArea');
+        const cropOverlay = document.getElementById('cropOverlay');
+        const img = this.getActiveImageElement();
+        if (!cropArea || !cropOverlay || !img) return;
+
+        const usingCanvas = img.id === 'webglCanvas';
+        const previewImage = document.getElementById('previewImage');
+        const naturalWidth = usingCanvas && this.webglRenderer
+            ? this.webglRenderer.imageWidth : previewImage.naturalWidth;
+        const naturalHeight = usingCanvas && this.webglRenderer
+            ? this.webglRenderer.imageHeight : previewImage.naturalHeight;
+        if (!naturalWidth || !naturalHeight) return;
+
+        const rot = ((this.rotation % 360) + 360) % 360;
+        const ovW = cropOverlay.offsetWidth;
+        const ovH = cropOverlay.offsetHeight;
+        // The overlay covers the ROTATED bounding box; the element's
+        // unrotated CSS size is swapped at 90/270
+        const cssW = (rot === 90 || rot === 270) ? ovH : ovW;
+        const cssH = (rot === 90 || rot === 270) ? ovW : ovH;
+        const sx = cssW / naturalWidth;
+        const sy = cssH / naturalHeight;
+
+        // Unrotated image-CSS point -> overlay (screen) space
+        const map = (x, y) => rot === 90 ? [cssH - y, x]
+            : rot === 180 ? [cssW - x, cssH - y]
+            : rot === 270 ? [y, cssW - x]
+            : [x, y];
+        const a = map(rect.x * sx, rect.y * sy);
+        const b = map((rect.x + rect.width) * sx, (rect.y + rect.height) * sy);
+        const x0 = Math.max(0, Math.min(a[0], b[0]));
+        const y0 = Math.max(0, Math.min(a[1], b[1]));
+        const x1 = Math.min(ovW, Math.max(a[0], b[0]));
+        const y1 = Math.min(ovH, Math.max(a[1], b[1]));
+        cropArea.style.left = x0 + 'px';
+        cropArea.style.top = y0 + 'px';
+        cropArea.style.width = Math.max(50, x1 - x0) + 'px';
+        cropArea.style.height = Math.max(50, y1 - y0) + 'px';
     }
 
     // Record the on-screen CSS size of the UNROTATED image content, so
