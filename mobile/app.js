@@ -7,6 +7,10 @@
 
 'use strict';
 
+// Shown on the start screen so an update can be verified at a glance.
+// Keep in step with CACHE_VERSION in sw.js.
+const APP_VERSION = 'v25';
+
 class MobileFilmProcessor {
     constructor() {
         this.renderer = null;
@@ -54,6 +58,8 @@ class MobileFilmProcessor {
     }
 
     init() {
+        const ver = document.getElementById('appVersion');
+        if (ver) ver.textContent = 'film processor · ' + APP_VERSION;
         this.setupFileInput();
         this.setupModeToggle();
         this.setupSliders();
