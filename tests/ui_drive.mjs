@@ -38,6 +38,14 @@ function check(name, cond, detail = '') {
     console.log(`[${cond ? 'PASS' : 'FAIL'}] ${name} ${detail}`);
 }
 
+// The frame detector is shared verbatim with the mobile app (like the
+// WebGL shaders) - a divergence means one side missed a fix
+{
+    const a = fs.readFileSync(path.join(APP_DIR, 'static', 'autocrop.js'), 'utf8');
+    const b = fs.readFileSync(path.join(APP_DIR, 'mobile', 'autocrop.js'), 'utf8');
+    check('static/autocrop.js is identical to mobile/autocrop.js', a === b);
+}
+
 const app = await electron.launch({
     executablePath: path.join(APP_DIR, 'node_modules', 'electron', 'dist',
         process.platform === 'win32' ? 'electron.exe' : 'electron'),
@@ -597,6 +605,78 @@ try {
         processor.webglRenderer.imageWidth === prev[0], dimsBefore, { timeout: 15_000 });
     check('undo crop restores dimensions', true);
 
+    // --- Crop after 90° rotation (regression: the overlay kept the
+    // unrotated shape - horizontal box, half of it off the screen) ---
+    await page.click('#rotateRightBtn');
+    await page.waitForTimeout(500); // CSS rotate transition settles
+    await page.keyboard.press('c');
+    await page.waitForTimeout(500);
+    const rotGeom = await page.evaluate(() => {
+        const r = (el) => {
+            const b = el.getBoundingClientRect();
+            return [b.left, b.top, b.width, b.height];
+        };
+        return {
+            img: r(processor.getActiveImageElement()),
+            o: r(document.getElementById('cropOverlay')),
+            a: r(document.getElementById('cropArea')),
+            c: r(document.getElementById('imageContainer')),
+        };
+    });
+    check('rotated image displays portrait inside the container',
+        rotGeom.img[2] < rotGeom.img[3]
+        && rotGeom.img[2] <= rotGeom.c[2] + 2 && rotGeom.img[3] <= rotGeom.c[3] + 2,
+        JSON.stringify(rotGeom.img));
+    check('crop overlay matches the rotated image bounds',
+        rotGeom.img.every((v, i) => Math.abs(v - rotGeom.o[i]) < 2),
+        `img ${rotGeom.img.map(Math.round)} vs overlay ${rotGeom.o.map(Math.round)}`);
+    check('crop box starts fully on screen',
+        rotGeom.a[0] >= rotGeom.c[0] - 2 && rotGeom.a[1] >= rotGeom.c[1] - 2
+        && rotGeom.a[0] + rotGeom.a[2] <= rotGeom.c[0] + rotGeom.c[2] + 2
+        && rotGeom.a[1] + rotGeom.a[3] <= rotGeom.c[1] + rotGeom.c[3] + 2,
+        JSON.stringify(rotGeom.a));
+
+    // Crop round-trip under rotation: a box covering 60% of the screen
+    // width and 80% of the screen height must map to 80% of the image
+    // WIDTH and 60% of its HEIGHT (the axes are swapped at 90°)
+    const rotDimsBefore = await page.evaluate(() =>
+        [processor.webglRenderer.imageWidth, processor.webglRenderer.imageHeight]);
+    await page.evaluate(() => {
+        const o = document.getElementById('cropOverlay');
+        const a = document.getElementById('cropArea');
+        a.style.left = (o.offsetWidth * 0.2) + 'px';
+        a.style.top = (o.offsetHeight * 0.1) + 'px';
+        a.style.width = (o.offsetWidth * 0.6) + 'px';
+        a.style.height = (o.offsetHeight * 0.8) + 'px';
+    });
+    await page.waitForTimeout(200);
+    await page.click('#applyCropBtn');
+    await page.waitForFunction((prev) =>
+        processor.webglRenderer.imageWidth !== prev[0]
+        || processor.webglRenderer.imageHeight !== prev[1],
+        rotDimsBefore, { timeout: 15_000 });
+    const rotDimsAfter = await page.evaluate(() =>
+        [processor.webglRenderer.imageWidth, processor.webglRenderer.imageHeight]);
+    const rrx = rotDimsAfter[0] / rotDimsBefore[0];
+    const rry = rotDimsAfter[1] / rotDimsBefore[1];
+    check('crop under 90° rotation maps to the right image region',
+        Math.abs(rrx - 0.8) < 0.03 && Math.abs(rry - 0.6) < 0.03,
+        `${rotDimsBefore} -> ${rotDimsAfter} (ratio ${rrx.toFixed(3)}/${rry.toFixed(3)})`);
+    await page.click('#undoCropBtn');
+    await page.waitForFunction((prev) =>
+        processor.webglRenderer.imageWidth === prev[0], rotDimsBefore, { timeout: 15_000 });
+    await page.click('#rotateLeftBtn');
+    await page.waitForTimeout(400);
+    check('rotation restored to 0', await page.evaluate(() => processor.rotation) === 0);
+
+    // --- Auto crop on a borderless gradient: politely refuses ---
+    await page.click('#autoCropBtn');
+    await page.waitForFunction(() => document.getElementById('processingStatus')
+        .textContent.includes('No frame border'), null, { timeout: 30_000 });
+    check('auto crop reports no frame on a borderless gradient', true);
+    await page.click('#cancelCropBtn');
+    await page.waitForTimeout(200);
+
     // --- Film base correction toggle syncs + reloads texture ---
     if (MODE !== 'photo') {
         const fcBefore = await page.evaluate(() => processor.lastBaked?.film_correction);
@@ -629,6 +709,64 @@ try {
         return document.getElementById('shadows').value;
     });
     check('settings save/apply round-trips slider values', rt === '0.25', rt);
+
+    // --- Auto crop end-to-end: bordered scan slanted by 1.5° ---
+    // A bright holder border with a gradient frame inset 12% per side,
+    // the whole scan rotated 1.5° CCW: ✨ Auto must propose +1.5° of
+    // straighten (baked) and land the crop box on the frame.
+    const BORDERED = path.join(os.tmpdir(), 'film_processor_test_bordered.tif');
+    execSync(`uv run python -c "import numpy as np, cv2, tifffile; h,w=800,1200; img=np.full((h,w,3),0.85,np.float32); yy,xx=np.mgrid[0:h,0:w]; grad=(np.stack([xx/(w-1),yy/(h-1),(xx+yy)/(w+h-2)],axis=-1)*0.4+0.2).astype(np.float32); x0,x1,y0,y1=int(w*0.12),int(w*0.88),int(h*0.12),int(h*0.88); img[y0:y1,x0:x1]=grad[y0:y1,x0:x1]; M=cv2.getRotationMatrix2D((w/2,h/2),1.5,1.0); img=cv2.warpAffine(img,M,(w,h),flags=cv2.INTER_LINEAR,borderMode=cv2.BORDER_CONSTANT,borderValue=(0.85,0.85,0.85)); tifffile.imwrite(r'${BORDERED.replace(/\\/g, '/')}', np.round(img*65535).astype(np.uint16), photometric='rgb')"`,
+        { cwd: APP_DIR, stdio: 'inherit' });
+    await page.setInputFiles('#fileInput', BORDERED);
+    await page.waitForFunction(() => document.getElementById('processingStatus')
+        .textContent.includes('uploaded successfully'), null, { timeout: 300_000 });
+    await page.waitForTimeout(800);
+    // Film base correction would crush the synthetic border to black;
+    // make sure it's off (the toggle survives from earlier steps)
+    const fcOn = await page.evaluate(() =>
+        (processor.getParameters().film_correction || 0) > 0);
+    if (fcOn) {
+        await page.evaluate(() => toggleControl('film_correction_basic'));
+        await page.waitForFunction(() =>
+            processor.lastBaked && processor.lastBaked.film_correction === 0,
+            null, { timeout: 15_000 });
+        await page.waitForTimeout(500);
+    }
+
+    await page.click('#autoCropBtn');
+    await page.waitForFunction(() => document.getElementById('processingStatus')
+        .textContent.includes('Frame detected'), null, { timeout: 60_000 });
+    check('auto crop finds the frame', true);
+    const bakedAngle = await page.evaluate(() => processor.bakedStraighten);
+    check('auto crop bakes the slant into straighten',
+        Math.abs(bakedAngle - 1.5) < 0.3, `${bakedAngle}° (expected ~1.5°)`);
+    await page.waitForTimeout(500); // overlay settles on the straightened image
+    const autoBox = await page.evaluate(() => {
+        const a = document.getElementById('cropArea').getBoundingClientRect();
+        const o = document.getElementById('cropOverlay').getBoundingClientRect();
+        return { l: (a.left - o.left) / o.width, t: (a.top - o.top) / o.height,
+            r: (a.right - o.left) / o.width, b: (a.bottom - o.top) / o.height };
+    });
+    check('auto crop box lands on the frame',
+        Math.abs(autoBox.l - 0.13) < 0.05 && Math.abs(autoBox.t - 0.13) < 0.05
+        && Math.abs(autoBox.r - 0.87) < 0.05 && Math.abs(autoBox.b - 0.87) < 0.05,
+        JSON.stringify(autoBox));
+    await page.screenshot({ path: path.join(SHOT_DIR, '07-autocrop.png') });
+
+    // Applying the proposal crops to the frame and exits crop mode
+    const preAutoDims = await page.evaluate(() =>
+        [processor.webglRenderer.imageWidth, processor.webglRenderer.imageHeight]);
+    await page.click('#applyCropBtn');
+    await page.waitForFunction((prev) =>
+        processor.webglRenderer.imageWidth < prev[0]
+        && processor.webglRenderer.imageHeight < prev[1],
+        preAutoDims, { timeout: 15_000 });
+    const autoDims = await page.evaluate(() =>
+        [processor.webglRenderer.imageWidth, processor.webglRenderer.imageHeight]);
+    check('applying the auto crop trims to the frame',
+        Math.abs(autoDims[0] / 1200 - 0.76) < 0.06
+        && Math.abs(autoDims[1] / 800 - 0.76) < 0.06,
+        `${autoDims} (expected ~${Math.round(1200 * 0.76)}x${Math.round(800 * 0.76)})`);
 
     await page.screenshot({ path: path.join(SHOT_DIR, '06-final.png') });
 
