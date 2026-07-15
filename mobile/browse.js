@@ -186,7 +186,7 @@ async function imageThumbCanvas(file, targetLongEdge) {
             // Range reads failed (some folder providers mis-serve them) or
             // the layout is unusual: read the whole file once and retry
             // from memory before resorting to a full decode
-            const buf = await readFileBytes(file);
+            const buf = await readFileBytes(file, looksLikeTiff);
             fast = await readTiffSubsampled(file, targetLongEdge, buf);
             if (fast) return fast;
             // Hand the full decoder the in-memory copy, not the provider

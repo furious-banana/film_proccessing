@@ -1210,6 +1210,36 @@ print(f'RESULT max={diff.max()} mean={diff.mean():.2f}')
         streamFallback.msg.includes(`0 of ${streamFallback.size} bytes`),
         streamFallback.msg);
 
+    // Nastier still: reads "succeed" with the right byte count but junk
+    // content (seen in the wild as "ImageData: width is zero"). Content
+    // validation must reject it and re-read via the stream; if that's
+    // junk too, the error must show the bytes actually seen.
+    const garbage = await page.evaluate(async () => {
+        let real = null;
+        for await (const e of window.__browseDir.values()) {
+            if (e.name === 'a_frame1.tif') real = await e.getFile();
+        }
+        const bytes = new Uint8Array(await real.arrayBuffer());
+        const junk = new ArrayBuffer(bytes.byteLength); // right size, zeros
+        const mk = () => {
+            const f = new File([bytes], 'junk.tif', { type: 'image/tiff' });
+            f.slice = () => new Blob([]);
+            f.arrayBuffer = async () => junk.slice(0);
+            return f;
+        };
+        const img = await decodeImageFile(mk()); // stream() has real bytes
+        const dead = mk();
+        dead.stream = () => new Blob([junk]).stream();
+        let msg = '';
+        try { await decodeImageFile(dead); } catch (e) { msg = e.message; }
+        return { w: img.width, h: img.height, msg };
+    });
+    check('size-matching garbage reads are re-read via the stream',
+        garbage.w === 1200 && garbage.h === 800,
+        JSON.stringify({ w: garbage.w, h: garbage.h }));
+    check('garbage-everywhere reads report the bytes actually seen',
+        garbage.msg.includes('starting [00 00 00 00'), garbage.msg);
+
     // ...and in the grid that failure surfaces as ⚠ plus a toast with
     // the real cause (phones have no console to check)
     const toastDiag = await page.evaluate(async () => {

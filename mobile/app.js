@@ -9,7 +9,7 @@
 
 // Shown on the start screen so an update can be verified at a glance.
 // Keep in step with CACHE_VERSION in sw.js.
-const APP_VERSION = 'v25';
+const APP_VERSION = 'v26';
 
 class MobileFilmProcessor {
     constructor() {
