@@ -367,6 +367,31 @@ try {
         && savedFile.contrast === 0.2,
         JSON.stringify(savedFile));
 
+    // The export dialog must open BEFORE the pixels render: the browser
+    // only allows it within a few seconds of the tap, and a big scan
+    // renders for longer (regression: large exports silently fell back
+    // to a bare download instead of the pick-a-location dialog)
+    const exportOrder = await page.evaluate(async () => {
+        const seq = [];
+        const origPicker = window.showSaveFilePicker;
+        const origRender = mobileApp.exportPixels.bind(mobileApp);
+        window.showSaveFilePicker = async () => {
+            seq.push('picker');
+            return { createWritable: async () => ({
+                write: async () => { seq.push('write'); },
+                close: async () => {},
+            }) };
+        };
+        mobileApp.exportPixels = async () => { seq.push('render'); return origRender(); };
+        document.getElementById('exportTiffBtn').click();
+        await new Promise(res => setTimeout(res, 1000));
+        window.showSaveFilePicker = origPicker;
+        delete mobileApp.exportPixels;
+        return seq;
+    });
+    check('export opens the save dialog before rendering the pixels',
+        exportOrder.join(',') === 'picker,render,write', exportOrder.join(','));
+
     // Settings restore straighten by baking it (presets skip straighten)
     await page.evaluate(() => mobileApp.applySettings({ straighten: 1.5 }));
     await page.waitForFunction(() => mobileApp.bakedStraighten === 1.5,

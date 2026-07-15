@@ -9,7 +9,7 @@
 
 // Shown on the start screen so an update can be verified at a glance.
 // Keep in step with CACHE_VERSION in sw.js.
-const APP_VERSION = 'v29';
+const APP_VERSION = 'v30';
 
 class MobileFilmProcessor {
     constructor() {
@@ -1330,23 +1330,32 @@ class MobileFilmProcessor {
     // Save with a real pick-the-location dialog where the browser has one
     // (Chrome on Android since M132); otherwise fall back to the share
     // sheet / a download. Returns false if the user cancelled.
+    //
+    // `blob` may be an async FACTORY: the dialog is only allowed within a
+    // few seconds of the tap, so it must open BEFORE any slow work - a
+    // big scan renders its export for longer than that, and building the
+    // blob first silently demoted the dialog to a bare download.
     async saveFileAs(blob, filename, types) {
+        const makeBlob = typeof blob === 'function' ? blob : () => blob;
         if (window.showSaveFilePicker) {
+            let handle = null;
             try {
-                const handle = await window.showSaveFilePicker({
+                handle = await window.showSaveFilePicker({
                     suggestedName: filename,
                     types,
                 });
-                const writable = await handle.createWritable();
-                await writable.write(blob);
-                await writable.close();
-                return true;
             } catch (e) {
                 if (e.name === 'AbortError') return false; // user cancelled
                 console.warn('Save dialog failed; falling back to share/download', e);
             }
+            if (handle) {
+                const writable = await handle.createWritable();
+                await writable.write(await makeBlob());
+                await writable.close();
+                return true;
+            }
         }
-        return this.deliverFile(blob, filename);
+        return this.deliverFile(await makeBlob(), filename);
     }
 
     async deliverFile(blob, filename) {
@@ -1375,14 +1384,14 @@ class MobileFilmProcessor {
         document.getElementById('exportTiffBtn').addEventListener('click', async () => {
             if (!this.original) return;
             this.status('Exporting TIFF…');
-            const ok = await this.saveFileAs(await this.makeTiffBlob(), base() + '.tif',
+            const ok = await this.saveFileAs(() => this.makeTiffBlob(), base() + '.tif',
                 [{ description: '16-bit TIFF image', accept: { 'image/tiff': ['.tif', '.tiff'] } }]);
             this.status(ok ? 'Exported 16-bit TIFF' : 'Export cancelled');
         });
         document.getElementById('exportJpegBtn').addEventListener('click', async () => {
             if (!this.original) return;
             this.status('Exporting JPEG…');
-            const ok = await this.saveFileAs(await this.makeJpegBlob(), base() + '.jpg',
+            const ok = await this.saveFileAs(() => this.makeJpegBlob(), base() + '.jpg',
                 [{ description: 'JPEG image', accept: { 'image/jpeg': ['.jpg', '.jpeg'] } }]);
             this.status(ok ? 'Exported JPEG' : 'Export cancelled');
         });
