@@ -1168,6 +1168,63 @@ print(f'RESULT max={diff.max()} mean={diff.mean():.2f}')
             return !!cells[1].querySelector('.dot.edited');
         }));
 
+    // --- Roll metadata: roll.json in the folder, shown under the bar
+    // and stamped into exported TIFFs ---
+    const roll = await page.evaluate(async () => {
+        document.getElementById('rollBtn').click();
+        const shown = document.getElementById('rollDialog').style.display === '';
+        document.getElementById('rollFilm').value = 'Portra 400';
+        document.getElementById('rollCamera').value = 'Canon AE-1';
+        document.getElementById('rollIso').value = '800';
+        document.getElementById('rollShot').value = 'June 2026';
+        document.getElementById('rollNotes').value = 'test roll';
+        document.getElementById('rollSaveBtn').click();
+        await new Promise(r => setTimeout(r, 300));
+        const f = window.__sideFiles['roll.json'];
+        return {
+            shown,
+            saved: f ? JSON.parse(await f.text()) : null,
+            line: document.getElementById('rollLine').textContent,
+            lineShown: document.getElementById('rollLine').style.display !== 'none',
+            toast: document.getElementById('browseToast').textContent,
+        };
+    });
+    check('roll info saves as roll.json in the folder',
+        roll.shown && !!roll.saved && roll.saved.film === 'Portra 400'
+        && roll.saved.iso === '800'
+        && roll.toast === 'Roll info saved to the folder',
+        JSON.stringify(roll));
+    check('roll line summarizes under the browse bar',
+        roll.lineShown && roll.line
+            === '🎞️ Portra 400 · Canon AE-1 · ISO 800 · June 2026 · test roll',
+        roll.line);
+
+    // Re-opening the folder reads roll.json back (not the local copy)
+    const rollBack = await page.evaluate(async () => {
+        localStorage.removeItem('filmRoll:test-scans');
+        mobileApp.browser.roll = null;
+        await mobileApp.browser.openWithHandle(window.__browseDir);
+        return mobileApp.browser.rollLine();
+    });
+    check('roll.json is read back when the folder opens',
+        rollBack === 'Portra 400 · Canon AE-1 · ISO 800 · June 2026 · test roll',
+        rollBack);
+
+    // The editor's own TIFF export stamps the roll as ImageDescription
+    const stamped = await page.evaluate(async () => {
+        let f = null;
+        for await (const e of window.__browseDir.values()) {
+            if (e.name === 'a_frame1.tif') f = await e.getFile();
+        }
+        await mobileApp.loadFile(f, { dir: window.__browseDir, canWrite: true });
+        const blob = await mobileApp.makeTiffBlob();
+        const ifd = UTIF.decode(await blob.arrayBuffer())[0];
+        return ifd.t270 ? String(ifd.t270) : null;
+    });
+    check('editor TIFF export carries the roll in ImageDescription',
+        !!stamped && stamped.includes('Portra 400') && stamped.includes('ISO 800'),
+        String(stamped));
+
     // --- USB-drive regression: some Android storage providers mis-serve
     // byte-range reads through a folder handle (slice() comes back empty),
     // which made real TIFFs look "not supported". Whole-file reads work,
@@ -1370,6 +1427,10 @@ print(f'RESULT max={diff.max()} mean={diff.mean():.2f}')
         // A saved look: the exported file must come out brighter
         localStorage.setItem(`filmSettings:roll_01.tif:${bytes.length}`,
             JSON.stringify({ exposure: 1 }));
+        // Roll info via the phone-local fallback (no roll.json here):
+        // batch exports must still stamp it
+        localStorage.setItem('filmRoll:roll',
+            JSON.stringify({ film: 'HP5', iso: '1600' }));
         return mobileApp.browser.openWithHandle(window.__rollDir);
     }, [frameB64]);
     await page.waitForFunction(() =>
@@ -1404,13 +1465,15 @@ print(f'RESULT max={diff.max()} mean={diff.mean():.2f}')
     const exp = await page.evaluate(async (fsz) => {
         const blob = window.__batchOut['roll_01_edit.tif'];
         if (!blob) return { names: Object.keys(window.__batchOut) };
+        const ifd = UTIF.decode(await blob.arrayBuffer())[0];
+        const desc = ifd.t270 ? String(ifd.t270) : null;
         await mobileApp.loadFile(new File([blob], 'roll_01_edit.tif',
             { type: 'image/tiff' }));
         const r = mobileApp.renderer;
         let sum = 0, n = 0;
         for (let i = 0; i < r.imageData.length; i += 997) { sum += r.imageData[i]; n++; }
         return {
-            w: r.imageWidth, h: r.imageHeight, mean: sum / n,
+            w: r.imageWidth, h: r.imageHeight, mean: sum / n, desc,
             exported: !!localStorage.getItem(`filmExported:roll_01.tif:${fsz}`),
             badge: !!document.querySelector('#browseGrid .browse-cell .dot.exported'),
         };
@@ -1422,13 +1485,17 @@ print(f'RESULT max={diff.max()} mean={diff.mean():.2f}')
         exp.mean > 0.55, `mean ${exp.mean && exp.mean.toFixed(3)}`);
     check('exported flag recorded and badge shown', exp.exported && exp.badge,
         JSON.stringify(exp));
+    check('batch export stamps the roll into ImageDescription',
+        !!exp.desc && exp.desc.includes('HP5') && exp.desc.includes('ISO 1600'),
+        String(exp.desc));
 
     // Clean up batch-test state
     await page.evaluate(() => {
         mobileApp.browser.close();
         localStorage.removeItem('filmProcessorPresets');
         Object.keys(localStorage)
-            .filter(k => k.startsWith('filmSettings:') || k.startsWith('filmExported:'))
+            .filter(k => k.startsWith('filmSettings:') || k.startsWith('filmExported:')
+                || k.startsWith('filmRoll:'))
             .forEach(k => localStorage.removeItem(k));
     });
 
