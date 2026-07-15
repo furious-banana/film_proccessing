@@ -50,13 +50,21 @@ async function dbSet(store, key, value) {
 // the file's layout needs the full decoder.
 // ------------------------------------------------------------------
 
+// Some providers (USB drives via Android's storage framework) take
+// ~100ms PER read call while streaming big reads quickly - hundreds of
+// row reads make one thumbnail take ~20s. Once a file proves that, the
+// verdict sticks for the session and every file goes straight to one
+// whole-file read. (Mutable object so tests can reach it.)
+const READ_TUNING = { slowRangeReads: false };
+
 async function readTiffSubsampled(file, targetLongEdge, buf = null) {
     // With `buf` (the whole file, already in memory) no byte-range reads
     // are made - the retry path for storage providers that mis-serve
     // slice() through a folder handle (USB drives on Android)
-    const size = buf ? buf.byteLength : file.size;
-    const read = (start, end) => buf
-        ? Promise.resolve(buf.slice(start, Math.min(end, buf.byteLength)))
+    let mem = buf;
+    const size = mem ? mem.byteLength : file.size;
+    const read = (start, end) => mem
+        ? Promise.resolve(mem.slice(start, Math.min(end, mem.byteLength)))
         : file.slice(start, end).arrayBuffer();
     const HEAD = 64 * 1024;
     const head = new DataView(await read(0, Math.min(HEAD, size)));
@@ -141,8 +149,19 @@ async function readTiffSubsampled(file, targetLongEdge, buf = null) {
     const BATCH = 16;
     for (let y0 = 0; y0 < outH; y0 += BATCH) {
         const n = Math.min(BATCH, outH - y0);
+        const t0 = (!mem && y0 === 0) ? performance.now() : 0;
         const rows = await Promise.all(
             Array.from({ length: n }, (_, i) => fetchRow(rowFor(y0 + i))));
+        if (t0) {
+            // First batch of range reads done: if finishing this way is
+            // projected to be slower than one sequential whole-file
+            // read, switch to that now and remember for later files
+            const projected = (performance.now() - t0) * Math.ceil(outH / BATCH);
+            if (projected > 3000) {
+                READ_TUNING.slowRangeReads = true;
+                mem = await readFileBytes(file, looksLikeTiff);
+            }
+        }
         for (let i = 0; i < n; i++) {
             const row = rows[i];
             const base = (y0 + i) * outW * 4;
@@ -179,9 +198,11 @@ async function imageThumbCanvas(file, targetLongEdge) {
     const name = file.name.toLowerCase();
     if (name.endsWith('.tif') || name.endsWith('.tiff')) {
         // Short/garbled range reads can also throw mid-parse - same story
-        // as returning null: retry from a whole-file read below
-        let fast = await readTiffSubsampled(file, targetLongEdge)
-            .catch(() => null);
+        // as returning null: retry from a whole-file read below. A
+        // provider already known for slow range reads skips the attempt.
+        let fast = READ_TUNING.slowRangeReads ? null
+            : await readTiffSubsampled(file, targetLongEdge)
+                .catch(() => null);
         if (!fast) {
             // Range reads failed (some folder providers mis-serve them) or
             // the layout is unusual: read the whole file once and retry

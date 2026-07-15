@@ -1249,6 +1249,48 @@ print(f'RESULT max={diff.max()} mean={diff.mean():.2f}')
     check('garbage-everywhere reads report the bytes actually seen',
         garbage.msg.includes('starting [00 00 00 00'), garbage.msg);
 
+    // A provider that serves each range read slowly (the USB-drive
+    // pattern: ~100ms per call, fast streaming) must get detected after
+    // the first row batch and switched to one whole-file read - the
+    // difference between ~20s and a couple of seconds per thumbnail
+    const slowReads = await page.evaluate(async () => {
+        let real = null;
+        for await (const e of window.__browseDir.values()) {
+            if (e.name === 'a_frame1.tif') real = await e.getFile();
+        }
+        const bytes = await real.arrayBuffer();
+        const f = new File([bytes], 'slow_usb.tif', { type: 'image/tiff' });
+        let sliceCalls = 0;
+        let lock = Promise.resolve();
+        f.slice = (a, b) => {
+            sliceCalls++;
+            const part = bytes.slice(a, b);
+            return { arrayBuffer: () => (lock = lock.then(async () => {
+                await new Promise(r => setTimeout(r, 40));
+                return part.slice(0);
+            })) };
+        };
+        const t0 = performance.now();
+        const c = await imageThumbCanvas(f, 320);
+        const ms = Math.round(performance.now() - t0);
+        const verdict = READ_TUNING.slowRangeReads;
+        // With the verdict in, the next file must not try range reads
+        const g = new File([bytes], 'slow_usb2.tif', { type: 'image/tiff' });
+        let gSlices = 0;
+        g.slice = (a, b) => { gSlices++; return new Blob([bytes.slice(a, b)]); };
+        const c2 = await imageThumbCanvas(g, 320);
+        READ_TUNING.slowRangeReads = false; // don't leak into later tests
+        return { w: c.width, h: c.height, ms, verdict, sliceCalls, gSlices,
+            w2: c2.width };
+    });
+    check('slow range reads switch to one whole-file read mid-thumbnail',
+        slowReads.verdict && slowReads.w === 320 && slowReads.h === 213
+        && slowReads.sliceCalls < 30 && slowReads.ms < 5000,
+        JSON.stringify(slowReads));
+    check('later files skip range reads once a provider is known slow',
+        slowReads.gSlices === 0 && slowReads.w2 === 320,
+        JSON.stringify(slowReads));
+
     // ...and in the grid that failure surfaces as ⚠ plus a toast with
     // the real cause (phones have no console to check)
     const toastDiag = await page.evaluate(async () => {
