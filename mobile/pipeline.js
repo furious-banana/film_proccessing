@@ -45,6 +45,41 @@ function bufferContainsAscii(bytes, text) {
     return false;
 }
 
+// Whole-file read that survives storage providers with unreliable reads
+// (USB drives browsed through a folder handle on Android). The direct
+// read is tried first; a short or failed result falls back to a
+// sequential stream, which SAF-backed providers serve far more
+// reliably than random access. Failure reports exactly what was read,
+// so "format isn't supported" can never mask a broken provider again.
+async function readFileBytes(file) {
+    try {
+        const buf = await file.arrayBuffer();
+        if (buf.byteLength && (!file.size || buf.byteLength === file.size)) {
+            return buf;
+        }
+    } catch { /* fall through to streaming */ }
+    let got = 0;
+    const chunks = [];
+    try {
+        const reader = file.stream().getReader();
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+            got += value.byteLength;
+        }
+    } catch { /* reported below */ }
+    if (got && (!file.size || got === file.size)) {
+        const out = new Uint8Array(got);
+        let o = 0;
+        for (const c of chunks) { out.set(c, o); o += c.byteLength; }
+        return out.buffer;
+    }
+    throw new Error(`the folder returned ${got} of ${file.size} bytes for `
+        + `"${file.name}" - this storage doesn't serve folder reads `
+        + `properly; the Load button should still work`);
+}
+
 function decodeTiff(arrayBuffer) {
     const ifds = UTIF.decode(arrayBuffer);
     if (!ifds.length) throw new Error('No image found in TIFF');
@@ -95,6 +130,11 @@ function decodeTiff(arrayBuffer) {
 }
 
 async function decodeBrowserImage(file) {
+    // Pull the bytes through the robust reader first: a folder provider
+    // with broken reads would otherwise surface as a misleading
+    // "format isn't supported" from the decoders below
+    file = new File([await readFileBytes(file)], file.name || 'image',
+        { type: file.type });
     // createImageBitmap is fastest, but some formats a browser can display
     // (e.g. HEIC on iOS) aren't supported by it - fall back to an <img>
     let source, width, height;
@@ -155,7 +195,7 @@ async function decodeImageFile(file, maxSize = MAX_WORK_SIZE) {
     }
 
     let img = isTiff
-        ? decodeTiff(await file.arrayBuffer())
+        ? decodeTiff(await readFileBytes(file))
         : await decodeBrowserImage(file);
 
     const fullWidth = img.width, fullHeight = img.height;

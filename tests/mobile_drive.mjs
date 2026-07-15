@@ -43,6 +43,15 @@ try {
     await page.waitForFunction(() => typeof mobileApp !== 'undefined', null, { timeout: 30_000 });
     check('mobile app boots', true);
 
+    // The visible version label must match the service worker's cache
+    // version - it's how a phone user verifies an update actually landed
+    const swVer = fs.readFileSync(path.join(APP_DIR, 'mobile', 'sw.js'), 'utf8')
+        .match(/CACHE_VERSION = 'film-mobile-(v\d+)'/)[1];
+    const shownVer = await page.evaluate(() =>
+        document.getElementById('appVersion').textContent);
+    check('start screen shows the app version, in step with sw.js',
+        shownVer === 'film processor · ' + swVer, `"${shownVer}" vs sw.js ${swVer}`);
+
     // --- Load the synthetic negative (negative mode is the default) ---
     await page.setInputFiles('#fileInput', TIFF);
     await page.waitForFunction(() =>
@@ -1172,6 +1181,61 @@ print(f'RESULT max={diff.max()} mean={diff.mean():.2f}')
     check('TIFFs still open when the provider breaks range reads',
         brokenSlice.dw === 1200 && brokenSlice.dh === 800,
         JSON.stringify(brokenSlice));
+
+    // Worse provider: even whole-file reads come back empty, only a
+    // sequential stream works (how SAF serves USB drives on Android)
+    const streamFallback = await page.evaluate(async () => {
+        let real = null;
+        for await (const e of window.__browseDir.values()) {
+            if (e.name === 'a_frame1.tif') real = await e.getFile();
+        }
+        const bytes = await real.arrayBuffer();
+        const mk = () => {
+            const f = new File([bytes], 'usb2.tif', { type: 'image/tiff' });
+            f.arrayBuffer = async () => new ArrayBuffer(0);
+            f.slice = () => new Blob([]);
+            return f;
+        };
+        const img = await decodeImageFile(mk()); // stream() still native
+        const dead = mk();
+        dead.stream = () => new ReadableStream({ start(c) { c.close(); } });
+        let msg = '';
+        try { await decodeImageFile(dead); } catch (e) { msg = e.message; }
+        return { w: img.width, h: img.height, size: bytes.byteLength, msg };
+    });
+    check('whole-file reads fall back to sequential streaming',
+        streamFallback.w === 1200 && streamFallback.h === 800,
+        JSON.stringify({ w: streamFallback.w, h: streamFallback.h }));
+    check('a fully broken provider reports how much was actually read',
+        streamFallback.msg.includes(`0 of ${streamFallback.size} bytes`),
+        streamFallback.msg);
+
+    // ...and in the grid that failure surfaces as ⚠ plus a toast with
+    // the real cause (phones have no console to check)
+    const toastDiag = await page.evaluate(async () => {
+        const f = new File([new Uint8Array(100)], 'dead_scan.tif',
+            { type: 'image/tiff' });
+        f.arrayBuffer = async () => { throw new DOMException('x', 'NotReadableError'); };
+        f.slice = () => new Blob([]);
+        f.stream = () => new ReadableStream({
+            start(c) { c.error(new DOMException('x', 'NotReadableError')); },
+        });
+        await mobileApp.browser.openWithHandle({
+            name: 'dead-usb',
+            values: async function* () {
+                yield { kind: 'file', name: 'dead_scan.tif', getFile: async () => f };
+            },
+        });
+        return {
+            warn: document.querySelector('#browseGrid .browse-thumb').textContent,
+            toast: document.getElementById('browseToast').textContent,
+            shown: document.getElementById('browseToast').style.display !== 'none',
+        };
+    });
+    check('a dead folder shows ⚠ plus a diagnostic toast',
+        toastDiag.warn === '⚠' && toastDiag.shown
+        && toastDiag.toast.includes('0 of 100 bytes'),
+        JSON.stringify(toastDiag));
 
     // --- Browsing must only ever ask to READ the folder; write access
     // (for settings sidecars) is requested at the moment something saves.

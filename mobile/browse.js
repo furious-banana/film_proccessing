@@ -186,7 +186,7 @@ async function imageThumbCanvas(file, targetLongEdge) {
             // Range reads failed (some folder providers mis-serve them) or
             // the layout is unusual: read the whole file once and retry
             // from memory before resorting to a full decode
-            const buf = await file.arrayBuffer();
+            const buf = await readFileBytes(file);
             fast = await readTiffSubsampled(file, targetLongEdge, buf);
             if (fast) return fast;
             // Hand the full decoder the in-memory copy, not the provider
@@ -395,6 +395,7 @@ class FolderBrowser {
 
         this.entries = [];
         this.sidecars = new Set();
+        this._thumbErrToasted = false; // one diagnostic per listing
         try {
             for await (const entry of this.dirHandle.values()) {
                 if (entry.kind !== 'file') continue;
@@ -451,6 +452,12 @@ class FolderBrowser {
             } catch (e) {
                 cells[i].firstChild.textContent = '⚠';
                 console.warn('Thumbnail failed for ' + this.entries[i].name, e);
+                // Surface the first failure's real cause - phone screens
+                // have no console, and "⚠" alone is undebuggable
+                if (gen === this.generation && !this._thumbErrToasted) {
+                    this._thumbErrToasted = true;
+                    this.toast('Thumbnail failed: ' + e.message);
+                }
             }
         }
     }
