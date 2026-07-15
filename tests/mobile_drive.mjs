@@ -1150,6 +1150,56 @@ print(f'RESULT max={diff.max()} mean={diff.mean():.2f}')
             return !!cells[1].querySelector('.dot.edited');
         }));
 
+    // --- USB-drive regression: some Android storage providers mis-serve
+    // byte-range reads through a folder handle (slice() comes back empty),
+    // which made real TIFFs look "not supported". Whole-file reads work,
+    // so both the thumbnailer and the decoder must fall back to them. ---
+    const brokenSlice = await page.evaluate(async () => {
+        let real = null;
+        for await (const e of window.__browseDir.values()) {
+            if (e.name === 'a_frame1.tif') real = await e.getFile();
+        }
+        const bad = new File([await real.arrayBuffer()], 'usb_scan.tif',
+            { type: 'image/tiff', lastModified: 99 });
+        bad.slice = () => new Blob([]); // the provider's broken range reads
+        const c = await imageThumbCanvas(bad, 320);
+        const img = await decodeImageFile(bad);
+        return { w: c.width, h: c.height, dw: img.width, dh: img.height };
+    });
+    check('TIFF thumbnails survive a provider with broken range reads',
+        brokenSlice.w === 320 && brokenSlice.h === 213,
+        JSON.stringify(brokenSlice));
+    check('TIFFs still open when the provider breaks range reads',
+        brokenSlice.dw === 1200 && brokenSlice.dh === 800,
+        JSON.stringify(brokenSlice));
+
+    // --- Browsing must only ever ask to READ the folder; write access
+    // (for settings sidecars) is requested at the moment something saves.
+    // Asking for readwrite up front broke reads entirely on USB drives. ---
+    const perm = await page.evaluate(async () => {
+        const calls = [];
+        const h = {
+            name: 'perm-scans',
+            values: window.__browseDir.values,
+            getFileHandle: window.__browseDir.getFileHandle,
+            queryPermission: async ({ mode }) => { calls.push('q:' + mode); return 'prompt'; },
+            requestPermission: async ({ mode }) => { calls.push('r:' + mode); return 'granted'; },
+        };
+        await mobileApp.browser.openWithHandle(h);
+        const afterOpen = calls.slice();
+        const canWriteAfterOpen = mobileApp.browser.canWrite;
+        const okWrite = await mobileApp.browser.ensureWrite();
+        return { afterOpen, calls, canWriteAfterOpen, okWrite,
+            canWrite: mobileApp.browser.canWrite };
+    });
+    check('browsing asks only for read access',
+        perm.afterOpen.join() === 'q:read,r:read' && !perm.canWriteAfterOpen,
+        JSON.stringify(perm));
+    check('write access is requested only when something saves',
+        perm.okWrite && perm.canWrite
+        && perm.calls.slice(2).join() === 'q:readwrite,r:readwrite',
+        JSON.stringify(perm.calls));
+
     // --- Batch: auto-crop all + export all (framed synthetic, photo mode) ---
     const frameB64 = fs.readFileSync(FRAME_TIFF).toString('base64');
     const frameSize = fs.statSync(FRAME_TIFF).size;

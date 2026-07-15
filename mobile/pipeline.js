@@ -142,11 +142,17 @@ async function decodeBrowserImage(file) {
 // resolution by default; exports re-decode with a higher cap). fullWidth/
 // fullHeight always carry the file's native dimensions.
 async function decodeImageFile(file, maxSize = MAX_WORK_SIZE) {
-    // Detect TIFF by magic bytes, not filename - phone pickers sometimes
-    // hand over files with unhelpful names
-    const head = new Uint8Array(await file.slice(0, 4).arrayBuffer());
-    const isTiff = (head[0] === 0x49 && head[1] === 0x49 && head[2] === 42)
-        || (head[0] === 0x4D && head[1] === 0x4D && head[3] === 42);
+    // A .tif name is trusted directly: some Android storage providers
+    // (USB drives especially) mis-serve tiny byte-range reads through a
+    // folder handle, which made real TIFFs look "not supported" here.
+    // The magic-byte sniff remains for files with unhelpful names from
+    // phone pickers.
+    let isTiff = /\.tiff?$/i.test(file.name || '');
+    if (!isTiff) {
+        const head = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+        isTiff = (head[0] === 0x49 && head[1] === 0x49 && head[2] === 42)
+            || (head[0] === 0x4D && head[1] === 0x4D && head[3] === 42);
+    }
 
     let img = isTiff
         ? decodeTiff(await file.arrayBuffer())

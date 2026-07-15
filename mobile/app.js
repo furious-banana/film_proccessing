@@ -1109,12 +1109,17 @@ class MobileFilmProcessor {
             params.saved_at = Date.now(); // freshness for phone<->PC sync
             // Remembered locally so reopening this photo restores its edits
             this.rememberSettings(params);
-            // Opened from the folder browser with write access: save the
+            // Opened from the folder browser: ask for write access now (a
+            // tap, so the permission prompt is allowed) and save the
             // sidecar next to the photo, where the desktop app auto-loads
             // it - no save dialog needed
             const folder = this.sourceFolder;
-            if (folder && folder.canWrite && this.sourceFile
+            const canWrite = folder && this.sourceFile && (folder.canWrite
+                || (folder.requestWrite && await folder.requestWrite()));
+            if (canWrite
                 && await writeSidecar(folder.dir, this.sourceFile.name, params)) {
+                if (folder.sidecars) folder.sidecars.add(
+                    sidecarName(this.sourceFile.name).toLowerCase());
                 this.status('Settings saved next to the photo');
                 return;
             }
@@ -1170,8 +1175,10 @@ class MobileFilmProcessor {
         try {
             // Freshest of the folder sidecar (synced with the PC) and
             // this phone's local copy - batch.js resolveSettings picks
+            const folder = this.sourceFolder;
             const params = await resolveSettings(
-                this.sourceFolder && this.sourceFolder.dir, f.name, f.size);
+                folder && folder.dir, f.name, f.size,
+                folder && folder.sidecars);
             if (!params) return false;
             this.applySettings(params);
             return true;
