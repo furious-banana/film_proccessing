@@ -30,10 +30,11 @@ Both apply, in this order:
 
 ```
 levels (eyedropper black → white → gray points)
-exposure          color * 2^exposure
-tone masks        shadows/blacks/highlights/whites via smoothstep, ×0.3
-contrast          (color - 0.5) * (1 + contrast) + 0.5
-brightness        color + brightness
+exposure          linear-light ×2^stops with a soft highlight shoulder
+tone              shadows/highlights/whites/blacks/contrast/brightness
+                  computed on luminance, applied as one ratio-preserving
+                  gain (endpoint-pinned lifts, soft-knee endpoint remaps,
+                  S-curve contrast, midtone-gamma brightness)
 temperature/tint  ±0.05 channel shifts
 RGB offsets       per-channel add
 saturation        mix(gray, color, 1 + saturation)

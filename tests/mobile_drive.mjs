@@ -530,7 +530,7 @@ try {
         return [data[i], data[i + 1], data[i + 2]];
     });
     check('threshold view is not exported',
-        exportClean.every(v => v > 0.6 && v < 0.8), JSON.stringify(exportClean));
+        exportClean.every(v => v > 0.5 && v < 0.7), JSON.stringify(exportClean));
     const releaseAndBlacks = await page.evaluate(() => {
         const up = (id) => document.getElementById(id).dispatchEvent(
             new PointerEvent('pointerup', { bubbles: true }));

@@ -280,17 +280,30 @@ class WebGLRenderer {
                 return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
             }
             
-            // Apply exposure adjustment
+            // Apply exposure: multiply in linear light (true photographic
+            // stops), with a soft shoulder above 0.9 so pushed highlights
+            // roll off smoothly instead of clipping. Identity at 0.
             vec3 applyExposure(vec3 color, float exposure) {
-                return color * pow(2.0, exposure);
+                if (exposure == 0.0) return color;
+                vec3 lin = pow(max(color, vec3(0.0)), vec3(2.2)) * pow(2.0, exposure);
+                vec3 shoulder = 0.9 + 0.1 * (1.0 - exp(-(lin - 0.9) / 0.1));
+                lin = mix(lin, shoulder, step(vec3(0.9), lin));
+                return pow(lin, vec3(1.0 / 2.2));
             }
-            
-            // Apply contrast
-            vec3 applyContrast(vec3 color, float contrast) {
-                float factor = (1.0 + contrast);
-                return (color - 0.5) * factor + 0.5;
+
+            // Soft-knee endpoint stretch: scales x by K (>= 1) and rolls
+            // smoothly (C1) into 1.0 near the top instead of hard clipping.
+            // Values pushed past 1 + (K-1)/2 do clip, so the white/black
+            // point is still settable with the clipping preview. Identity
+            // when K == 1.
+            float softKnee(float x, float K) {
+                float y = x * K;
+                float k = 1.0 - (K - 1.0) * 0.5;
+                float t = clamp((y - k) / max(K - 1.0, 1e-6), 0.0, 1.0);
+                float knee = k + (1.0 - k) * (2.0 * t - t * t);
+                return y > k ? knee : y;
             }
-            
+
             // Apply saturation
             vec3 applySaturation(vec3 color, float saturation) {
                 float gray = dot(color, vec3(0.299, 0.587, 0.114));
@@ -314,28 +327,53 @@ class WebGLRenderer {
                 return color;
             }
             
-            // Tone curve (highlights/shadows/whites/blacks)
-            vec3 applyToneCurve(vec3 color, float highlights, float shadows, float whites, float blacks) {
-                // Compute luminance to determine tone region
-                float lum = dot(color, vec3(0.299, 0.587, 0.114));
-                
-                // Shadows affect darker tones (0-0.5)
-                float shadowMask = 1.0 - smoothstep(0.0, 0.5, lum);
-                color += shadows * shadowMask * 0.3;
-                
-                // Blacks affect darkest tones (0-0.25)
-                float blackMask = 1.0 - smoothstep(0.0, 0.25, lum);
-                color += blacks * blackMask * 0.3;
-                
-                // Highlights affect brighter tones (0.5-1.0)
-                float highlightMask = smoothstep(0.5, 1.0, lum);
-                color += highlights * highlightMask * 0.3;
-                
-                // Whites affect brightest tones (0.75-1.0)
-                float whiteMask = smoothstep(0.75, 1.0, lum);
-                color += whites * whiteMask * 0.3;
-                
-                return color;
+            // Tone: shadows/highlights/whites/blacks/contrast/brightness are
+            // computed on luminance and applied as one ratio-preserving gain,
+            // so hue and saturation survive tonal edits. Each op keeps black
+            // and white pinned unless its job is to move that endpoint.
+            vec3 applyTone(vec3 color, float shadows, float highlights,
+                           float whites, float blacks, float contrast, float brightness) {
+                float lum = clamp(dot(color, vec3(0.299, 0.587, 0.114)), 0.0, 1.0);
+                float nl = lum;
+
+                // Shadows: multiplicative lift/dip weighted toward dark tones
+                // (slider is +/-0.5, doubled internally for useful strength)
+                nl = nl * exp((shadows * 2.0) * (1.0 - nl) * (1.0 - nl));
+
+                // Highlights: compress/expand the top end, black stays put
+                nl = 1.0 - (1.0 - nl) * exp(-(highlights * 2.0) * nl * nl);
+
+                // Whites: true white-point control. Up stretches the top into
+                // a soft knee (eventually clips); down scales the range back.
+                if (whites > 0.0) {
+                    nl = softKnee(nl, 1.0 / (1.0 - 0.25 * whites));
+                } else {
+                    nl = nl * (1.0 + 0.25 * whites);
+                }
+
+                // Blacks: true black-point control. Down stretches the bottom
+                // into a soft toe (eventually clips); up lifts only the
+                // darkest tones while true black stays black.
+                if (blacks >= 0.0) {
+                    float m = (1.0 - nl) * (1.0 - nl);
+                    nl = nl * exp(blacks * m * m * m);
+                } else {
+                    nl = 1.0 - softKnee(1.0 - nl, 1.0 / (1.0 + 0.25 * blacks));
+                }
+
+                // Contrast: up is an S-curve pinned at both endpoints (never
+                // clips); down is a linear flatten toward middle gray.
+                if (contrast > 0.0) {
+                    float s = nl * nl * (3.0 - 2.0 * nl);
+                    nl = mix(nl, s, min(2.0 * contrast, 1.0));
+                } else {
+                    nl = 0.5 + (nl - 0.5) * (1.0 + contrast);
+                }
+
+                // Brightness: midtone gamma, endpoints pinned
+                nl = pow(max(nl, 0.0), pow(2.0, -brightness));
+
+                return color * (max(nl, 0.0) / max(lum, 1e-4));
             }
             
             // Apply levels adjustment (eyedropper black/white/gray points)
@@ -402,31 +440,27 @@ class WebGLRenderer {
                 color = applyLevels(color, u_blackPoint, u_whitePoint, u_grayPoint,
                                    u_hasBlackPoint, u_hasWhitePoint, u_hasGrayPoint);
                 
-                // 1. Exposure (affects overall brightness)
+                // 1. Exposure (linear-light stops with highlight rolloff)
                 color = applyExposure(color, u_exposure);
-                
-                // 2. Tone curve (highlights/shadows/whites/blacks)
-                color = applyToneCurve(color, u_highlights, u_shadows, u_whites, u_blacks);
-                
-                // 3. Contrast
-                color = applyContrast(color, u_contrast);
-                
-                // 4. Brightness
-                color += u_brightness;
-                
-                // 5. Temperature and Tint
+
+                // 2. Tone: shadows/highlights/whites/blacks/contrast/
+                //    brightness on luminance, applied as one gain
+                color = applyTone(color, u_shadows, u_highlights, u_whites,
+                                  u_blacks, u_contrast, u_brightness);
+
+                // 3. Temperature and Tint
                 color = applyTemperature(color, u_temperature);
                 color = applyTint(color, u_tint);
-                
-                // 6. RGB adjustments
+
+                // 4. RGB adjustments
                 color.r += u_red;
                 color.g += u_green;
                 color.b += u_blue;
-                
-                // 7. Saturation
+
+                // 5. Saturation
                 color = applySaturation(color, u_saturation);
-                
-                // 8. Custom curves (after other adjustments)
+
+                // 6. Custom curves (after other adjustments)
                 color = applyCurves(color);
                 
                 // Clamp to valid range
