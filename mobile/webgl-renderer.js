@@ -1,8 +1,9 @@
 // WebGL renderer for the mobile app.
 //
 // The fragment shader is IDENTICAL to the desktop app's
-// (static/webgl-renderer.js): levels -> exposure -> tone -> contrast ->
-// brightness -> temp/tint -> RGB -> saturation -> curves. Export reads the
+// (static/webgl-renderer.js): levels -> exposure -> tone (shadows/highlights/
+// whites/blacks/contrast/brightness on luminance) -> temp/tint -> RGB ->
+// saturation -> curves. Export reads the
 // shader's own output back from a float framebuffer, so the exported file
 // is exactly what's previewed - there is no second pipeline to drift.
 
@@ -146,12 +147,24 @@ class MobileRenderer {
 
             varying highp vec2 v_texCoord;
 
+            // Exposure: multiply in linear light (true photographic stops),
+            // soft shoulder above 0.9 rolls pushed highlights off smoothly
             vec3 applyExposure(vec3 color, float exposure) {
-                return color * pow(2.0, exposure);
+                if (exposure == 0.0) return color;
+                vec3 lin = pow(max(color, vec3(0.0)), vec3(2.2)) * pow(2.0, exposure);
+                vec3 shoulder = 0.9 + 0.1 * (1.0 - exp(-(lin - 0.9) / 0.1));
+                lin = mix(lin, shoulder, step(vec3(0.9), lin));
+                return pow(lin, vec3(1.0 / 2.2));
             }
 
-            vec3 applyContrast(vec3 color, float contrast) {
-                return (color - 0.5) * (1.0 + contrast) + 0.5;
+            // Soft-knee endpoint stretch: scale by K (>= 1), rolling smoothly
+            // into 1.0; values past 1 + (K-1)/2 still clip. Identity at K == 1.
+            float softKnee(float x, float K) {
+                float y = x * K;
+                float k = 1.0 - (K - 1.0) * 0.5;
+                float t = clamp((y - k) / max(K - 1.0, 1e-6), 0.0, 1.0);
+                float knee = k + (1.0 - k) * (2.0 * t - t * t);
+                return y > k ? knee : y;
             }
 
             vec3 applySaturation(vec3 color, float saturation) {
@@ -170,22 +183,47 @@ class MobileRenderer {
                 return color;
             }
 
-            vec3 applyToneCurve(vec3 color, float highlights, float shadows, float whites, float blacks) {
-                float lum = dot(color, vec3(0.299, 0.587, 0.114));
+            // Tone: computed on luminance, applied as one ratio-preserving
+            // gain so hue/saturation survive. Black and white stay pinned
+            // unless the op's job is to move that endpoint.
+            vec3 applyTone(vec3 color, float shadows, float highlights,
+                           float whites, float blacks, float contrast, float brightness) {
+                float lum = clamp(dot(color, vec3(0.299, 0.587, 0.114)), 0.0, 1.0);
+                float nl = lum;
 
-                float shadowMask = 1.0 - smoothstep(0.0, 0.5, lum);
-                color += shadows * shadowMask * 0.3;
+                // Shadows: multiplicative lift/dip weighted toward dark tones
+                nl = nl * exp((shadows * 2.0) * (1.0 - nl) * (1.0 - nl));
 
-                float blackMask = 1.0 - smoothstep(0.0, 0.25, lum);
-                color += blacks * blackMask * 0.3;
+                // Highlights: compress/expand the top end, black stays put
+                nl = 1.0 - (1.0 - nl) * exp(-(highlights * 2.0) * nl * nl);
 
-                float highlightMask = smoothstep(0.5, 1.0, lum);
-                color += highlights * highlightMask * 0.3;
+                // Whites: white point. Up = soft-knee stretch, down = scale back
+                if (whites > 0.0) {
+                    nl = softKnee(nl, 1.0 / (1.0 - 0.25 * whites));
+                } else {
+                    nl = nl * (1.0 + 0.25 * whites);
+                }
 
-                float whiteMask = smoothstep(0.75, 1.0, lum);
-                color += whites * whiteMask * 0.3;
+                // Blacks: black point. Down = soft toe, up = darkest-tone lift
+                if (blacks >= 0.0) {
+                    float m = (1.0 - nl) * (1.0 - nl);
+                    nl = nl * exp(blacks * m * m * m);
+                } else {
+                    nl = 1.0 - softKnee(1.0 - nl, 1.0 / (1.0 + 0.25 * blacks));
+                }
 
-                return color;
+                // Contrast: up = endpoint-pinned S-curve, down = linear flatten
+                if (contrast > 0.0) {
+                    float s = nl * nl * (3.0 - 2.0 * nl);
+                    nl = mix(nl, s, min(2.0 * contrast, 1.0));
+                } else {
+                    nl = 0.5 + (nl - 0.5) * (1.0 + contrast);
+                }
+
+                // Brightness: midtone gamma, endpoints pinned
+                nl = pow(max(nl, 0.0), pow(2.0, -brightness));
+
+                return color * (max(nl, 0.0) / max(lum, 1e-4));
             }
 
             vec3 applyLevels(vec3 color, vec3 blackPt, vec3 whitePt, vec3 grayPt,
@@ -233,9 +271,8 @@ class MobileRenderer {
                 color = applyLevels(color, u_blackPoint, u_whitePoint, u_grayPoint,
                                    u_hasBlackPoint, u_hasWhitePoint, u_hasGrayPoint);
                 color = applyExposure(color, u_exposure);
-                color = applyToneCurve(color, u_highlights, u_shadows, u_whites, u_blacks);
-                color = applyContrast(color, u_contrast);
-                color += u_brightness;
+                color = applyTone(color, u_shadows, u_highlights, u_whites,
+                                  u_blacks, u_contrast, u_brightness);
                 color = applyTemperature(color, u_temperature);
                 color = applyTint(color, u_tint);
                 color.r += u_red;

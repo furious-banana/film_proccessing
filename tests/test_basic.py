@@ -47,25 +47,97 @@ def test_neutral_params_are_identity():
     assert np.allclose(out, img, atol=1e-6), "neutral params must not change pixels"
 
 
-def test_exposure_doubles_values():
-    img = make_test_image() * 0.4  # keep below clipping
+def test_exposure_is_true_stops():
+    # +1 EV doubles linear light: below the highlight shoulder that is a
+    # gamma-space multiply by 2^(1/2.2)
+    img = make_test_image() * 0.4  # keeps linear values below the 0.9 knee
     processor = FilmProcessor(img, is_negative=False)
     processor.update_params(exposure=1.0)
     out = processor.apply_adjustments(processor.get_full_res())
     if hasattr(out, 'get'):
         out = out.get()
-    assert np.allclose(out, img * 2.0, atol=1e-5), "+1 stop should double values"
+    expected = img * 2.0 ** (1.0 / 2.2)
+    assert np.allclose(out, expected, atol=1e-5)
 
 
-def test_contrast_matches_shader_formula():
-    img = make_test_image() * 0.5 + 0.25  # mid-range, avoid clipping
+def test_exposure_never_hard_clips():
+    # A bright image pushed a stop must roll off below 1.0, not slam into it
+    img = np.full((8, 8, 3), 0.85, dtype=np.float32)
+    processor = FilmProcessor(img, is_negative=False)
+    processor.update_params(exposure=1.0)
+    out = processor.apply_adjustments(processor.get_full_res())
+    if hasattr(out, 'get'):
+        out = out.get()
+    assert out.max() < 1.0, "highlight shoulder should prevent hard clipping"
+    assert out.min() > 0.95, "positive exposure must still brighten"
+
+
+def test_contrast_pins_endpoints():
+    # Positive contrast is an S-curve: black stays black, white stays white,
+    # darks get darker and brights get brighter
+    img = np.zeros((2, 4, 3), dtype=np.float32)
+    img[:, 1] = 0.25
+    img[:, 2] = 0.75
+    img[:, 3] = 1.0
     processor = FilmProcessor(img, is_negative=False)
     processor.update_params(contrast=0.5)
     out = processor.apply_adjustments(processor.get_full_res())
     if hasattr(out, 'get'):
         out = out.get()
-    expected = (img - 0.5) * 1.5 + 0.5
-    assert np.allclose(out, expected, atol=1e-5)
+    assert np.allclose(out[:, 0], 0.0, atol=1e-5), "black must stay pinned"
+    assert np.allclose(out[:, 3], 1.0, atol=1e-5), "white must stay pinned"
+    assert out[:, 1].mean() < 0.25, "darks should get darker"
+    assert out[:, 2].mean() > 0.75, "brights should get brighter"
+
+
+def test_shadows_lift_pins_endpoints():
+    img = np.zeros((2, 3, 3), dtype=np.float32)
+    img[:, 1] = 0.2
+    img[:, 2] = 1.0
+    processor = FilmProcessor(img, is_negative=False)
+    processor.update_params(shadows=0.5)
+    out = processor.apply_adjustments(processor.get_full_res())
+    if hasattr(out, 'get'):
+        out = out.get()
+    assert np.allclose(out[:, 0], 0.0, atol=1e-5), "true black must stay black"
+    assert np.allclose(out[:, 2], 1.0, atol=1e-5), "white must stay pinned"
+    assert out[:, 1].mean() > 0.3, "shadows should lift substantially"
+
+
+def test_whites_sets_white_point():
+    # Whites up remaps the white point: near-white tones reach 1.0
+    img = np.full((2, 2, 3), 0.95, dtype=np.float32)
+    processor = FilmProcessor(img, is_negative=False)
+    processor.update_params(whites=1.0)
+    out = processor.apply_adjustments(processor.get_full_res())
+    if hasattr(out, 'get'):
+        out = out.get()
+    assert np.allclose(out, 1.0, atol=1e-5), "0.95 gray should clip to white at whites=+1"
+
+
+def test_blacks_sets_black_point():
+    # Blacks down remaps the black point: near-black tones reach 0.0
+    img = np.full((2, 2, 3), 0.05, dtype=np.float32)
+    processor = FilmProcessor(img, is_negative=False)
+    processor.update_params(blacks=-1.0)
+    out = processor.apply_adjustments(processor.get_full_res())
+    if hasattr(out, 'get'):
+        out = out.get()
+    assert np.allclose(out, 0.0, atol=1e-5), "0.05 gray should crush to black at blacks=-1"
+
+
+def test_tone_preserves_hue():
+    # The luminance-ratio gain must scale channels proportionally
+    img = np.zeros((2, 2, 3), dtype=np.float32)
+    img[:, :] = [0.4, 0.2, 0.1]
+    processor = FilmProcessor(img, is_negative=False)
+    processor.update_params(shadows=0.5)
+    out = processor.apply_adjustments(processor.get_full_res())
+    if hasattr(out, 'get'):
+        out = out.get()
+    ratios_in = img[0, 0] / img[0, 0, 0]
+    ratios_out = out[0, 0] / out[0, 0, 0]
+    assert np.allclose(ratios_in, ratios_out, atol=1e-4), "channel ratios must survive tone edits"
 
 
 def test_linear_curves_are_identity():
