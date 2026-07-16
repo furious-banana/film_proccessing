@@ -699,6 +699,54 @@ print(f'RESULT max={diff.max()} mean={diff.mean():.2f}')
         m && parseInt(m[1]) <= 16 && parseFloat(m[2]) <= 2,
         m ? `max err ${m[1]}/65535 LSB, mean ${m[2]}` : pyCheck.trim());
 
+    // --- Local-luminance map (drives the local Shadows/Highlights masks):
+    // the JS implementation must produce the same 8-bit grid as
+    // film_processing._local_lum_grid, or preview and export drift ---
+    const jsMap = await page.evaluate(() => {
+        const w = 300, h = 200;
+        const data = new Float32Array(w * h * 3);
+        for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+                const i = (y * w + x) * 3;
+                data[i] = ((x * 13 + y * 7) % 101) / 101;
+                data[i + 1] = ((x * 5 + y * 17) % 89) / 89;
+                data[i + 2] = ((x * 3 + y * 29) % 97) / 97;
+            }
+        }
+        const map = computeLocalLumMap(data, w, h);
+        return { w: map.width, h: map.height, d: Array.from(map.data) };
+    });
+    const mapScript = path.join(os.tmpdir(), 'film_mobile_lummap.py');
+    fs.writeFileSync(mapScript, `
+import numpy as np, sys
+sys.path.insert(0, r'${APP_DIR.replace(/\\/g, '/')}/src')
+from film_processing import _local_lum_grid
+w, h = 300, 200
+xx, yy = np.meshgrid(np.arange(w), np.arange(h))
+img = np.stack([
+    ((xx * 13 + yy * 7) % 101) / 101,
+    ((xx * 5 + yy * 17) % 89) / 89,
+    ((xx * 3 + yy * 29) % 97) / 97,
+], axis=-1).astype(np.float32)
+grid = _local_lum_grid(img)
+print('MAP', grid.shape[1], grid.shape[0], ','.join(map(str, grid.flatten().tolist())))
+`);
+    const mapOut = execSync(`uv run python "${mapScript}"`, { cwd: APP_DIR }).toString();
+    const mm = mapOut.match(/MAP (\d+) (\d+) ([\d,]+)/);
+    let mapMaxDiff = -1;
+    if (mm && Number(mm[1]) === jsMap.w && Number(mm[2]) === jsMap.h) {
+        const pyMap = mm[3].split(',').map(Number);
+        if (pyMap.length === jsMap.d.length) {
+            mapMaxDiff = 0;
+            for (let i = 0; i < pyMap.length; i++) {
+                mapMaxDiff = Math.max(mapMaxDiff, Math.abs(pyMap[i] - jsMap.d[i]));
+            }
+        }
+    }
+    check('local-luminance map matches the Python implementation',
+        mapMaxDiff >= 0 && mapMaxDiff <= 1,
+        mm ? `grid ${jsMap.w}x${jsMap.h}, max diff ${mapMaxDiff}` : mapOut.trim());
+
     // --- Big-endian 16-bit TIFF (regression: Nikon scans are 'MM' order
     // and decoded as rainbow noise before the byte-order fix) ---
     const BE_TIFF = path.join(os.tmpdir(), 'film_mobile_test_be.tif');

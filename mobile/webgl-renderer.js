@@ -78,6 +78,70 @@ function buildMonotoneCubicSpline(points) {
     };
 }
 
+// Local-luminance map for the tone stage: a low-res, heavily blurred
+// luminance grid of the source image, used to drive Shadows/Highlights
+// locally (Lightroom-style) so texture inside bright/dark regions is
+// preserved instead of flattened. Kept in EXACT sync with
+// film_processing._local_lum_grid (same grid geometry, box blur, and
+// rounding) so the desktop export matches its preview. Byte-identical
+// copy in static/webgl-renderer.js.
+function computeLocalLumMap(data, width, height) {
+    const MAXDIM = 128, PASSES = 3;
+    const longSide = Math.max(width, height);
+    const gw = Math.min(width, Math.max(1, Math.round(width * MAXDIM / longSide)));
+    const gh = Math.min(height, Math.max(1, Math.round(height * MAXDIM / longSide)));
+
+    // Box-average downsample: pixel (x, y) belongs to cell
+    // (floor(x*gw/width), floor(y*gh/height))
+    const sums = new Float64Array(gw * gh);
+    const counts = new Float64Array(gw * gh);
+    for (let y = 0; y < height; y++) {
+        const cy = Math.min(gh - 1, Math.floor(y * gh / height));
+        for (let x = 0; x < width; x++) {
+            const cx = Math.min(gw - 1, Math.floor(x * gw / width));
+            const i = (y * width + x) * 3;
+            sums[cy * gw + cx] += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+            counts[cy * gw + cx]++;
+        }
+    }
+    let grid = new Float64Array(gw * gh);
+    for (let i = 0; i < grid.length; i++) grid[i] = sums[i] / counts[i];
+
+    // 3 passes of separable box blur (radius ~1/16 of the long side) with
+    // replicated edges - a cheap, deterministic Gaussian approximation
+    const r = Math.max(1, Math.round(Math.max(gw, gh) / 16));
+    const norm = 1 / (2 * r + 1);
+    const tmp = new Float64Array(gw * gh);
+    for (let pass = 0; pass < PASSES; pass++) {
+        for (let y = 0; y < gh; y++) {
+            for (let x = 0; x < gw; x++) {
+                let s = 0;
+                for (let k = -r; k <= r; k++) {
+                    s += grid[y * gw + Math.min(gw - 1, Math.max(0, x + k))];
+                }
+                tmp[y * gw + x] = s * norm;
+            }
+        }
+        for (let x = 0; x < gw; x++) {
+            for (let y = 0; y < gh; y++) {
+                let s = 0;
+                for (let k = -r; k <= r; k++) {
+                    s += tmp[Math.min(gh - 1, Math.max(0, y + k)) * gw + x];
+                }
+                grid[y * gw + x] = s * norm;
+            }
+        }
+    }
+
+    // Quantize to 8-bit: BOTH pipelines interpolate this same quantized
+    // grid, so quantization cannot make preview and export drift
+    const out = new Uint8Array(gw * gh);
+    for (let i = 0; i < grid.length; i++) {
+        out[i] = Math.min(255, Math.max(0, Math.floor(grid[i] * 255 + 0.5)));
+    }
+    return { data: out, width: gw, height: gh };
+}
+
 class MobileRenderer {
     constructor(canvas) {
         this.canvas = canvas;
@@ -88,6 +152,8 @@ class MobileRenderer {
         this.curveTextureRed = null;
         this.curveTextureGreen = null;
         this.curveTextureBlue = null;
+        this.localLumTexture = null;
+        this._activeLocalRect = null;  // band slice during exports
         this.lastCurvesJSON = null;
         this.imageWidth = 0;
         this.imageHeight = 0;
@@ -145,6 +211,13 @@ class MobileRenderer {
             uniform sampler2D u_curveBlue;
             uniform float u_hasCurves;
 
+            // Blurred local-luminance map driving Shadows/Highlights.
+            // u_localRect maps this draw's texcoords into the map (banded
+            // exports draw a slice of the full image): offset.xy + uv * zw.
+            uniform sampler2D u_localLum;
+            uniform vec4 u_localRect;
+            uniform float u_hasLocalLum;
+
             varying highp vec2 v_texCoord;
 
             // Exposure: multiply in linear light (true photographic stops),
@@ -186,16 +259,30 @@ class MobileRenderer {
             // Tone: computed on luminance, applied as one ratio-preserving
             // gain so hue/saturation survive. Black and white stay pinned
             // unless the op's job is to move that endpoint.
-            vec3 applyTone(vec3 color, float shadows, float highlights,
-                           float whites, float blacks, float contrast, float brightness) {
+            // Shadows/Highlights are LOCAL: their masks blend in the blurred
+            // neighborhood luminance (blum), so detail inside a bright or
+            // dark region keeps its contrast instead of flattening. min/max
+            // against pixel luminance stops halos across strong edges.
+            vec3 applyTone(vec3 color, float blum, float hasLocal, float shadows,
+                           float highlights, float whites, float blacks,
+                           float contrast, float brightness) {
                 float lum = clamp(dot(color, vec3(0.299, 0.587, 0.114)), 0.0, 1.0);
+                float cl = mix(lum, blum, hasLocal * 0.6);
                 float nl = lum;
 
                 // Shadows: multiplicative lift/dip weighted toward dark tones
-                nl = nl * exp((shadows * 2.0) * (1.0 - nl) * (1.0 - nl));
+                float sm = 1.0 - max(cl, lum);
+                nl = nl * exp((shadows * 2.0) * sm * sm);
 
-                // Highlights: compress/expand the top end, black stays put
-                nl = 1.0 - (1.0 - nl) * exp(-(highlights * 2.0) * nl * nl);
+                // Highlights: compress/expand the top end, black stays put.
+                // Quartic mask keeps the effect out of mids and shadows;
+                // slider is +/-0.5, tripled internally for useful strength
+                float hm = min(cl, lum);
+                float hm4 = (hm * hm) * (hm * hm);
+                float ht = 1.0 - (1.0 - hm) * exp(-(highlights * 3.0) * hm4);
+                nl = nl * (ht / max(hm, 1e-4));
+
+                nl = clamp(nl, 0.0, 1.0);
 
                 // Whites: white point. Up = soft-knee stretch, down = scale back
                 if (whites > 0.0) {
@@ -271,8 +358,11 @@ class MobileRenderer {
                 color = applyLevels(color, u_blackPoint, u_whitePoint, u_grayPoint,
                                    u_hasBlackPoint, u_hasWhitePoint, u_hasGrayPoint);
                 color = applyExposure(color, u_exposure);
-                color = applyTone(color, u_shadows, u_highlights, u_whites,
-                                  u_blacks, u_contrast, u_brightness);
+                float blum = texture2D(u_localLum,
+                    v_texCoord * u_localRect.zw + u_localRect.xy).r;
+                color = applyTone(color, blum, u_hasLocalLum, u_shadows,
+                                  u_highlights, u_whites, u_blacks,
+                                  u_contrast, u_brightness);
                 color = applyTemperature(color, u_temperature);
                 color = applyTint(color, u_tint);
                 color.r += u_red;
@@ -415,6 +505,21 @@ class MobileRenderer {
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
     }
 
+    // Upload an 8-bit local-luminance map (from computeLocalLumMap) as a
+    // LINEAR-filtered texture; the shader upsamples it bilinearly, exactly
+    // like cv2.resize(INTER_LINEAR) in the Python pipeline
+    _uploadLumTexture(tex, map) {
+        const gl = this.gl;
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, map.width, map.height, 0,
+            gl.LUMINANCE, gl.UNSIGNED_BYTE, map.data);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    }
+
     // Largest source dimension exports can use (the GPU texture limit;
     // exports render in bands, so this - not memory - is the bound)
     maxSourceSize() {
@@ -426,8 +531,19 @@ class MobileRenderer {
     // per-pixel, so banding is exact, and peak GPU memory stays modest
     // even for medium-format scans.
     renderToPixels16(image) {
+        const gl = this.gl;
         const { data, width, height } = image;
         const out = new Uint16Array(width * height * 3);
+
+        // The local-luminance map must cover the WHOLE image while bands
+        // draw slices of it, so compute it once here and point each band
+        // at its slice of the map via u_localRect
+        const fullMap = computeLocalLumMap(data, width, height);
+        const fullTex = gl.createTexture();
+        this._uploadLumTexture(fullTex, fullMap);
+        const previewLumTex = this.localLumTexture;
+        this.localLumTexture = fullTex;
+
         // ~4M pixels per band: 64MB float RGBA staging + readback each
         const bandH = Math.max(1, Math.min(height, Math.floor(4 * 1024 * 1024 / width)));
         for (let y0 = 0; y0 < height; y0 += bandH) {
@@ -436,12 +552,16 @@ class MobileRenderer {
                 data: data.subarray(y0 * width * 3, (y0 + bh) * width * 3),
                 width, height: bh,
             };
-            const rgb = this.renderToPixels(band).data;
+            const rgb = this.renderToPixels(band, [0, y0 / height, 1, bh / height]).data;
             const base = y0 * width * 3;
             for (let i = 0; i < rgb.length; i++) {
                 out[base + i] = Math.round(Math.min(1, Math.max(0, rgb[i])) * 65535);
             }
         }
+
+        this.localLumTexture = previewLumTex;
+        gl.deleteTexture(fullTex);
+        this.render(); // restore the preview with its own map
         return { data16: out, width, height };
     }
 
@@ -454,6 +574,9 @@ class MobileRenderer {
 
         if (!this.texture) this.texture = gl.createTexture();
         this._uploadSourceTexture(this.texture, data, width, height);
+
+        if (!this.localLumTexture) this.localLumTexture = gl.createTexture();
+        this._uploadLumTexture(this.localLumTexture, computeLocalLumMap(data, width, height));
 
         this.canvas.width = width;
         this.canvas.height = height;
@@ -588,6 +711,14 @@ class MobileRenderer {
         bindCurve(this.curveTextureGreen, 3, 'u_curveGreen');
         bindCurve(this.curveTextureBlue, 4, 'u_curveBlue');
         gl.uniform1f(u('u_hasCurves'), p.hasCurves ? 1 : 0);
+
+        if (this.localLumTexture) {
+            gl.activeTexture(gl.TEXTURE5);
+            gl.bindTexture(gl.TEXTURE_2D, this.localLumTexture);
+            gl.uniform1i(u('u_localLum'), 5);
+        }
+        gl.uniform1f(u('u_hasLocalLum'), this.localLumTexture ? 1 : 0);
+        gl.uniform4fv(u('u_localRect'), this._activeLocalRect || [0, 0, 1, 1]);
     }
 
     render() {
@@ -607,9 +738,11 @@ class MobileRenderer {
     // { data: Float32Array RGB [0,1], width, height, float: bool }.
     // With overrideImage {data,width,height} the same adjustments render on
     // that image instead (full-resolution exports); the preview texture and
-    // canvas are left untouched.
-    renderToPixels(overrideImage = null) {
+    // canvas are left untouched. localRect points the draw at its slice of
+    // the local-luminance map when the image renders in bands.
+    renderToPixels(overrideImage = null, localRect = null) {
         const gl = this.gl;
+        this._activeLocalRect = localRect;
 
         let previewTexture = null;
         const previewW = this.imageWidth, previewH = this.imageHeight;
@@ -681,6 +814,7 @@ class MobileRenderer {
             this.imageWidth = previewW;
             this.imageHeight = previewH;
         }
+        this._activeLocalRect = null;
         Object.assign(this.params, overlays);
         this.render(); // restore the on-screen preview
 

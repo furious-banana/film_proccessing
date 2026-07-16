@@ -46,6 +46,20 @@ function check(name, cond, detail = '') {
     check('static/autocrop.js is identical to mobile/autocrop.js', a === b);
 }
 
+// The local-luminance map (local Shadows/Highlights) is likewise shared
+// verbatim between the two renderers AND mirrored in film_processing.py -
+// its arithmetic defines what exports look like, so it must not diverge
+{
+    const extract = (file) => {
+        const src = fs.readFileSync(path.join(APP_DIR, file), 'utf8');
+        const m = src.match(/function computeLocalLumMap[\s\S]*?\r?\n\}/);
+        return m && m[0];
+    };
+    const a = extract(path.join('static', 'webgl-renderer.js'));
+    const b = extract(path.join('mobile', 'webgl-renderer.js'));
+    check('computeLocalLumMap is identical in both renderers', !!a && a === b);
+}
+
 const app = await electron.launch({
     executablePath: path.join(APP_DIR, 'node_modules', 'electron', 'dist',
         process.platform === 'win32' ? 'electron.exe' : 'electron'),

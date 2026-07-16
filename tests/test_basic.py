@@ -126,6 +126,46 @@ def test_blacks_sets_black_point():
     assert np.allclose(out, 0.0, atol=1e-5), "0.05 gray should crush to black at blacks=-1"
 
 
+def test_shadows_are_local():
+    # Shadows are locally masked: the same pixel value gets a bigger lift
+    # in a dark neighborhood than embedded in a bright one
+    dark_scene = np.full((64, 64, 3), 0.1, dtype=np.float32)
+    bright_scene = np.full((64, 64, 3), 0.9, dtype=np.float32)
+    bright_scene[32, 32] = 0.1
+
+    outs = []
+    for scene in (dark_scene, bright_scene):
+        processor = FilmProcessor(scene, is_negative=False)
+        processor.update_params(shadows=0.5)
+        out = processor.apply_adjustments(processor.get_full_res())
+        if hasattr(out, 'get'):
+            out = out.get()
+        outs.append(out[32, 32, 0])
+    lift_in_dark, lift_in_bright = outs
+    assert lift_in_dark > lift_in_bright + 0.05, \
+        f"dark surround {lift_in_dark:.3f} vs bright surround {lift_in_bright:.3f}"
+
+
+def test_highlights_recovery_is_local():
+    # Highlight recovery keeps a bright pixel inside a DARK region (a
+    # specular detail) almost untouched while compressing broad bright areas
+    bright_scene = np.full((64, 64, 3), 0.9, dtype=np.float32)
+    dark_scene = np.full((64, 64, 3), 0.1, dtype=np.float32)
+    dark_scene[32, 32] = 0.9
+
+    outs = []
+    for scene in (bright_scene, dark_scene):
+        processor = FilmProcessor(scene, is_negative=False)
+        processor.update_params(highlights=-0.5)
+        out = processor.apply_adjustments(processor.get_full_res())
+        if hasattr(out, 'get'):
+            out = out.get()
+        outs.append(out[32, 32, 0])
+    broad_bright, specular_in_dark = outs
+    assert specular_in_dark > broad_bright + 0.05, \
+        f"specular {specular_in_dark:.3f} vs broad bright {broad_bright:.3f}"
+
+
 def test_tone_preserves_hue():
     # The luminance-ratio gain must scale channels proportionally
     img = np.zeros((2, 2, 3), dtype=np.float32)
