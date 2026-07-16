@@ -34,7 +34,11 @@ exposure          linear-light ×2^stops with a soft highlight shoulder
 tone              shadows/highlights/whites/blacks/contrast/brightness
                   computed on luminance, applied as one ratio-preserving
                   gain (endpoint-pinned lifts, soft-knee endpoint remaps,
-                  S-curve contrast, midtone-gamma brightness)
+                  S-curve contrast, midtone-gamma brightness).
+                  Shadows/highlights masks are LOCAL: driven by a blurred
+                  low-res luminance map, shared verbatim between renderers
+                  (computeLocalLumMap) and mirrored in _local_lum_grid
+tone map          uint8 grid <=128 px, 3-pass box blur, bilinear upsample
 temperature/tint  ±0.05 channel shifts
 RGB offsets       per-channel add
 saturation        mix(gray, color, 1 + saturation)

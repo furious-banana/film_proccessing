@@ -9,7 +9,8 @@ fallback and for full-quality export.
 Shader pipeline order:
     levels (eyedropper) -> exposure (linear-light stops with highlight
     rolloff) -> tone (shadows/highlights/whites/blacks/contrast/brightness
-    computed on luminance, applied as one ratio-preserving gain) ->
+    computed on luminance, applied as one ratio-preserving gain;
+    shadows/highlights masked by blurred LOCAL luminance) ->
     temperature/tint -> RGB offsets -> saturation -> custom curves -> clamp
 """
 
@@ -31,6 +32,46 @@ except Exception as e:  # pragma: no cover - depends on machine
     import numpy as cp
     GPU_AVAILABLE = False
     logger.warning(f"GPU unavailable ({e}), using CPU")
+
+
+def _local_lum_grid(img_cpu):
+    """Local-luminance map for the tone stage: a low-res, heavily blurred
+    luminance grid of the source image, used to drive Shadows/Highlights
+    locally (Lightroom-style). Kept in EXACT sync with computeLocalLumMap
+    in the WebGL renderers (same grid geometry, box blur, and rounding),
+    so the desktop export matches its preview. Returns a uint8 (gh, gw)
+    array; both pipelines bilinearly upsample this same quantized grid."""
+    h, w = img_cpu.shape[:2]
+    long_side = max(w, h)
+    gw = min(w, max(1, int(w * 128 / long_side + 0.5)))
+    gh = min(h, max(1, int(h * 128 / long_side + 0.5)))
+
+    lum = (0.299 * img_cpu[:, :, 0].astype(np.float64)
+           + 0.587 * img_cpu[:, :, 1].astype(np.float64)
+           + 0.114 * img_cpu[:, :, 2].astype(np.float64))
+
+    # Box-average downsample: pixel (x, y) belongs to cell
+    # (floor(x*gw/w), floor(y*gh/h)) - same partition as the JS loop
+    cx = (np.arange(w, dtype=np.int64) * gw) // w
+    cy = (np.arange(h, dtype=np.int64) * gh) // h
+    x_bounds = np.searchsorted(cx, np.arange(gw))
+    y_bounds = np.searchsorted(cy, np.arange(gh))
+    row_sums = np.add.reduceat(lum, y_bounds, axis=0)
+    cell_sums = np.add.reduceat(row_sums, x_bounds, axis=1)
+    counts = np.outer(np.diff(np.append(y_bounds, h)),
+                      np.diff(np.append(x_bounds, w)))
+    grid = cell_sums / counts
+
+    # 3 passes of separable box blur (radius ~1/16 of the long side) with
+    # replicated edges - a cheap, deterministic Gaussian approximation
+    r = max(1, int(max(gw, gh) / 16 + 0.5))
+    norm = 1.0 / (2 * r + 1)
+    idx_x = np.clip(np.arange(-r, r + 1)[None, :] + np.arange(gw)[:, None], 0, gw - 1)
+    idx_y = np.clip(np.arange(-r, r + 1)[None, :] + np.arange(gh)[:, None], 0, gh - 1)
+    for _ in range(3):
+        grid = grid[:, idx_x].sum(axis=2) * norm      # horizontal
+        grid = grid[idx_y, :].sum(axis=1) * norm      # vertical
+    return np.clip(np.floor(grid * 255.0 + 0.5), 0, 255).astype(np.uint8)
 
 
 def _soft_knee(xp, x, k_scale):
@@ -141,6 +182,7 @@ class FilmProcessor:
 
         xp = cp if GPU_AVAILABLE else np
         self._proxy = None  # source changed; any proxy is stale
+        self._local_lum_cache = {}  # keyed by image shape; source changed
 
         angle = float(self.params.get('straighten') or 0.0)
         if angle != 0:
@@ -211,6 +253,20 @@ class FilmProcessor:
     # The adjustment pipeline (must stay in sync with the WebGL shader)
     # ------------------------------------------------------------------
 
+    def _local_lum_for(self, img, xp):
+        """Blurred local luminance of `img`, bilinearly upsampled to its
+        resolution (float32 (h, w) on the same backend as `img`). The small
+        uint8 grid is cached; the upsample runs per call."""
+        h, w = img.shape[:2]
+        grid = self._local_lum_cache.get((h, w))
+        if grid is None:
+            img_cpu = img.get() if hasattr(img, 'get') else img
+            grid = _local_lum_grid(img_cpu)
+            self._local_lum_cache[(h, w)] = grid
+        full = cv2.resize(grid.astype(np.float32) / 255.0, (w, h),
+                          interpolation=cv2.INTER_LINEAR)
+        return xp.asarray(full) if xp is not np else full
+
     def apply_adjustments(self, img):
         """Apply all current parameters to a float32 [0,1] image.
 
@@ -242,14 +298,31 @@ class FilmProcessor:
                           + 0.114 * processed[:, :, 2], 0.0, 1.0)
             nl = lum
 
-            # Shadows: multiplicative lift/dip weighted toward dark tones
-            # (slider is +/-0.5, doubled internally for useful strength)
-            if p['shadows'] != 0:
-                nl = nl * xp.exp((p['shadows'] * 2.0) * (1.0 - nl) ** 2)
+            # Shadows/Highlights are LOCAL: their masks blend in the blurred
+            # neighborhood luminance, so detail inside a bright or dark
+            # region keeps its contrast instead of flattening. min/max
+            # against pixel luminance stops halos across strong edges.
+            # Matches the shader (cl = mix(lum, blum, 0.6)).
+            if p['shadows'] != 0 or p['highlights'] != 0:
+                blum = self._local_lum_for(img, xp)
+                cl = lum * 0.4 + blum * 0.6
 
-            # Highlights: compress/expand the top end, black stays put
-            if p['highlights'] != 0:
-                nl = 1.0 - (1.0 - nl) * xp.exp(-(p['highlights'] * 2.0) * nl * nl)
+                # Shadows: multiplicative lift/dip weighted toward dark tones
+                # (slider is +/-0.5, doubled internally for useful strength)
+                if p['shadows'] != 0:
+                    sm = 1.0 - xp.maximum(cl, lum)
+                    nl = nl * xp.exp((p['shadows'] * 2.0) * sm * sm)
+
+                # Highlights: compress/expand the top end, black stays put.
+                # Quartic mask keeps the effect out of mids and shadows;
+                # slider is +/-0.5, tripled internally for useful strength
+                if p['highlights'] != 0:
+                    hm = xp.minimum(cl, lum)
+                    hm4 = (hm * hm) * (hm * hm)
+                    ht = 1.0 - (1.0 - hm) * xp.exp(-(p['highlights'] * 3.0) * hm4)
+                    nl = nl * (ht / xp.maximum(hm, 1e-4))
+
+                nl = xp.clip(nl, 0.0, 1.0)
 
             # Whites: white point. Up = soft-knee stretch, down = scale back
             if p['whites'] > 0:

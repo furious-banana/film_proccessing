@@ -85,6 +85,70 @@ function buildMonotoneCubicSpline(points) {
     };
 }
 
+// Local-luminance map for the tone stage: a low-res, heavily blurred
+// luminance grid of the source image, used to drive Shadows/Highlights
+// locally (Lightroom-style) so texture inside bright/dark regions is
+// preserved instead of flattened. Kept in EXACT sync with
+// film_processing._local_lum_grid (same grid geometry, box blur, and
+// rounding) so the desktop export matches its preview. Byte-identical
+// copy in static/webgl-renderer.js.
+function computeLocalLumMap(data, width, height) {
+    const MAXDIM = 128, PASSES = 3;
+    const longSide = Math.max(width, height);
+    const gw = Math.min(width, Math.max(1, Math.round(width * MAXDIM / longSide)));
+    const gh = Math.min(height, Math.max(1, Math.round(height * MAXDIM / longSide)));
+
+    // Box-average downsample: pixel (x, y) belongs to cell
+    // (floor(x*gw/width), floor(y*gh/height))
+    const sums = new Float64Array(gw * gh);
+    const counts = new Float64Array(gw * gh);
+    for (let y = 0; y < height; y++) {
+        const cy = Math.min(gh - 1, Math.floor(y * gh / height));
+        for (let x = 0; x < width; x++) {
+            const cx = Math.min(gw - 1, Math.floor(x * gw / width));
+            const i = (y * width + x) * 3;
+            sums[cy * gw + cx] += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+            counts[cy * gw + cx]++;
+        }
+    }
+    let grid = new Float64Array(gw * gh);
+    for (let i = 0; i < grid.length; i++) grid[i] = sums[i] / counts[i];
+
+    // 3 passes of separable box blur (radius ~1/16 of the long side) with
+    // replicated edges - a cheap, deterministic Gaussian approximation
+    const r = Math.max(1, Math.round(Math.max(gw, gh) / 16));
+    const norm = 1 / (2 * r + 1);
+    const tmp = new Float64Array(gw * gh);
+    for (let pass = 0; pass < PASSES; pass++) {
+        for (let y = 0; y < gh; y++) {
+            for (let x = 0; x < gw; x++) {
+                let s = 0;
+                for (let k = -r; k <= r; k++) {
+                    s += grid[y * gw + Math.min(gw - 1, Math.max(0, x + k))];
+                }
+                tmp[y * gw + x] = s * norm;
+            }
+        }
+        for (let x = 0; x < gw; x++) {
+            for (let y = 0; y < gh; y++) {
+                let s = 0;
+                for (let k = -r; k <= r; k++) {
+                    s += tmp[Math.min(gh - 1, Math.max(0, y + k)) * gw + x];
+                }
+                grid[y * gw + x] = s * norm;
+            }
+        }
+    }
+
+    // Quantize to 8-bit: BOTH pipelines interpolate this same quantized
+    // grid, so quantization cannot make preview and export drift
+    const out = new Uint8Array(gw * gh);
+    for (let i = 0; i < grid.length; i++) {
+        out[i] = Math.min(255, Math.max(0, Math.floor(grid[i] * 255 + 0.5)));
+    }
+    return { data: out, width: gw, height: gh };
+}
+
 class WebGLRenderer {
     constructor(canvasId) {
         this.canvas = document.getElementById(canvasId);
@@ -261,6 +325,13 @@ class WebGLRenderer {
             uniform sampler2D u_curveGreen;
             uniform sampler2D u_curveBlue;
             uniform float u_hasCurves;
+
+            // Blurred local-luminance map driving Shadows/Highlights.
+            // u_localRect maps this draw's texcoords into the map (banded
+            // exports draw a slice of the full image): offset.xy + uv * zw.
+            uniform sampler2D u_localLum;
+            uniform vec4 u_localRect;
+            uniform float u_hasLocalLum;
             
             varying highp vec2 v_texCoord;  // Match vertex shader precision
             
@@ -331,17 +402,31 @@ class WebGLRenderer {
             // computed on luminance and applied as one ratio-preserving gain,
             // so hue and saturation survive tonal edits. Each op keeps black
             // and white pinned unless its job is to move that endpoint.
-            vec3 applyTone(vec3 color, float shadows, float highlights,
-                           float whites, float blacks, float contrast, float brightness) {
+            // Shadows/Highlights are LOCAL: their masks blend in the blurred
+            // neighborhood luminance (blum), so detail inside a bright or
+            // dark region keeps its contrast instead of flattening. min/max
+            // against pixel luminance stops halos across strong edges.
+            vec3 applyTone(vec3 color, float blum, float hasLocal, float shadows,
+                           float highlights, float whites, float blacks,
+                           float contrast, float brightness) {
                 float lum = clamp(dot(color, vec3(0.299, 0.587, 0.114)), 0.0, 1.0);
+                float cl = mix(lum, blum, hasLocal * 0.6);
                 float nl = lum;
 
                 // Shadows: multiplicative lift/dip weighted toward dark tones
                 // (slider is +/-0.5, doubled internally for useful strength)
-                nl = nl * exp((shadows * 2.0) * (1.0 - nl) * (1.0 - nl));
+                float sm = 1.0 - max(cl, lum);
+                nl = nl * exp((shadows * 2.0) * sm * sm);
 
-                // Highlights: compress/expand the top end, black stays put
-                nl = 1.0 - (1.0 - nl) * exp(-(highlights * 2.0) * nl * nl);
+                // Highlights: compress/expand the top end, black stays put.
+                // Quartic mask keeps the effect out of mids and shadows;
+                // slider is +/-0.5, tripled internally for useful strength
+                float hm = min(cl, lum);
+                float hm4 = (hm * hm) * (hm * hm);
+                float ht = 1.0 - (1.0 - hm) * exp(-(highlights * 3.0) * hm4);
+                nl = nl * (ht / max(hm, 1e-4));
+
+                nl = clamp(nl, 0.0, 1.0);
 
                 // Whites: true white-point control. Up stretches the top into
                 // a soft knee (eventually clips); down scales the range back.
@@ -445,8 +530,11 @@ class WebGLRenderer {
 
                 // 2. Tone: shadows/highlights/whites/blacks/contrast/
                 //    brightness on luminance, applied as one gain
-                color = applyTone(color, u_shadows, u_highlights, u_whites,
-                                  u_blacks, u_contrast, u_brightness);
+                float blum = texture2D(u_localLum,
+                    v_texCoord * u_localRect.zw + u_localRect.xy).r;
+                color = applyTone(color, blum, u_hasLocalLum, u_shadows,
+                                  u_highlights, u_whites, u_blacks,
+                                  u_contrast, u_brightness);
 
                 // 3. Temperature and Tint
                 color = applyTemperature(color, u_temperature);
@@ -586,6 +674,9 @@ class WebGLRenderer {
 
             // Upload to GPU texture
             this.uploadTexture(float32Data, this.imageWidth, this.imageHeight);
+
+            // Blurred local-luminance map for the local tone stage
+            this.uploadLocalLumMap(float32Data, this.imageWidth, this.imageHeight);
             
             // Resize canvas to match image aspect ratio (but scaled for screen)
             this.resizeCanvas();
@@ -705,7 +796,24 @@ class WebGLRenderer {
             console.log(`Anisotropic filtering enabled: ${this.maxAnisotropy}x`);
         }
     }
-    
+
+    // Compute and upload the 8-bit local-luminance map (computeLocalLumMap)
+    // as a LINEAR-filtered texture; the shader upsamples it bilinearly,
+    // exactly like cv2.resize(INTER_LINEAR) in the Python export pipeline
+    uploadLocalLumMap(data, width, height) {
+        const gl = this.gl;
+        const map = computeLocalLumMap(data, width, height);
+        if (!this.localLumTexture) this.localLumTexture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, this.localLumTexture);
+        gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, map.width, map.height, 0,
+            gl.LUMINANCE, gl.UNSIGNED_BYTE, map.data);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    }
+
     resizeCanvas() {
         // Set canvas INTERNAL resolution to full image size (render quality)
         this.canvas.width = this.imageWidth;
@@ -871,6 +979,16 @@ class WebGLRenderer {
             gl.uniform1i(gl.getUniformLocation(this.program, 'u_curveBlue'), 4);
         }
         gl.uniform1f(gl.getUniformLocation(this.program, 'u_hasCurves'), this.params.hasCurves ? 1.0 : 0.0);
+
+        // Local-luminance map for the local tone stage (desktop always
+        // draws the whole image, so the rect is the full map)
+        if (this.localLumTexture) {
+            gl.activeTexture(gl.TEXTURE5);
+            gl.bindTexture(gl.TEXTURE_2D, this.localLumTexture);
+            gl.uniform1i(gl.getUniformLocation(this.program, 'u_localLum'), 5);
+        }
+        gl.uniform1f(gl.getUniformLocation(this.program, 'u_hasLocalLum'), this.localLumTexture ? 1.0 : 0.0);
+        gl.uniform4fv(gl.getUniformLocation(this.program, 'u_localRect'), [0, 0, 1, 1]);
         
         // Clear and render
         gl.clearColor(0, 0, 0, 1);
