@@ -9,7 +9,93 @@
 
 // Shown on the start screen so an update can be verified at a glance.
 // Keep in step with CACHE_VERSION in sw.js.
-const APP_VERSION = 'v33';
+const APP_VERSION = 'v36';
+
+// Auto Grade: fit an automatic correction for a scanned film positive.
+// Scanner positives keep the film-base fog floor (blacks near ~0.1, never
+// 0), a color cast, and mismatched per-channel gammas (color crossover).
+// Fit per-channel black/white points from histogram percentiles, then
+// per-channel gammas so near-neutral pixels stay neutral. Same algorithm
+// as FilmProcessor.auto_grade() in the desktop backend. Input is the
+// renderer's Float32Array RGB source; returns fitted params (not applied).
+function computeAutoGrade(data, width, height) {
+    const n = width * height;
+    const BINS = 2048;
+
+    // Per-channel histograms -> black/white percentiles
+    const hist = [new Float64Array(BINS), new Float64Array(BINS), new Float64Array(BINS)];
+    for (let i = 0; i < n * 3; i += 3) {
+        for (let c = 0; c < 3; c++) {
+            const v = Math.min(Math.max(data[i + c], 0), 1);
+            hist[c][Math.min(BINS - 1, (v * BINS) | 0)]++;
+        }
+    }
+    const percentile = (h, frac) => {
+        const target = frac * n;
+        let acc = 0;
+        for (let b = 0; b < BINS; b++) {
+            acc += h[b];
+            if (acc >= target) return (b + 0.5) / BINS;
+        }
+        return 1;
+    };
+    const black = hist.map(h => percentile(h, 0.002));
+    const white = hist.map(h => percentile(h, 0.9985));
+    const span = black.map((b, c) => Math.max(white[c] - b, 1e-3));
+
+    // Neutral-pixel medians of the normalized image -> per-channel gammas.
+    // Two passes: strict chroma window, widened if the cast is extreme.
+    const fitMedians = (satLimit) => {
+        const nh = [new Float64Array(BINS), new Float64Array(BINS), new Float64Array(BINS)];
+        let count = 0;
+        for (let i = 0; i < n * 3; i += 3) {
+            const y = [0, 1, 2].map(c =>
+                Math.min(Math.max((data[i + c] - black[c]) / span[c], 0), 1));
+            const lum = (y[0] + y[1] + y[2]) / 3;
+            const sat = Math.max(y[0], y[1], y[2]) - Math.min(y[0], y[1], y[2]);
+            if (sat < satLimit && lum > 0.05 && lum < 0.9) {
+                count++;
+                for (let c = 0; c < 3; c++) {
+                    nh[c][Math.min(BINS - 1, (y[c] * BINS) | 0)]++;
+                }
+            }
+        }
+        if (!count) return null;
+        return { medians: nh.map(h => {
+            let acc = 0;
+            for (let b = 0; b < BINS; b++) {
+                acc += h[b];
+                if (acc >= count / 2) return (b + 0.5) / BINS;
+            }
+            return 0.5;
+        }), count };
+    };
+    let fit = fitMedians(0.12);
+    if (!fit || fit.count < 0.02 * n) fit = fitMedians(0.25) || fit;
+
+    const gammas = [1, 1, 1];
+    if (fit) {
+        const ref = fit.medians[1]; // green anchors; R/B bend to meet it
+        if (ref > 1e-4) {
+            for (const c of [0, 2]) {
+                if (fit.medians[c] > 1e-4) {
+                    gammas[c] = Math.min(2, Math.max(0.5,
+                        Math.log(ref) / Math.log(fit.medians[c])));
+                }
+            }
+        }
+    }
+
+    // Express the stretch through the eyedropper levels chain (black remap
+    // then white divide): dividing by (white-black)/(1-black) after the
+    // black remap equals a direct (c-black)/(white-black) stretch
+    const whitePt = black.map((b, c) => 255 * span[c] / Math.max(1 - b, 1e-3));
+    return {
+        black_point_r: black[0] * 255, black_point_g: black[1] * 255, black_point_b: black[2] * 255,
+        white_point_r: whitePt[0], white_point_g: whitePt[1], white_point_b: whitePt[2],
+        density_r: gammas[0], density_g: gammas[1], density_b: gammas[2],
+    };
+}
 
 class MobileFilmProcessor {
     constructor() {
@@ -257,8 +343,9 @@ class MobileFilmProcessor {
                 if (now - (holder._tapTs || 0) < 400) {
                     holder._tapTs = 0;
                     this.saveHistory();
-                    slider.value = 0;
-                    this.updateValueDisplay(slider.id, 0);
+                    const neutral = parseFloat(slider.dataset.neutral || '0');
+                    slider.value = neutral;
+                    this.updateValueDisplay(slider.id, neutral);
                     if (slider.id === 'straighten') this.bakeStraighten();
                     else this.updateImage();
                 } else {
@@ -277,7 +364,10 @@ class MobileFilmProcessor {
         el.textContent = id === 'straighten'
             ? v.toFixed(1) + '°'
             : (v % 1 === 0 ? v.toString() : v.toFixed(2));
-        el.style.color = v > 0 ? '#00c851' : (v < 0 ? '#ff4444' : '#888');
+        // Color relative to the slider's neutral value (density rests at 1)
+        const s = document.getElementById(id);
+        const neutral = s ? parseFloat(s.dataset.neutral || '0') : 0;
+        el.style.color = v > neutral ? '#00c851' : (v < neutral ? '#ff4444' : '#888');
     }
 
     getParameters() {
@@ -312,6 +402,7 @@ class MobileFilmProcessor {
             red: p.red || 0,
             green: p.green || 0,
             blue: p.blue || 0,
+            density: [p.density_r || 1, p.density_g || 1, p.density_b || 1],
             blackPoint: this.blackPoint ? this.blackPoint.map(v => v / 255) : [0, 0, 0],
             whitePoint: this.whitePoint ? this.whitePoint.map(v => v / 255) : [1, 1, 1],
             grayPoint: this.grayPoint ? this.grayPoint.map(v => v / 255) : [0.5, 0.5, 0.5],
@@ -320,6 +411,24 @@ class MobileFilmProcessor {
             hasGrayPoint: !!this.grayPoint,
             curves: p.curves,
         });
+    }
+
+    autoGrade() {
+        if (!this.renderer || !this.renderer.imageData) return;
+        this.saveHistory();
+        const p = computeAutoGrade(this.renderer.imageData,
+            this.renderer.imageWidth, this.renderer.imageHeight);
+        this.blackPoint = [p.black_point_r, p.black_point_g, p.black_point_b];
+        this.whitePoint = [p.white_point_r, p.white_point_g, p.white_point_b];
+        for (const id of ['density_r', 'density_g', 'density_b']) {
+            const s = document.getElementById(id);
+            if (s && p[id] !== undefined) {
+                s.value = p[id];
+                this.updateValueDisplay(id, p[id]);
+            }
+        }
+        this.updateImage();
+        this.status('Auto grade applied');
     }
 
     // ------------------------------------------------------------------
@@ -399,6 +508,8 @@ class MobileFilmProcessor {
             this.hideLoupe();
             this.updateImage();
         });
+
+        document.getElementById('autoGradeBtn').addEventListener('click', () => this.autoGrade());
 
         const canvas = document.getElementById('viewCanvas');
         canvas.addEventListener('pointerdown', (e) => {

@@ -7,7 +7,8 @@ client GPU; this module produces the identical result for the CPU preview
 fallback and for full-quality export.
 
 Shader pipeline order:
-    levels (eyedropper) -> tone (exposure with highlight rolloff, then
+    levels (eyedropper) -> density balance (per-channel gamma, set by
+    Auto Grade) -> tone (exposure with highlight rolloff, then
     shadows/highlights/whites/blacks/contrast/brightness; one scalar curve
     applied Adobe-RGBTone-style: evaluated at each pixel's max and min
     channels, middle channel interpolated, so hue is preserved and
@@ -107,6 +108,10 @@ DEFAULT_PARAMS = {
     'saturation': 0.0,    # 0 = neutral, applied as mix(gray, color, 1 + s)
     'film_correction': 0.0,  # film base removal strength, rebuilds cache
     'straighten': 0.0,    # fine rotation in degrees (+ = clockwise), rebuilds cache
+    # Density balance (Auto Grade): per-channel gamma that aligns the film's
+    # three dye layers so grays stay neutral across the tonal range
+    # (fixes color crossover). 1.0 = neutral.
+    'density_r': 1.0, 'density_g': 1.0, 'density_b': 1.0,
     # Eyedropper points (0-255 per channel, None = unset)
     'black_point_r': None, 'black_point_g': None, 'black_point_b': None,
     'white_point_r': None, 'white_point_g': None, 'white_point_b': None,
@@ -269,6 +274,62 @@ class FilmProcessor:
                           interpolation=cv2.INTER_LINEAR)
         return xp.asarray(full) if xp is not np else full
 
+    def auto_grade(self):
+        """Fit an automatic correction for a scanned film positive.
+
+        Scanner positives (e.g. Nikon Scan) keep the film-base fog floor
+        (blacks sit near ~0.1, never 0), a color cast, and mismatched
+        per-channel gammas (color crossover). The fit: per-channel
+        black/white points from histogram percentiles, then per-channel
+        gammas chosen so near-neutral pixels stay neutral. Returns a params
+        dict (eyedropper levels + density balance) - it does NOT apply
+        them. Purely corrective: contrast/looks are left to the user.
+        """
+        img = self.get_proxy()
+        if hasattr(img, 'get'):
+            img = img.get()
+        x = np.clip(img.reshape(-1, 3).astype(np.float64), 0.0, 1.0)
+
+        black = np.percentile(x, 0.2, axis=0)
+        white = np.percentile(x, 99.85, axis=0)
+        span = np.maximum(white - black, 1e-3)
+        y = np.clip((x - black) / span, 0.0, 1.0)
+
+        # Near-neutral pixels carry the gray axis; if the cast is so strong
+        # that few qualify, widen the net
+        lum = y.mean(axis=1)
+        sat = y.max(axis=1) - y.min(axis=1)
+        neutral = (sat < 0.12) & (lum > 0.05) & (lum < 0.9)
+        if neutral.mean() < 0.02:
+            neutral = (sat < 0.25) & (lum > 0.05) & (lum < 0.9)
+
+        gammas = [1.0, 1.0, 1.0]
+        if neutral.any():
+            med = np.median(y[neutral], axis=0)
+            ref = med[1]  # green anchors; R/B bend to meet it
+            if ref > 1e-4:
+                for c in (0, 2):
+                    if med[c] > 1e-4:
+                        gammas[c] = float(np.clip(
+                            np.log(ref) / np.log(med[c]), 0.5, 2.0))
+
+        # Express the black/white stretch through the eyedropper levels
+        # chain (black remap then white divide): dividing by
+        # (white-black)/(1-black) after the black remap equals a direct
+        # (c-black)/(white-black) stretch
+        white_pt = 255.0 * (white - black) / np.maximum(1.0 - black, 1e-3)
+        return {
+            'black_point_r': float(black[0] * 255.0),
+            'black_point_g': float(black[1] * 255.0),
+            'black_point_b': float(black[2] * 255.0),
+            'white_point_r': float(white_pt[0]),
+            'white_point_g': float(white_pt[1]),
+            'white_point_b': float(white_pt[2]),
+            'density_r': gammas[0],
+            'density_g': gammas[1],
+            'density_b': gammas[2],
+        }
+
     def _tone_value(self, xp, x, cl):
         """Scalar tone curve, evaluated elementwise on an array of values.
         Matches toneValue in the shader exactly: exposure (linear-light
@@ -335,6 +396,15 @@ class FilmProcessor:
 
         # 0. Levels (eyedropper black/white/gray points)
         processed = self._apply_levels_adjustment(processed)
+
+        # 0.5 Density balance (Auto Grade): per-channel gamma aligning the
+        #     film's dye layers so grays stay neutral from shadows to
+        #     highlights. Matches the shader's u_density stage.
+        if any(p[k] != 1 for k in ('density_r', 'density_g', 'density_b')):
+            for c, name in enumerate(('density_r', 'density_g', 'density_b')):
+                if p[name] != 1:
+                    processed[:, :, c] = xp.power(
+                        xp.maximum(processed[:, :, c], 0.0), p[name])
 
         # 1. Tone (exposure/shadows/highlights/whites/blacks/contrast/
         #    brightness): one scalar curve applied the way Adobe Camera Raw

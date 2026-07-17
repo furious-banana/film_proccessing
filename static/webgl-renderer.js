@@ -195,6 +195,8 @@ class WebGLRenderer {
             hasBlackPoint: false,
             hasWhitePoint: false,
             hasGrayPoint: false,
+            // Density balance gammas (Auto Grade), 1 = neutral
+            density: [1, 1, 1],
             // Curves (will be uploaded as 1D textures)
             curvesRgb: null,
             curvesRed: null,
@@ -318,6 +320,11 @@ class WebGLRenderer {
             uniform float u_hasBlackPoint;
             uniform float u_hasWhitePoint;
             uniform float u_hasGrayPoint;
+
+            // Density balance (Auto Grade): per-channel gamma aligning the
+            // film's dye layers so grays stay neutral across the tonal
+            // range. 1.0 = neutral.
+            uniform vec3 u_density;
             
             // Curve lookup textures (1D textures, 256 samples each)
             uniform sampler2D u_curveRgb;
@@ -546,7 +553,12 @@ class WebGLRenderer {
                 // 0. Levels adjustment first (eyedropper points)
                 color = applyLevels(color, u_blackPoint, u_whitePoint, u_grayPoint,
                                    u_hasBlackPoint, u_hasWhitePoint, u_hasGrayPoint);
-                
+
+                // 0.5 Density balance (Auto Grade): per-channel gamma
+                if (any(notEqual(u_density, vec3(1.0)))) {
+                    color = pow(max(color, vec3(0.0)), u_density);
+                }
+
                 // 1. Tone (Adobe RGBTone application): exposure + shadows/
                 //    highlights/whites/blacks/contrast/brightness
                 float blum = texture2D(u_localLum,
@@ -975,6 +987,7 @@ class WebGLRenderer {
         gl.uniform1f(gl.getUniformLocation(this.program, 'u_hasBlackPoint'), this.params.hasBlackPoint ? 1.0 : 0.0);
         gl.uniform1f(gl.getUniformLocation(this.program, 'u_hasWhitePoint'), this.params.hasWhitePoint ? 1.0 : 0.0);
         gl.uniform1f(gl.getUniformLocation(this.program, 'u_hasGrayPoint'), this.params.hasGrayPoint ? 1.0 : 0.0);
+        gl.uniform3fv(gl.getUniformLocation(this.program, 'u_density'), this.params.density || [1, 1, 1]);
         
         // Bind curve textures
         if (this.curveTextureRgb) {

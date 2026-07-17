@@ -60,6 +60,13 @@ function check(name, cond, detail = '') {
     check('computeLocalLumMap is identical in both renderers', !!a && a === b);
 }
 
+// The auto-crop detector ships as a full-file copy on both platforms
+{
+    const a = fs.readFileSync(path.join(APP_DIR, 'static', 'autocrop.js'), 'utf8');
+    const b = fs.readFileSync(path.join(APP_DIR, 'mobile', 'autocrop.js'), 'utf8');
+    check('autocrop.js is identical on desktop and mobile', a === b);
+}
+
 const app = await electron.launch({
     executablePath: path.join(APP_DIR, 'node_modules', 'electron', 'dist',
         process.platform === 'win32' ? 'electron.exe' : 'electron'),
@@ -723,6 +730,87 @@ try {
         return document.getElementById('shadows').value;
     });
     check('settings save/apply round-trips slider values', rt === '0.25', rt);
+
+    // --- Density balance: per-channel gamma changes the render ---
+    // Film base correction (left on by an earlier check) crushes the
+    // synthetic scan near black, which would defeat a gamma; turn it off
+    const fcLeftOn = await page.evaluate(() =>
+        (processor.getParameters().film_correction || 0) > 0);
+    if (fcLeftOn) {
+        await page.evaluate(() => toggleControl('film_correction_basic'));
+        await page.waitForFunction(() =>
+            processor.lastBaked && processor.lastBaked.film_correction === 0,
+            null, { timeout: 15_000 });
+        await page.waitForTimeout(500);
+    }
+    const densityBefore = await samplePixel(0.5, 0.5);
+    await page.evaluate(() => {
+        const s = document.getElementById('density_r');
+        s.value = 1.6;
+        s.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await page.waitForTimeout(300);
+    const densityAfter = await samplePixel(0.5, 0.5);
+    check('density balance slider changes the render', densityBefore !== densityAfter,
+        `${densityBefore} -> ${densityAfter}`);
+
+    // --- Auto Grade: fits levels + density balance from the scan.
+    // Purely corrective: it must NOT touch taste controls like contrast ---
+    const ag = await page.evaluate(async () => {
+        document.getElementById('density_r').value = 1;
+        await processor.autoGrade();
+        return {
+            black: processor.blackPoint, white: processor.whitePoint,
+            dr: parseFloat(document.getElementById('density_r').value),
+            contrast: parseFloat(document.getElementById('contrast').value),
+        };
+    });
+    check('auto grade sets black/white points, leaves contrast alone',
+        Array.isArray(ag.black) && Array.isArray(ag.white)
+        && ag.black.every(v => v >= 0) && ag.contrast === 0,
+        JSON.stringify(ag));
+    // Clean up so later checks start from neutral state
+    await page.evaluate(() => {
+        for (const id of ['density_r', 'density_g', 'density_b', 'contrast']) {
+            const s = document.getElementById(id);
+            s.value = s.dataset.neutral || 0;
+            s.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        processor.resetEyedroppers();
+    });
+    await page.waitForTimeout(200);
+
+    // --- Auto crop must not eat scene content that matches the border
+    // color (regression: real scans with a blown overcast sky touching
+    // the scan edge lost up to a quarter of the frame - the detector
+    // read the sky as holder border and "cropped" it at the horizon) ---
+    const sky = await page.evaluate(() => {
+        // Mirrors the failing scans: blown sky (border-colored) touching
+        // the top scan edge over a ragged horizon, a straight white
+        // film-gap sliver at the bottom, thin dark rebate on the sides
+        const W = 600, H = 400;
+        const d = new Float32Array(W * H * 3);
+        for (let y = 0; y < H; y++) {
+            for (let x = 0; x < W; x++) {
+                const i = (y * W + x) * 3;
+                let v;
+                if (y >= H * 0.95) v = 0.85;                       // film gap
+                else if (x < W * 0.02 || x >= W * 0.98) v = 0.05;  // rebate
+                else {
+                    const horizon = H * 0.35 + 28 * Math.sin(x / 23) + (x % 11);
+                    v = y < horizon ? 0.86 : 0.25 + 0.3 * (y / H);
+                }
+                d[i] = v; d[i + 1] = v; d[i + 2] = v;
+            }
+        }
+        const r = detectFrame({ data: d, width: W, height: H });
+        return r && { x: r.rect.x, y: r.rect.y,
+            r: r.rect.x + r.rect.width, b: r.rect.y + r.rect.height, W, H };
+    });
+    check('auto crop keeps a blown sky, still trims the real film edge',
+        sky && sky.y === 0 && sky.x <= 20 && sky.r >= sky.W - 20
+        && sky.b > sky.H * 0.9 && sky.b < sky.H * 0.97,
+        JSON.stringify(sky));
 
     // --- Auto crop end-to-end: bordered scan slanted by 1.5° ---
     // A bright holder border with a gradient frame inset 12% per side,
