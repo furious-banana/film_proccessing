@@ -106,43 +106,63 @@ function detectFrame(img, opts = {}) {
             [leftPts.length, rightPts.length, topPts.length, botPts.length] });
     }
 
-    // --- 4. Robust line fit: value = a + slope*coord, least squares with
-    // two rounds of outlier rejection (content touching the border shows
-    // up as isolated far-off points) ---
+    // --- 4. Consensus (RANSAC) line fit: value = a + slope*coord.
+    // The frame edge is the straight line supported by the largest
+    // collinear subset of the scan points - tape marks, junk or content
+    // crossing part of the edge become outliers instead of dragging the
+    // fit, so a partially obstructed film edge is still recovered.
     // `inward` (+1/-1): which residual direction points INTO the frame.
-    // The fitted line runs through the middle of the physically ragged
-    // film edge; `shift` is how far inward the raggedness reaches among
-    // kept points, so line+shift is the edge's clean inner envelope.
+    // `support` is the consensus fraction: a real film edge is straight,
+    // so most points agree with one line (measured on real scans: >0.7);
+    // scene content that happens to match the border color (a blown sky
+    // above a horizon, a steam bank) has no dominant straight line and
+    // such a side must not crop anything (`content`).
     const fitLine = (pts, inward) => {
-        let cur = pts;
-        let a = 0, slope = 0;
-        for (let round = 0; round < 3; round++) {
-            let sc = 0, sv = 0, scc = 0, scv = 0;
-            const n = cur.length;
-            for (const [c, v] of cur) { sc += c; sv += v; scc += c * c; scv += c * v; }
-            const den = n * scc - sc * sc;
-            if (!den) return null;
-            slope = (n * scv - sc * sv) / den;
-            a = (sv - slope * sc) / n;
-            if (round === 2) break;
-            const resid = cur.map(([c, v]) => Math.abs(v - (a + slope * c)));
-            const tol = Math.max(2, 3 * median(resid));
-            const kept = cur.filter((_, i) => resid[i] <= tol);
-            if (kept.length < minPts / 2) return null;
-            cur = kept;
+        const n = pts.length;
+        const TOL = 2;
+        // Deterministic candidates (no RNG - results must reproduce):
+        // ~24 anchors spread along the edge, each paired with the point
+        // half the edge away for a long, stable baseline
+        let bestA = 0, bestSlope = 0, bestCount = -1;
+        const step = Math.max(1, Math.floor(n / 24));
+        for (let i = 0; i < n; i += step) {
+            const j = (i + (n >> 1)) % n;
+            const [c1, v1] = pts[i], [c2, v2] = pts[j];
+            if (c1 === c2) continue;
+            const slope = (v2 - v1) / (c2 - c1);
+            const a = v1 - slope * c1;
+            let count = 0;
+            for (const [c, v] of pts) {
+                if (Math.abs(v - (a + slope * c)) <= TOL) count++;
+            }
+            if (count > bestCount) { bestCount = count; bestA = a; bestSlope = slope; }
         }
-        // 90th percentile, not the max: one stray point must not drag
-        // the whole edge inward (over-cropping)
-        const inw = cur.map(([c, v]) => (v - (a + slope * c)) * inward)
+        // No consensus line at all: this side is scene content, not a
+        // film edge - the other three sides can still crop
+        const asContent = { a: 0, slope: 0, shift: 0, content: true };
+        if (bestCount < minPts / 2) return asContent;
+        // Refine: least squares on the inliers, twice
+        let a = bestA, slope = bestSlope;
+        for (let round = 0; round < 2; round++) {
+            let sc = 0, sv = 0, scc = 0, scv = 0, m = 0;
+            for (const [c, v] of pts) {
+                if (Math.abs(v - (a + slope * c)) > TOL) continue;
+                sc += c; sv += v; scc += c * c; scv += c * v; m++;
+            }
+            const den = m * scc - sc * sc;
+            if (!den) return asContent;
+            slope = (m * scv - sc * sv) / den;
+            a = (sv - slope * sc) / m;
+        }
+        const inliers = pts.filter(([c, v]) => Math.abs(v - (a + slope * c)) <= TOL);
+        const support = inliers.length / n;
+        // 90th percentile of the inliers' inward residuals: the edge's
+        // clean inner envelope (physical film-edge raggedness), without
+        // one stray point dragging the whole edge inward
+        const inw = inliers.map(([c, v]) => (v - (a + slope * c)) * inward)
             .sort((p, q) => p - q);
-        const raw90 = Math.max(0, inw[Math.floor(inw.length * 0.9)]);
-        // A real film edge is straight: kept points sit within ~2px of the
-        // fitted line. Points still scattering far inward mean the scan
-        // traced scene content that happens to match the border color (a
-        // blown sky above a horizon, a steam bank) - measured on real
-        // scans, genuine edges stay under 3.5 while content "edges" run
-        // 5-80. Such a side must not crop anything.
-        return { a, slope, shift: Math.min(raw90, 4), content: raw90 > 4.5 };
+        const shift = Math.max(0, inw[Math.floor(inw.length * 0.9)]);
+        return { a, slope, shift, content: support < 0.55 };
     };
     const L = fitLine(leftPts, 1), R = fitLine(rightPts, -1);
     const T = fitLine(topPts, 1), B = fitLine(botPts, -1);

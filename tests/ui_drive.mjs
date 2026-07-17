@@ -787,14 +787,17 @@ try {
     const sky = await page.evaluate(() => {
         // Mirrors the failing scans: blown sky (border-colored) touching
         // the top scan edge over a ragged horizon, a straight white
-        // film-gap sliver at the bottom, thin dark rebate on the sides
+        // film-gap sliver at the bottom - partially obstructed by dark
+        // tape tabs (the consensus fit must still recover that edge) -
+        // and thin dark rebate on the sides
         const W = 600, H = 400;
         const d = new Float32Array(W * H * 3);
         for (let y = 0; y < H; y++) {
             for (let x = 0; x < W; x++) {
                 const i = (y * W + x) * 3;
                 let v;
-                if (y >= H * 0.95) v = 0.85;                       // film gap
+                if (y >= H * 0.93 && (x % 150) < 40) v = 0.05;     // tape tabs
+                else if (y >= H * 0.95) v = 0.85;                  // film gap
                 else if (x < W * 0.02 || x >= W * 0.98) v = 0.05;  // rebate
                 else {
                     const horizon = H * 0.35 + 28 * Math.sin(x / 23) + (x % 11);
@@ -807,7 +810,7 @@ try {
         return r && { x: r.rect.x, y: r.rect.y,
             r: r.rect.x + r.rect.width, b: r.rect.y + r.rect.height, W, H };
     });
-    check('auto crop keeps a blown sky, still trims the real film edge',
+    check('auto crop keeps a blown sky, still finds a taped film edge',
         sky && sky.y === 0 && sky.x <= 20 && sky.r >= sky.W - 20
         && sky.b > sky.H * 0.9 && sky.b < sky.H * 0.97,
         JSON.stringify(sky));
