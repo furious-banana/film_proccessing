@@ -30,6 +30,10 @@ Both apply, in this order:
 
 ```
 levels (eyedropper black → white → gray points)
+density balance   per-channel gamma (Auto Grade), aligns the film's dye
+                  layers so grays stay neutral across the tonal range;
+                  fitted by auto_grade() / computeAutoGrade() from histogram
+                  percentiles + neutral-pixel medians
 tone              one scalar curve: exposure (linear-light ×2^stops with a
                   soft highlight shoulder), then shadows/highlights/whites/
                   blacks/contrast/brightness (endpoint-pinned lifts,

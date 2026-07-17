@@ -168,8 +168,9 @@ class ProfessionalFilmProcessor {
                 label.title = 'Double-click to reset';
                 label.addEventListener('dblclick', () => {
                     this.saveHistory();
-                    slider.value = 0;
-                    this.updateValueDisplay(slider.id, 0);
+                    const neutral = parseFloat(slider.dataset.neutral || '0');
+                    slider.value = neutral;
+                    this.updateValueDisplay(slider.id, neutral);
                     this.updateImage();
                 });
             }
@@ -213,6 +214,7 @@ class ProfessionalFilmProcessor {
         document.getElementById('grayPointBtn')?.addEventListener('click', () => this.activateEyedropper('gray'));
         document.getElementById('whitePointBtn')?.addEventListener('click', () => this.activateEyedropper('white'));
         document.getElementById('resetEyedroppersBtn')?.addEventListener('click', () => this.resetEyedroppers());
+        document.getElementById('autoGradeBtn')?.addEventListener('click', () => this.autoGrade());
 
         // Curves / undo
         document.getElementById('resetCurvesBtn')?.addEventListener('click', () => this.resetCurves());
@@ -590,9 +592,13 @@ class ProfessionalFilmProcessor {
             display.textContent = numValue % 1 === 0 ? numValue.toString() : numValue.toFixed(2);
         }
 
-        if (numValue > 0) {
+        // Color relative to the slider's neutral value (density sliders
+        // rest at 1, everything else at 0)
+        const sliderEl = document.getElementById(sliderId);
+        const neutral = sliderEl ? parseFloat(sliderEl.dataset.neutral || '0') : 0;
+        if (numValue > neutral) {
             display.style.color = '#00c851';
-        } else if (numValue < 0) {
+        } else if (numValue < neutral) {
             display.style.color = '#ff4444';
         } else {
             display.style.color = '#999';
@@ -1533,6 +1539,38 @@ class ProfessionalFilmProcessor {
         }
     }
 
+    async autoGrade() {
+        if (!this.currentImage) {
+            alert('No image loaded');
+            return;
+        }
+        this.saveHistory();
+        this.updateProcessingStatus('Fitting auto grade...');
+        try {
+            const resp = await fetch('/auto_grade', { method: 'POST' });
+            const result = await resp.json();
+            if (!result.success) {
+                this.updateProcessingStatus('Auto grade failed: ' + result.error);
+                return;
+            }
+            const p = result.params;
+            this.blackPoint = [p.black_point_r, p.black_point_g, p.black_point_b];
+            this.whitePoint = [p.white_point_r, p.white_point_g, p.white_point_b];
+            for (const id of ['density_r', 'density_g', 'density_b', 'contrast']) {
+                const slider = document.getElementById(id);
+                if (slider && p[id] !== undefined) {
+                    slider.value = p[id];
+                    this.updateValueDisplay(id, p[id]);
+                }
+            }
+            this.updateImage();
+            this.updateProcessingStatus('Auto grade applied');
+            setTimeout(() => this.updateProcessingStatus(''), 2000);
+        } catch (e) {
+            this.updateProcessingStatus('Auto grade failed: ' + e.message);
+        }
+    }
+
     resetEyedroppers() {
         this.saveHistory();
 
@@ -2244,6 +2282,8 @@ class ProfessionalFilmProcessor {
                 red: params.red || 0,
                 green: params.green || 0,
                 blue: params.blue || 0,
+                // Density balance gammas (Auto Grade), neutral 1
+                density: [params.density_r || 1, params.density_g || 1, params.density_b || 1],
                 // Eyedropper points (0-255 -> 0-1)
                 blackPoint: this.blackPoint ? this.blackPoint.map(v => v / 255) : [0, 0, 0],
                 whitePoint: this.whitePoint ? this.whitePoint.map(v => v / 255) : [1, 1, 1],

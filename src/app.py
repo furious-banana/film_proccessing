@@ -243,6 +243,20 @@ def undo_crop():
         return jsonify({'error': str(e), 'success': False})
 
 
+@app.route('/auto_grade', methods=['POST'])
+def auto_grade():
+    """Fit an automatic film-scan correction (levels + density balance +
+    S-curve) from the current image. Returns the fitted params without
+    applying them; the client sets its controls and re-renders."""
+    try:
+        if processor is None:
+            return jsonify({'error': 'No image loaded', 'success': False})
+        return jsonify({'success': True, 'params': processor.auto_grade()})
+    except Exception as e:
+        logger.exception("Error fitting auto grade")
+        return jsonify({'error': str(e), 'success': False})
+
+
 @app.route('/export', methods=['POST'])
 def export_image():
     """Export the processed image as a full-resolution 16-bit TIFF.

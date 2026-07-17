@@ -665,6 +665,8 @@ try {
         set('exposure', 0.5);
         set('contrast', 0.2);
         set('shadows', 0.1);
+        set('density_r', 1.2);
+        set('density_b', 0.85);
     });
     await page.waitForTimeout(300);
     const b64 = await page.evaluate(() => mobileApp.exportTiffBase64());
@@ -683,7 +685,8 @@ h, w = 800, 1200
 yy, xx = np.mgrid[0:h, 0:w]
 scene = np.stack([xx/(w-1), yy/(h-1), (xx+yy)/(w+h-2)], axis=-1).astype(np.float32)
 proc = FilmProcessor(1.0 - scene, is_negative=True)
-proc.update_params(exposure=0.5, contrast=0.2, shadows=0.1)
+proc.update_params(exposure=0.5, contrast=0.2, shadows=0.1,
+                   density_r=1.2, density_b=0.85)
 expected = proc.apply_adjustments(proc.get_full_res())
 if hasattr(expected, 'get'):
     expected = expected.get()
@@ -747,6 +750,28 @@ print('MAP', grid.shape[1], grid.shape[0], ','.join(map(str, grid.flatten().toli
         mapMaxDiff >= 0 && mapMaxDiff <= 1,
         mm ? `grid ${jsMap.w}x${jsMap.h}, max diff ${mapMaxDiff}` : mapOut.trim());
 
+    // --- Auto Grade: fits levels + density balance + contrast in one tap ---
+    const agM = await page.evaluate(() => {
+        mobileApp.autoGrade();
+        return {
+            black: mobileApp.blackPoint, white: mobileApp.whitePoint,
+            dr: parseFloat(document.getElementById('density_r').value),
+            contrast: parseFloat(document.getElementById('contrast').value),
+        };
+    });
+    check('auto grade fits and applies black/white points + contrast',
+        Array.isArray(agM.black) && Array.isArray(agM.white)
+        && agM.black.every(v => v >= 0) && Math.abs(agM.contrast - 0.175) < 1e-6,
+        JSON.stringify(agM));
+    await page.evaluate(() => {
+        // Neutralize so later checks start clean
+        mobileApp.blackPoint = mobileApp.whitePoint = mobileApp.grayPoint = null;
+        document.querySelectorAll('.pro-slider').forEach(s => {
+            s.value = s.dataset.neutral || 0;
+            s.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+    });
+
     // --- Big-endian 16-bit TIFF (regression: Nikon scans are 'MM' order
     // and decoded as rainbow noise before the byte-order fix) ---
     const BE_TIFF = path.join(os.tmpdir(), 'film_mobile_test_be.tif');
@@ -769,9 +794,10 @@ print('MAP', grid.shape[1], grid.shape[0], ','.join(map(str, grid.flatten().toli
     execSync(`uv run python -c "import numpy as np, tifffile; h,w=6000,9000; yy,xx=np.mgrid[0:h,0:w]; s=np.stack([xx/(w-1),yy/(h-1),(xx+yy)/(w+h-2)],axis=-1).astype(np.float32); tifffile.imwrite(r'${BIG_TIFF.replace(/\\/g, '/')}', np.rint(s*65535).astype(np.uint16), photometric='rgb')"`,
         { cwd: APP_DIR, stdio: 'inherit' });
     await page.evaluate(() => {
-        // Identity: zero every slider left over from earlier checks
+        // Identity: neutral every slider left over from earlier checks
+        // (density sliders rest at 1, everything else at 0)
         document.querySelectorAll('.pro-slider').forEach(s => {
-            s.value = 0;
+            s.value = s.dataset.neutral || 0;
             s.dispatchEvent(new Event('input', { bubbles: true }));
         });
     });

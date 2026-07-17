@@ -170,6 +170,7 @@ class MobileRenderer {
             red: 0, green: 0, blue: 0,
             blackPoint: [0, 0, 0], whitePoint: [1, 1, 1], grayPoint: [0.5, 0.5, 0.5],
             hasBlackPoint: false, hasWhitePoint: false, hasGrayPoint: false,
+            density: [1, 1, 1],
             hasCurves: false,
         };
 
@@ -204,6 +205,9 @@ class MobileRenderer {
             uniform float u_hasBlackPoint;
             uniform float u_hasWhitePoint;
             uniform float u_hasGrayPoint;
+
+            // Density balance (Auto Grade): per-channel gamma, 1 = neutral
+            uniform vec3 u_density;
 
             uniform sampler2D u_curveRgb;
             uniform sampler2D u_curveRed;
@@ -374,6 +378,9 @@ class MobileRenderer {
 
                 color = applyLevels(color, u_blackPoint, u_whitePoint, u_grayPoint,
                                    u_hasBlackPoint, u_hasWhitePoint, u_hasGrayPoint);
+                if (any(notEqual(u_density, vec3(1.0)))) {
+                    color = pow(max(color, vec3(0.0)), u_density);
+                }
                 float blum = texture2D(u_localLum,
                     v_texCoord * u_localRect.zw + u_localRect.xy).r;
                 color = applyTone(color, blum, u_hasLocalLum, u_exposure,
@@ -715,6 +722,7 @@ class MobileRenderer {
         gl.uniform1f(u('u_hasBlackPoint'), p.hasBlackPoint ? 1 : 0);
         gl.uniform1f(u('u_hasWhitePoint'), p.hasWhitePoint ? 1 : 0);
         gl.uniform1f(u('u_hasGrayPoint'), p.hasGrayPoint ? 1 : 0);
+        gl.uniform3fv(u('u_density'), p.density || [1, 1, 1]);
 
         const bindCurve = (tex, unit, name) => {
             if (!tex) return;

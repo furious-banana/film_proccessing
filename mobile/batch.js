@@ -108,11 +108,13 @@ function rendererParamsFor(p) {
     const curves = p.curves
         ? (typeof p.curves === 'string' ? p.curves : JSON.stringify(p.curves))
         : JSON.stringify({ rgb: line, red: line, green: line, blue: line });
+    const gamma = (v) => (typeof v === 'number' ? v : 1);
     return {
         exposure: num(p.exposure), contrast: num(p.contrast),
         highlights: num(p.highlights), shadows: num(p.shadows),
         whites: num(p.whites), blacks: num(p.blacks),
         red: num(p.red), green: num(p.green), blue: num(p.blue),
+        density: [gamma(p.density_r), gamma(p.density_g), gamma(p.density_b)],
         blackPoint: bp || [0, 0, 0], hasBlackPoint: !!bp,
         whitePoint: wp || [1, 1, 1], hasWhitePoint: !!wp,
         grayPoint: gp || [0.5, 0.5, 0.5], hasGrayPoint: !!gp,

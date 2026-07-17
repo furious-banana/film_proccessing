@@ -724,6 +724,54 @@ try {
     });
     check('settings save/apply round-trips slider values', rt === '0.25', rt);
 
+    // --- Density balance: per-channel gamma changes the render ---
+    // Film base correction (left on by an earlier check) crushes the
+    // synthetic scan near black, which would defeat a gamma; turn it off
+    const fcLeftOn = await page.evaluate(() =>
+        (processor.getParameters().film_correction || 0) > 0);
+    if (fcLeftOn) {
+        await page.evaluate(() => toggleControl('film_correction_basic'));
+        await page.waitForFunction(() =>
+            processor.lastBaked && processor.lastBaked.film_correction === 0,
+            null, { timeout: 15_000 });
+        await page.waitForTimeout(500);
+    }
+    const densityBefore = await samplePixel(0.5, 0.5);
+    await page.evaluate(() => {
+        const s = document.getElementById('density_r');
+        s.value = 1.6;
+        s.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await page.waitForTimeout(300);
+    const densityAfter = await samplePixel(0.5, 0.5);
+    check('density balance slider changes the render', densityBefore !== densityAfter,
+        `${densityBefore} -> ${densityAfter}`);
+
+    // --- Auto Grade: fits levels + density + contrast from the scan ---
+    const ag = await page.evaluate(async () => {
+        document.getElementById('density_r').value = 1;
+        await processor.autoGrade();
+        return {
+            black: processor.blackPoint, white: processor.whitePoint,
+            dr: parseFloat(document.getElementById('density_r').value),
+            contrast: parseFloat(document.getElementById('contrast').value),
+        };
+    });
+    check('auto grade sets black/white points and contrast',
+        Array.isArray(ag.black) && Array.isArray(ag.white)
+        && ag.black.every(v => v >= 0) && Math.abs(ag.contrast - 0.175) < 1e-6,
+        JSON.stringify(ag));
+    // Clean up so later checks start from neutral state
+    await page.evaluate(() => {
+        for (const id of ['density_r', 'density_g', 'density_b', 'contrast']) {
+            const s = document.getElementById(id);
+            s.value = s.dataset.neutral || 0;
+            s.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        processor.resetEyedroppers();
+    });
+    await page.waitForTimeout(200);
+
     // --- Auto crop end-to-end: bordered scan slanted by 1.5° ---
     // A bright holder border with a gradient frame inset 12% per side,
     // the whole scan rotated 1.5° CCW: ✨ Auto must propose +1.5° of

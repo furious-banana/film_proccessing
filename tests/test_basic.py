@@ -201,6 +201,47 @@ def test_tone_relaxes_saturation():
         f"saturation should relax under a shadow lift: {sat_in:.3f} -> {sat_out:.3f}"
 
 
+def test_density_balance_gamma():
+    # Density balance is an independent per-channel gamma (identity at 1)
+    img = np.full((4, 4, 3), 0.25, dtype=np.float32)
+    processor = FilmProcessor(img, is_negative=False)
+    processor.update_params(density_r=2.0, density_b=0.5)
+    out = processor.apply_adjustments(processor.get_full_res())
+    if hasattr(out, 'get'):
+        out = out.get()
+    assert np.allclose(out[..., 0], 0.25 ** 2.0, atol=1e-5), "R should square"
+    assert np.allclose(out[..., 1], 0.25, atol=1e-6), "G untouched at 1.0"
+    assert np.allclose(out[..., 2], 0.25 ** 0.5, atol=1e-5), "B should sqrt"
+
+
+def test_auto_grade_neutralizes_scan():
+    # Synthetic scanner positive: a gray ramp wearing the classic Nikon Scan
+    # defects - fog floor (~0.1), a color cast, and per-channel gamma skew
+    # (crossover). Auto grade must fit params that bring it back to neutral.
+    ramp = np.linspace(0.0, 1.0, 128, dtype=np.float32)
+    ramp[:8] = 0.0  # rebate strip: pure film base at the frame edge
+    g = np.tile(ramp, (64, 1))
+    img = np.stack([
+        0.12 + 0.85 * g ** 0.85,   # red: lifted floor + gamma skew
+        0.11 + 0.86 * g,           # green: reference
+        0.10 + 0.83 * g ** 1.15,   # blue: opposite skew
+    ], axis=-1)
+    processor = FilmProcessor(img, is_negative=False)
+    fitted = processor.auto_grade()
+    assert 0.10 < fitted['black_point_r'] / 255.0 < 0.14, "fog floor found"
+    assert fitted['density_r'] > 1.05, "red gamma skew detected"
+    assert fitted['density_b'] < 0.95, "blue gamma skew detected"
+
+    processor.update_params(**fitted)
+    out = processor.apply_adjustments(processor.get_full_res())
+    if hasattr(out, 'get'):
+        out = out.get()
+    mid = out[:, 32:96]  # midtones, away from the rebate and clipped top
+    spread = np.abs(mid.max(axis=-1) - mid.min(axis=-1)).mean()
+    assert spread < 0.03, f"graded ramp should be neutral, spread {spread:.4f}"
+    assert out[:, :8].max() < 0.02, "rebate/fog floor should reach true black"
+
+
 def test_linear_curves_are_identity():
     img = make_test_image()
     processor = FilmProcessor(img, is_negative=False)
