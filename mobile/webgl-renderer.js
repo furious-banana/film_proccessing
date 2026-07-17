@@ -1,9 +1,9 @@
 // WebGL renderer for the mobile app.
 //
 // The fragment shader is IDENTICAL to the desktop app's
-// (static/webgl-renderer.js): levels -> exposure -> tone (shadows/highlights/
-// whites/blacks/contrast/brightness on luminance) -> temp/tint -> RGB ->
-// saturation -> curves. Export reads the
+// (static/webgl-renderer.js): levels -> tone (exposure/shadows/highlights/
+// whites/blacks/contrast/brightness, applied Adobe-RGBTone-style) ->
+// temp/tint -> RGB -> saturation -> curves. Export reads the
 // shader's own output back from a float framebuffer, so the exported file
 // is exactly what's previewed - there is no second pipeline to drift.
 
@@ -220,16 +220,6 @@ class MobileRenderer {
 
             varying highp vec2 v_texCoord;
 
-            // Exposure: multiply in linear light (true photographic stops),
-            // soft shoulder above 0.9 rolls pushed highlights off smoothly
-            vec3 applyExposure(vec3 color, float exposure) {
-                if (exposure == 0.0) return color;
-                vec3 lin = pow(max(color, vec3(0.0)), vec3(2.2)) * pow(2.0, exposure);
-                vec3 shoulder = 0.9 + 0.1 * (1.0 - exp(-(lin - 0.9) / 0.1));
-                lin = mix(lin, shoulder, step(vec3(0.9), lin));
-                return pow(lin, vec3(1.0 / 2.2));
-            }
-
             // Soft-knee endpoint stretch: scale by K (>= 1), rolling smoothly
             // into 1.0; values past 1 + (K-1)/2 still clip. Identity at K == 1.
             float softKnee(float x, float K) {
@@ -256,61 +246,88 @@ class MobileRenderer {
                 return color;
             }
 
-            // Tone: computed on luminance, applied as one ratio-preserving
-            // gain so hue/saturation survive. Black and white stay pinned
-            // unless the op's job is to move that endpoint.
-            // Shadows/Highlights are LOCAL: their masks blend in the blurred
-            // neighborhood luminance (blum), so detail inside a bright or
-            // dark region keeps its contrast instead of flattening. min/max
-            // against pixel luminance stops halos across strong edges.
-            vec3 applyTone(vec3 color, float blum, float hasLocal, float shadows,
-                           float highlights, float whites, float blacks,
-                           float contrast, float brightness) {
-                float lum = clamp(dot(color, vec3(0.299, 0.587, 0.114)), 0.0, 1.0);
-                float cl = mix(lum, blum, hasLocal * 0.6);
-                float nl = lum;
+            // Scalar tone curve: exposure (linear-light stops, soft shoulder
+            // above 0.9), then shadows/highlights (locally masked via cl),
+            // whites, blacks, contrast, brightness. Monotone in x across the
+            // slider ranges; identity when every parameter is 0.
+            float toneValue(float x, float cl, float exposure, float shadows,
+                            float highlights, float whites, float blacks,
+                            float contrast, float brightness) {
+                if (exposure != 0.0) {
+                    float lin = pow(max(x, 0.0), 2.2) * pow(2.0, exposure);
+                    if (lin > 0.9) {
+                        lin = 0.9 + 0.1 * (1.0 - exp(-(lin - 0.9) / 0.1));
+                    }
+                    x = pow(lin, 1.0 / 2.2);
+                }
 
                 // Shadows: multiplicative lift/dip weighted toward dark tones
-                float sm = 1.0 - max(cl, lum);
-                nl = nl * exp((shadows * 2.0) * sm * sm);
+                float sm = 1.0 - max(cl, x);
+                x = x * exp((shadows * 2.0) * sm * sm);
 
                 // Highlights: compress/expand the top end, black stays put.
                 // Quartic mask keeps the effect out of mids and shadows;
                 // slider is +/-0.5, tripled internally for useful strength
-                float hm = min(cl, lum);
+                float hm = min(cl, x);
                 float hm4 = (hm * hm) * (hm * hm);
-                float ht = 1.0 - (1.0 - hm) * exp(-(highlights * 3.0) * hm4);
-                nl = nl * (ht / max(hm, 1e-4));
+                x = 1.0 - (1.0 - x) * exp(-(highlights * 3.0) * hm4);
 
-                nl = clamp(nl, 0.0, 1.0);
+                x = clamp(x, 0.0, 1.0);
 
                 // Whites: white point. Up = soft-knee stretch, down = scale back
                 if (whites > 0.0) {
-                    nl = softKnee(nl, 1.0 / (1.0 - 0.25 * whites));
+                    x = softKnee(x, 1.0 / (1.0 - 0.25 * whites));
                 } else {
-                    nl = nl * (1.0 + 0.25 * whites);
+                    x = x * (1.0 + 0.25 * whites);
                 }
 
                 // Blacks: black point. Down = soft toe, up = darkest-tone lift
                 if (blacks >= 0.0) {
-                    float m = (1.0 - nl) * (1.0 - nl);
-                    nl = nl * exp(blacks * m * m * m);
+                    float m = (1.0 - x) * (1.0 - x);
+                    x = x * exp(blacks * m * m * m);
                 } else {
-                    nl = 1.0 - softKnee(1.0 - nl, 1.0 / (1.0 + 0.25 * blacks));
+                    x = 1.0 - softKnee(1.0 - x, 1.0 / (1.0 + 0.25 * blacks));
                 }
 
                 // Contrast: up = endpoint-pinned S-curve, down = linear flatten
                 if (contrast > 0.0) {
-                    float s = nl * nl * (3.0 - 2.0 * nl);
-                    nl = mix(nl, s, min(2.0 * contrast, 1.0));
+                    float s = x * x * (3.0 - 2.0 * x);
+                    x = mix(x, s, min(2.0 * contrast, 1.0));
                 } else {
-                    nl = 0.5 + (nl - 0.5) * (1.0 + contrast);
+                    x = 0.5 + (x - 0.5) * (1.0 + contrast);
                 }
 
                 // Brightness: midtone gamma, endpoints pinned
-                nl = pow(max(nl, 0.0), pow(2.0, -brightness));
+                return pow(max(x, 0.0), pow(2.0, -brightness));
+            }
 
-                return color * (max(nl, 0.0) / max(lum, 1e-4));
+            // Tone applied Adobe-style (RGBTone from the DNG SDK, what
+            // Camera Raw / Lightroom use): evaluate the curve at the pixel's
+            // max and min channels, interpolate the middle channel. Hue is
+            // preserved exactly; saturation relaxes toward the endpoints.
+            // Shadows/Highlights are LOCAL: their masks blend in the blurred
+            // neighborhood luminance (blum); min/max against the value being
+            // toned stops halos across strong edges.
+            vec3 applyTone(vec3 color, float blum, float hasLocal,
+                           float exposure, float shadows, float highlights,
+                           float whites, float blacks, float contrast,
+                           float brightness) {
+                if (exposure == 0.0 && shadows == 0.0 && highlights == 0.0 &&
+                    whites == 0.0 && blacks == 0.0 && contrast == 0.0 &&
+                    brightness == 0.0) {
+                    return color;
+                }
+                vec3 c = clamp(color, 0.0, 1.0);
+                float lum = clamp(dot(c, vec3(0.299, 0.587, 0.114)), 0.0, 1.0);
+                float cl = mix(lum, blum, hasLocal * 0.6);
+
+                float mx = max(c.r, max(c.g, c.b));
+                float mn = min(c.r, min(c.g, c.b));
+                float tmx = toneValue(mx, cl, exposure, shadows, highlights,
+                                      whites, blacks, contrast, brightness);
+                float tmn = toneValue(mn, cl, exposure, shadows, highlights,
+                                      whites, blacks, contrast, brightness);
+                return tmn + (tmx - tmn) * (c - mn) / max(mx - mn, 1e-6);
             }
 
             vec3 applyLevels(vec3 color, vec3 blackPt, vec3 whitePt, vec3 grayPt,
@@ -357,12 +374,11 @@ class MobileRenderer {
 
                 color = applyLevels(color, u_blackPoint, u_whitePoint, u_grayPoint,
                                    u_hasBlackPoint, u_hasWhitePoint, u_hasGrayPoint);
-                color = applyExposure(color, u_exposure);
                 float blum = texture2D(u_localLum,
                     v_texCoord * u_localRect.zw + u_localRect.xy).r;
-                color = applyTone(color, blum, u_hasLocalLum, u_shadows,
-                                  u_highlights, u_whites, u_blacks,
-                                  u_contrast, u_brightness);
+                color = applyTone(color, blum, u_hasLocalLum, u_exposure,
+                                  u_shadows, u_highlights, u_whites,
+                                  u_blacks, u_contrast, u_brightness);
                 color = applyTemperature(color, u_temperature);
                 color = applyTint(color, u_tint);
                 color.r += u_red;

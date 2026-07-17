@@ -351,17 +351,6 @@ class WebGLRenderer {
                 return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
             }
             
-            // Apply exposure: multiply in linear light (true photographic
-            // stops), with a soft shoulder above 0.9 so pushed highlights
-            // roll off smoothly instead of clipping. Identity at 0.
-            vec3 applyExposure(vec3 color, float exposure) {
-                if (exposure == 0.0) return color;
-                vec3 lin = pow(max(color, vec3(0.0)), vec3(2.2)) * pow(2.0, exposure);
-                vec3 shoulder = 0.9 + 0.1 * (1.0 - exp(-(lin - 0.9) / 0.1));
-                lin = mix(lin, shoulder, step(vec3(0.9), lin));
-                return pow(lin, vec3(1.0 / 2.2));
-            }
-
             // Soft-knee endpoint stretch: scales x by K (>= 1) and rolls
             // smoothly (C1) into 1.0 near the top instead of hard clipping.
             // Values pushed past 1 + (K-1)/2 do clip, so the white/black
@@ -398,67 +387,100 @@ class WebGLRenderer {
                 return color;
             }
             
-            // Tone: shadows/highlights/whites/blacks/contrast/brightness are
-            // computed on luminance and applied as one ratio-preserving gain,
-            // so hue and saturation survive tonal edits. Each op keeps black
-            // and white pinned unless its job is to move that endpoint.
-            // Shadows/Highlights are LOCAL: their masks blend in the blurred
-            // neighborhood luminance (blum), so detail inside a bright or
-            // dark region keeps its contrast instead of flattening. min/max
-            // against pixel luminance stops halos across strong edges.
-            vec3 applyTone(vec3 color, float blum, float hasLocal, float shadows,
-                           float highlights, float whites, float blacks,
-                           float contrast, float brightness) {
-                float lum = clamp(dot(color, vec3(0.299, 0.587, 0.114)), 0.0, 1.0);
-                float cl = mix(lum, blum, hasLocal * 0.6);
-                float nl = lum;
+            // Scalar tone curve. Exposure: multiply in linear light (true
+            // photographic stops) with a soft shoulder above 0.9 so pushed
+            // highlights roll off instead of clipping. Then shadows/
+            // highlights (locally masked via cl), whites, blacks, contrast,
+            // brightness. Monotone in x across the slider ranges; identity
+            // when every parameter is 0.
+            float toneValue(float x, float cl, float exposure, float shadows,
+                            float highlights, float whites, float blacks,
+                            float contrast, float brightness) {
+                if (exposure != 0.0) {
+                    float lin = pow(max(x, 0.0), 2.2) * pow(2.0, exposure);
+                    if (lin > 0.9) {
+                        lin = 0.9 + 0.1 * (1.0 - exp(-(lin - 0.9) / 0.1));
+                    }
+                    x = pow(lin, 1.0 / 2.2);
+                }
 
                 // Shadows: multiplicative lift/dip weighted toward dark tones
                 // (slider is +/-0.5, doubled internally for useful strength)
-                float sm = 1.0 - max(cl, lum);
-                nl = nl * exp((shadows * 2.0) * sm * sm);
+                float sm = 1.0 - max(cl, x);
+                x = x * exp((shadows * 2.0) * sm * sm);
 
                 // Highlights: compress/expand the top end, black stays put.
                 // Quartic mask keeps the effect out of mids and shadows;
                 // slider is +/-0.5, tripled internally for useful strength
-                float hm = min(cl, lum);
+                float hm = min(cl, x);
                 float hm4 = (hm * hm) * (hm * hm);
-                float ht = 1.0 - (1.0 - hm) * exp(-(highlights * 3.0) * hm4);
-                nl = nl * (ht / max(hm, 1e-4));
+                x = 1.0 - (1.0 - x) * exp(-(highlights * 3.0) * hm4);
 
-                nl = clamp(nl, 0.0, 1.0);
+                x = clamp(x, 0.0, 1.0);
 
                 // Whites: true white-point control. Up stretches the top into
                 // a soft knee (eventually clips); down scales the range back.
                 if (whites > 0.0) {
-                    nl = softKnee(nl, 1.0 / (1.0 - 0.25 * whites));
+                    x = softKnee(x, 1.0 / (1.0 - 0.25 * whites));
                 } else {
-                    nl = nl * (1.0 + 0.25 * whites);
+                    x = x * (1.0 + 0.25 * whites);
                 }
 
                 // Blacks: true black-point control. Down stretches the bottom
                 // into a soft toe (eventually clips); up lifts only the
                 // darkest tones while true black stays black.
                 if (blacks >= 0.0) {
-                    float m = (1.0 - nl) * (1.0 - nl);
-                    nl = nl * exp(blacks * m * m * m);
+                    float m = (1.0 - x) * (1.0 - x);
+                    x = x * exp(blacks * m * m * m);
                 } else {
-                    nl = 1.0 - softKnee(1.0 - nl, 1.0 / (1.0 + 0.25 * blacks));
+                    x = 1.0 - softKnee(1.0 - x, 1.0 / (1.0 + 0.25 * blacks));
                 }
 
                 // Contrast: up is an S-curve pinned at both endpoints (never
                 // clips); down is a linear flatten toward middle gray.
                 if (contrast > 0.0) {
-                    float s = nl * nl * (3.0 - 2.0 * nl);
-                    nl = mix(nl, s, min(2.0 * contrast, 1.0));
+                    float s = x * x * (3.0 - 2.0 * x);
+                    x = mix(x, s, min(2.0 * contrast, 1.0));
                 } else {
-                    nl = 0.5 + (nl - 0.5) * (1.0 + contrast);
+                    x = 0.5 + (x - 0.5) * (1.0 + contrast);
                 }
 
                 // Brightness: midtone gamma, endpoints pinned
-                nl = pow(max(nl, 0.0), pow(2.0, -brightness));
+                return pow(max(x, 0.0), pow(2.0, -brightness));
+            }
 
-                return color * (max(nl, 0.0) / max(lum, 1e-4));
+            // Tone is applied the way Adobe Camera Raw / Lightroom apply
+            // theirs (the RGBTone method from Adobe's DNG SDK): evaluate the
+            // tone curve at the pixel's max and min channels and place the
+            // middle channel by interpolation between them. Hue is preserved
+            // exactly while saturation relaxes as tones approach the
+            // endpoints -- the Photoshop feel -- instead of chroma being
+            // locked in place (neon shadows) or channels curving
+            // independently (hue shifts).
+            // Shadows/Highlights are LOCAL: their masks blend in the blurred
+            // neighborhood luminance (blum), so detail inside a bright or
+            // dark region keeps its contrast instead of flattening. min/max
+            // against the value being toned stops halos across strong edges.
+            vec3 applyTone(vec3 color, float blum, float hasLocal,
+                           float exposure, float shadows, float highlights,
+                           float whites, float blacks, float contrast,
+                           float brightness) {
+                if (exposure == 0.0 && shadows == 0.0 && highlights == 0.0 &&
+                    whites == 0.0 && blacks == 0.0 && contrast == 0.0 &&
+                    brightness == 0.0) {
+                    return color;
+                }
+                vec3 c = clamp(color, 0.0, 1.0);
+                float lum = clamp(dot(c, vec3(0.299, 0.587, 0.114)), 0.0, 1.0);
+                float cl = mix(lum, blum, hasLocal * 0.6);
+
+                float mx = max(c.r, max(c.g, c.b));
+                float mn = min(c.r, min(c.g, c.b));
+                float tmx = toneValue(mx, cl, exposure, shadows, highlights,
+                                      whites, blacks, contrast, brightness);
+                float tmn = toneValue(mn, cl, exposure, shadows, highlights,
+                                      whites, blacks, contrast, brightness);
+                return tmn + (tmx - tmn) * (c - mn) / max(mx - mn, 1e-6);
             }
             
             // Apply levels adjustment (eyedropper black/white/gray points)
@@ -525,30 +547,27 @@ class WebGLRenderer {
                 color = applyLevels(color, u_blackPoint, u_whitePoint, u_grayPoint,
                                    u_hasBlackPoint, u_hasWhitePoint, u_hasGrayPoint);
                 
-                // 1. Exposure (linear-light stops with highlight rolloff)
-                color = applyExposure(color, u_exposure);
-
-                // 2. Tone: shadows/highlights/whites/blacks/contrast/
-                //    brightness on luminance, applied as one gain
+                // 1. Tone (Adobe RGBTone application): exposure + shadows/
+                //    highlights/whites/blacks/contrast/brightness
                 float blum = texture2D(u_localLum,
                     v_texCoord * u_localRect.zw + u_localRect.xy).r;
-                color = applyTone(color, blum, u_hasLocalLum, u_shadows,
-                                  u_highlights, u_whites, u_blacks,
-                                  u_contrast, u_brightness);
+                color = applyTone(color, blum, u_hasLocalLum, u_exposure,
+                                  u_shadows, u_highlights, u_whites,
+                                  u_blacks, u_contrast, u_brightness);
 
-                // 3. Temperature and Tint
+                // 2. Temperature and Tint
                 color = applyTemperature(color, u_temperature);
                 color = applyTint(color, u_tint);
 
-                // 4. RGB adjustments
+                // 3. RGB adjustments
                 color.r += u_red;
                 color.g += u_green;
                 color.b += u_blue;
 
-                // 5. Saturation
+                // 4. Saturation
                 color = applySaturation(color, u_saturation);
 
-                // 6. Custom curves (after other adjustments)
+                // 5. Custom curves (after other adjustments)
                 color = applyCurves(color);
                 
                 // Clamp to valid range
