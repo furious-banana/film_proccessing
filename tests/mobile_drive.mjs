@@ -750,7 +750,8 @@ print('MAP', grid.shape[1], grid.shape[0], ','.join(map(str, grid.flatten().toli
         mapMaxDiff >= 0 && mapMaxDiff <= 1,
         mm ? `grid ${jsMap.w}x${jsMap.h}, max diff ${mapMaxDiff}` : mapOut.trim());
 
-    // --- Auto Grade: fits levels + density balance + contrast in one tap ---
+    // --- Auto Grade: fits levels + density balance in one tap. Purely
+    // corrective: contrast (0.2 from the cross-check) must be untouched ---
     const agM = await page.evaluate(() => {
         mobileApp.autoGrade();
         return {
@@ -759,9 +760,9 @@ print('MAP', grid.shape[1], grid.shape[0], ','.join(map(str, grid.flatten().toli
             contrast: parseFloat(document.getElementById('contrast').value),
         };
     });
-    check('auto grade fits and applies black/white points + contrast',
+    check('auto grade fits black/white points, leaves contrast alone',
         Array.isArray(agM.black) && Array.isArray(agM.white)
-        && agM.black.every(v => v >= 0) && Math.abs(agM.contrast - 0.175) < 1e-6,
+        && agM.black.every(v => v >= 0) && Math.abs(agM.contrast - 0.2) < 1e-6,
         JSON.stringify(agM));
     await page.evaluate(() => {
         // Neutralize so later checks start clean

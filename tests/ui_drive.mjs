@@ -747,7 +747,8 @@ try {
     check('density balance slider changes the render', densityBefore !== densityAfter,
         `${densityBefore} -> ${densityAfter}`);
 
-    // --- Auto Grade: fits levels + density + contrast from the scan ---
+    // --- Auto Grade: fits levels + density balance from the scan.
+    // Purely corrective: it must NOT touch taste controls like contrast ---
     const ag = await page.evaluate(async () => {
         document.getElementById('density_r').value = 1;
         await processor.autoGrade();
@@ -757,9 +758,9 @@ try {
             contrast: parseFloat(document.getElementById('contrast').value),
         };
     });
-    check('auto grade sets black/white points and contrast',
+    check('auto grade sets black/white points, leaves contrast alone',
         Array.isArray(ag.black) && Array.isArray(ag.white)
-        && ag.black.every(v => v >= 0) && Math.abs(ag.contrast - 0.175) < 1e-6,
+        && ag.black.every(v => v >= 0) && ag.contrast === 0,
         JSON.stringify(ag));
     // Clean up so later checks start from neutral state
     await page.evaluate(() => {

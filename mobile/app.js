@@ -9,7 +9,7 @@
 
 // Shown on the start screen so an update can be verified at a glance.
 // Keep in step with CACHE_VERSION in sw.js.
-const APP_VERSION = 'v34';
+const APP_VERSION = 'v35';
 
 // Auto Grade: fit an automatic correction for a scanned film positive.
 // Scanner positives keep the film-base fog floor (blacks near ~0.1, never
@@ -94,7 +94,6 @@ function computeAutoGrade(data, width, height) {
         black_point_r: black[0] * 255, black_point_g: black[1] * 255, black_point_b: black[2] * 255,
         white_point_r: whitePt[0], white_point_g: whitePt[1], white_point_b: whitePt[2],
         density_r: gammas[0], density_g: gammas[1], density_b: gammas[2],
-        contrast: 0.175, // the gentle print-style S curve
     };
 }
 
@@ -421,7 +420,7 @@ class MobileFilmProcessor {
             this.renderer.imageWidth, this.renderer.imageHeight);
         this.blackPoint = [p.black_point_r, p.black_point_g, p.black_point_b];
         this.whitePoint = [p.white_point_r, p.white_point_g, p.white_point_b];
-        for (const id of ['density_r', 'density_g', 'density_b', 'contrast']) {
+        for (const id of ['density_r', 'density_g', 'density_b']) {
             const s = document.getElementById(id);
             if (s && p[id] !== undefined) {
                 s.value = p[id];

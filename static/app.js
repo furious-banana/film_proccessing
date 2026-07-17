@@ -1556,7 +1556,7 @@ class ProfessionalFilmProcessor {
             const p = result.params;
             this.blackPoint = [p.black_point_r, p.black_point_g, p.black_point_b];
             this.whitePoint = [p.white_point_r, p.white_point_g, p.white_point_b];
-            for (const id of ['density_r', 'density_g', 'density_b', 'contrast']) {
+            for (const id of ['density_r', 'density_g', 'density_b']) {
                 const slider = document.getElementById(id);
                 if (slider && p[id] !== undefined) {
                     slider.value = p[id];

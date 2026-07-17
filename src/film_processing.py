@@ -282,8 +282,8 @@ class FilmProcessor:
         per-channel gammas (color crossover). The fit: per-channel
         black/white points from histogram percentiles, then per-channel
         gammas chosen so near-neutral pixels stay neutral. Returns a params
-        dict (eyedropper levels + density balance + a gentle S-curve) - it
-        does NOT apply them.
+        dict (eyedropper levels + density balance) - it does NOT apply
+        them. Purely corrective: contrast/looks are left to the user.
         """
         img = self.get_proxy()
         if hasattr(img, 'get'):
@@ -328,7 +328,6 @@ class FilmProcessor:
             'density_r': gammas[0],
             'density_g': gammas[1],
             'density_b': gammas[2],
-            'contrast': 0.175,  # the gentle print-style S curve
         }
 
     def _tone_value(self, xp, x, cl):
