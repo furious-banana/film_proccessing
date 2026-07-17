@@ -261,6 +261,89 @@ class BatchProcessor {
             { type: 'image/tiff' });
     }
 
+    // Render one frame small, with its saved look and baked crop applied -
+    // the building block of a contact sheet
+    async renderThumbCanvas(file, settings, maxDim) {
+        const r = this.offscreen();
+        const img = await decodeImageFile(file, maxDim);
+        const k = settings.ops_width ? img.width / settings.ops_width : 1;
+        const ops = (settings.baked_ops || []).map(op => ({
+            angle: op.angle || 0,
+            rect: op.rect ? {
+                x: op.rect.x * k, y: op.rect.y * k,
+                width: op.rect.width * k, height: op.rect.height * k,
+            } : null,
+        }));
+        const prepared = prepareSource(img, ops, this.stateFor(settings));
+        r.updateParams(rendererParamsFor(settings));
+        const { data16, width, height } = r.renderToPixels16(prepared);
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        const id = ctx.createImageData(width, height);
+        for (let i = 0; i < width * height; i++) {
+            id.data[i * 4] = Math.round(data16[i * 3] / 257);
+            id.data[i * 4 + 1] = Math.round(data16[i * 3 + 1] / 257);
+            id.data[i * 4 + 2] = Math.round(data16[i * 3 + 2] / 257);
+            id.data[i * 4 + 3] = 255;
+        }
+        ctx.putImageData(id, 0, 0);
+        return canvas;
+    }
+
+    // Compose a classic dark-ground contact sheet: the selected frames in
+    // a grid, each with its saved look and crop applied, filename under
+    // each frame, roll info in the header. Returns { blob (JPEG), failed }.
+    async contactSheet(entries, header, onProgress) {
+        this.cancelled = false;
+        const CELL = 560, LABEL = 40, GAP = 24;
+        const cols = Math.min(6, Math.ceil(Math.sqrt(entries.length)));
+        const rows = Math.ceil(entries.length / cols);
+        const headerH = header ? 84 : 40;
+        const W = GAP + cols * (CELL + GAP);
+        const H = headerH + rows * (CELL + LABEL + GAP) + GAP;
+        const sheet = document.createElement('canvas');
+        sheet.width = W;
+        sheet.height = H;
+        const ctx = sheet.getContext('2d');
+        ctx.fillStyle = '#141414';
+        ctx.fillRect(0, 0, W, H);
+        if (header) {
+            ctx.fillStyle = '#e8e8e8';
+            ctx.font = '600 30px system-ui, sans-serif';
+            ctx.fillText(header, GAP, 52, W - 2 * GAP);
+        }
+        const failed = [];
+        for (let i = 0; i < entries.length; i++) {
+            if (this.cancelled) break;
+            onProgress(i, entries.length, entries[i].name);
+            await nextPaint();
+            const cx = GAP + (i % cols) * (CELL + GAP);
+            const cy = headerH + Math.floor(i / cols) * (CELL + LABEL + GAP);
+            try {
+                const file = await entries[i].handle.getFile();
+                const settings = await resolveSettings(
+                    this.srcDir, file.name, file.size, this.knownSidecars) || {};
+                const c = await this.renderThumbCanvas(file, settings, CELL);
+                const s = Math.min(CELL / c.width, CELL / c.height);
+                const dw = Math.round(c.width * s), dh = Math.round(c.height * s);
+                ctx.drawImage(c, cx + (CELL - dw) / 2, cy + (CELL - dh) / 2, dw, dh);
+            } catch (e) {
+                console.warn('Contact sheet: frame failed - ' + entries[i].name, e);
+                failed.push(entries[i].name);
+            }
+            ctx.fillStyle = '#9a9a9a';
+            ctx.font = '24px ui-monospace, monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText(entries[i].name.replace(/\.[^.]+$/, ''),
+                cx + CELL / 2, cy + CELL + 30, CELL);
+            ctx.textAlign = 'left';
+        }
+        const blob = await new Promise(res => sheet.toBlob(res, 'image/jpeg', 0.92));
+        return { blob, failed };
+    }
+
     // opts: { format: 'tiff'|'jpeg', autoCrop, dir: directory handle,
     //         desc: roll metadata line for the TIFFs' description tag }
     async exportAll(entries, opts, onProgress) {

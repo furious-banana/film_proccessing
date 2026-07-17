@@ -9,7 +9,7 @@
 
 // Shown on the start screen so an update can be verified at a glance.
 // Keep in step with CACHE_VERSION in sw.js.
-const APP_VERSION = 'v35';
+const APP_VERSION = 'v36';
 
 // Auto Grade: fit an automatic correction for a scanned film positive.
 // Scanner positives keep the film-base fog floor (blacks near ~0.1, never

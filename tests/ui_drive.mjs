@@ -60,6 +60,13 @@ function check(name, cond, detail = '') {
     check('computeLocalLumMap is identical in both renderers', !!a && a === b);
 }
 
+// The auto-crop detector ships as a full-file copy on both platforms
+{
+    const a = fs.readFileSync(path.join(APP_DIR, 'static', 'autocrop.js'), 'utf8');
+    const b = fs.readFileSync(path.join(APP_DIR, 'mobile', 'autocrop.js'), 'utf8');
+    check('autocrop.js is identical on desktop and mobile', a === b);
+}
+
 const app = await electron.launch({
     executablePath: path.join(APP_DIR, 'node_modules', 'electron', 'dist',
         process.platform === 'win32' ? 'electron.exe' : 'electron'),
@@ -772,6 +779,38 @@ try {
         processor.resetEyedroppers();
     });
     await page.waitForTimeout(200);
+
+    // --- Auto crop must not eat scene content that matches the border
+    // color (regression: real scans with a blown overcast sky touching
+    // the scan edge lost up to a quarter of the frame - the detector
+    // read the sky as holder border and "cropped" it at the horizon) ---
+    const sky = await page.evaluate(() => {
+        // Mirrors the failing scans: blown sky (border-colored) touching
+        // the top scan edge over a ragged horizon, a straight white
+        // film-gap sliver at the bottom, thin dark rebate on the sides
+        const W = 600, H = 400;
+        const d = new Float32Array(W * H * 3);
+        for (let y = 0; y < H; y++) {
+            for (let x = 0; x < W; x++) {
+                const i = (y * W + x) * 3;
+                let v;
+                if (y >= H * 0.95) v = 0.85;                       // film gap
+                else if (x < W * 0.02 || x >= W * 0.98) v = 0.05;  // rebate
+                else {
+                    const horizon = H * 0.35 + 28 * Math.sin(x / 23) + (x % 11);
+                    v = y < horizon ? 0.86 : 0.25 + 0.3 * (y / H);
+                }
+                d[i] = v; d[i + 1] = v; d[i + 2] = v;
+            }
+        }
+        const r = detectFrame({ data: d, width: W, height: H });
+        return r && { x: r.rect.x, y: r.rect.y,
+            r: r.rect.x + r.rect.width, b: r.rect.y + r.rect.height, W, H };
+    });
+    check('auto crop keeps a blown sky, still trims the real film edge',
+        sky && sky.y === 0 && sky.x <= 20 && sky.r >= sky.W - 20
+        && sky.b > sky.H * 0.9 && sky.b < sky.H * 0.97,
+        JSON.stringify(sky));
 
     // --- Auto crop end-to-end: bordered scan slanted by 1.5° ---
     // A bright holder border with a gradient frame inset 12% per side,

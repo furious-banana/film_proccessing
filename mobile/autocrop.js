@@ -135,8 +135,14 @@ function detectFrame(img, opts = {}) {
         // the whole edge inward (over-cropping)
         const inw = cur.map(([c, v]) => (v - (a + slope * c)) * inward)
             .sort((p, q) => p - q);
-        const shift = Math.max(0, inw[Math.floor(inw.length * 0.9)]);
-        return { a, slope, shift: Math.min(shift, 4) };
+        const raw90 = Math.max(0, inw[Math.floor(inw.length * 0.9)]);
+        // A real film edge is straight: kept points sit within ~2px of the
+        // fitted line. Points still scattering far inward mean the scan
+        // traced scene content that happens to match the border color (a
+        // blown sky above a horizon, a steam bank) - measured on real
+        // scans, genuine edges stay under 3.5 while content "edges" run
+        // 5-80. Such a side must not crop anything.
+        return { a, slope, shift: Math.min(raw90, 4), content: raw90 > 4.5 };
     };
     const L = fitLine(leftPts, 1), R = fitLine(rightPts, -1);
     const T = fitLine(topPts, 1), B = fitLine(botPts, -1);
@@ -151,8 +157,11 @@ function detectFrame(img, opts = {}) {
         Math.atan(L.slope) * deg, Math.atan(R.slope) * deg,
         -Math.atan(T.slope) * deg, -Math.atan(B.slope) * deg,
     ];
-    // An edge that "slants" more than this hit content, not the frame
-    const candidates = edgeAngles.filter(a => Math.abs(a) <= 3);
+    // An edge that "slants" more than this - or that the fit flagged as
+    // scene content - hit content, not the frame
+    const edges = [L, R, T, B];
+    const candidates = edgeAngles.filter((a, i) =>
+        Math.abs(a) <= 3 && !edges[i].content);
     const angle = candidates.length ? median(candidates) : 0;
     if (opts.debug) {
         console.log('detectFrame edges [L,R,T,B]:',
@@ -164,11 +173,18 @@ function detectFrame(img, opts = {}) {
     // --- 6. Conservative inner rect from the fitted lines (valid once
     // straightened; residual slant is covered by the margin) ---
     // Inside means: below the top envelope's highest point, above the
-    // bottom's lowest, right of the left's rightmost, and so on
-    const yTop = Math.max(T.a + T.slope * x0, T.a + T.slope * x1) + T.shift;
-    const yBot = Math.min(B.a + B.slope * x0, B.a + B.slope * x1) - B.shift;
-    const xL = Math.max(L.a + L.slope * y0, L.a + L.slope * y1) + L.shift;
-    const xR = Math.min(R.a + R.slope * y0, R.a + R.slope * y1) - R.shift;
+    // bottom's lowest, right of the left's rightmost, and so on.
+    // A side flagged as content (or implausibly slanted) has no real
+    // border: fall back to the scan boundary there instead of cropping.
+    const badEdge = (E, i) => E.content || Math.abs(edgeAngles[i]) > 3;
+    const yTop = badEdge(T, 2) ? 0
+        : Math.max(T.a + T.slope * x0, T.a + T.slope * x1) + T.shift;
+    const yBot = badEdge(B, 3) ? H - 1
+        : Math.min(B.a + B.slope * x0, B.a + B.slope * x1) - B.shift;
+    const xL = badEdge(L, 0) ? 0
+        : Math.max(L.a + L.slope * y0, L.a + L.slope * y1) + L.shift;
+    const xR = badEdge(R, 1) ? W - 1
+        : Math.min(R.a + R.slope * y0, R.a + R.slope * y1) - R.shift;
 
     // --- 7. Recover any over-tightening: push each side back outward
     // until the band just outside it touches border pixels. Past the

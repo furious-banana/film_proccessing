@@ -293,6 +293,7 @@ class FolderBrowser {
         });
         document.getElementById('batchCropBtn').addEventListener('click', () => this.autoCropSelected());
         document.getElementById('batchExportBtn').addEventListener('click', () => this.showExportDialog());
+        document.getElementById('batchSheetBtn').addEventListener('click', () => this.contactSheetSelected());
         document.getElementById('batchStopBtn').addEventListener('click', () => {
             this.batch.cancelled = true;
         });
@@ -749,6 +750,50 @@ class FolderBrowser {
     showExportDialog() {
         if (!this.selectedEntries().length) { this.toast('Select frames first'); return; }
         document.getElementById('batchDialog').style.display = '';
+    }
+
+    // Compose the selected frames into a contact sheet JPEG and save it
+    // to a folder of the user's choice (frames keep their saved looks)
+    async contactSheetSelected() {
+        const sel = this.selectedEntries();
+        if (!sel.length) { this.toast('Select frames first'); return; }
+        let dir = window.__batchOutDir || null; // test hook
+        if (!dir) {
+            if (!window.showDirectoryPicker) {
+                this.toast('This browser cannot save to a folder');
+                return;
+            }
+            try {
+                // Called inside the tap: the picker needs a gesture
+                dir = await window.showDirectoryPicker({
+                    mode: 'readwrite', id: 'batch-export',
+                });
+            } catch (e) {
+                if (e.name !== 'AbortError') this.toast('Could not open folder: ' + e.message);
+                return;
+            }
+        }
+        this.syncBatchDir();
+        this.showProgress(true);
+        const header = [this.rollLine(),
+            `${sel.length} frame${sel.length > 1 ? 's' : ''}`]
+            .filter(Boolean).join('  —  ');
+        const { blob, failed } = await this.batch.contactSheet(sel, header,
+            (i, n, name) => this.progressText(`Contact sheet ${i + 1}/${n} — ${name}`));
+        this.showProgress(false);
+        try {
+            const stamp = new Date().toISOString().slice(0, 10);
+            const fh = await dir.getFileHandle(
+                `contact_sheet_${stamp}.jpg`, { create: true });
+            const w = await fh.createWritable();
+            await w.write(blob);
+            await w.close();
+            this.toast(failed.length
+                ? `Contact sheet saved — ${failed.length} frame${failed.length > 1 ? 's' : ''} failed`
+                : 'Contact sheet saved');
+        } catch (e) {
+            this.toast('Could not save contact sheet: ' + e.message);
+        }
     }
 
     async runExport() {

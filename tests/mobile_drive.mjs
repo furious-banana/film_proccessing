@@ -1589,6 +1589,38 @@ print('MAP', grid.shape[1], grid.shape[0], ','.join(map(str, grid.flatten().toli
         !!exp.desc && exp.desc.includes('HP5') && exp.desc.includes('ISO 1600'),
         String(exp.desc));
 
+    // --- Contact sheet: selected frames composed into one JPEG with the
+    // roll info header and the frame's saved look applied ---
+    await page.evaluate(() => mobileApp.browser.openWithHandle(window.__rollDir));
+    await page.waitForFunction(() =>
+        document.querySelectorAll('#browseGrid .browse-cell img').length === 1,
+        null, { timeout: 60_000 });
+    await page.evaluate(() => {
+        mobileApp.browser.enterSelect(0);
+        document.getElementById('batchSheetBtn').click();
+    });
+    await page.waitForFunction(() =>
+        Object.keys(window.__batchOut).some(k => k.startsWith('contact_sheet_')),
+        null, { timeout: 120_000 });
+    const sheet = await page.evaluate(async () => {
+        const name = Object.keys(window.__batchOut)
+            .find(k => k.startsWith('contact_sheet_'));
+        const blob = window.__batchOut[name];
+        const bmp = await createImageBitmap(blob);
+        // Sample the sheet: the frame area must not be all background
+        const c = document.createElement('canvas');
+        c.width = bmp.width; c.height = bmp.height;
+        const ctx = c.getContext('2d');
+        ctx.drawImage(bmp, 0, 0);
+        const px = ctx.getImageData(Math.floor(bmp.width / 2), 300, 1, 1).data;
+        return { name, type: blob.type, w: bmp.width, h: bmp.height,
+            mid: [px[0], px[1], px[2]] };
+    });
+    check('contact sheet composes the selected frames into a JPEG',
+        sheet.type === 'image/jpeg' && sheet.w === 608 && sheet.h === 732
+        && (sheet.mid[0] + sheet.mid[1] + sheet.mid[2]) > 90,
+        JSON.stringify(sheet));
+
     // Clean up batch-test state
     await page.evaluate(() => {
         mobileApp.browser.close();
