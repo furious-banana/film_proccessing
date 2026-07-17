@@ -14,6 +14,7 @@ Shader pipeline order:
 
 import json
 import logging
+import math
 
 import cv2
 import numpy as np
@@ -41,12 +42,12 @@ def _smoothstep(xp, edge0, edge1, x):
 # Every adjustment parameter the pipeline understands, with its neutral value.
 # Keys not listed here are ignored by update_params.
 DEFAULT_PARAMS = {
-    'exposure': 0.0,      # stops, applied as color * 2^exposure
-    'contrast': 0.0,      # -1..1, applied around 0.5 midpoint
-    'highlights': 0.0,    # -1..1
-    'shadows': 0.0,       # -1..1
-    'whites': 0.0,        # -1..1
-    'blacks': 0.0,        # -1..1
+    'exposure': 0.0,      # photographic stops: color * 2^(exposure/2.2)
+    'contrast': 0.0,      # -0.5..0.5, S-curve up / linear compress down
+    'highlights': 0.0,    # -0.5..0.5, power curve anchored at 0 and 1
+    'shadows': 0.0,       # -0.5..0.5, power curve anchored at 0 and 1
+    'whites': 0.0,        # -1..1, white point remap
+    'blacks': 0.0,        # -1..1, black point remap
     'brightness': 0.0,    # flat offset
     'temperature': 0.0,   # blue-yellow shift
     'tint': 0.0,          # green-magenta shift
@@ -216,30 +217,25 @@ class FilmProcessor:
         # 0. Levels (eyedropper black/white/gray points)
         processed = self._apply_levels_adjustment(processed)
 
-        # 1. Exposure: color * 2^exposure
+        # 1. Exposure in photographic stops. The image is gamma-encoded
+        # (~2.2), so one stop of scene light is a gain of 2^(1/2.2) on the
+        # encoded values.
         if p['exposure'] != 0:
-            processed *= 2.0 ** p['exposure']
+            processed *= 2.0 ** (p['exposure'] / 2.2)
 
-        # 2. Tone curve (shadows/blacks/highlights/whites), luminance-masked
+        # 2. Tone curve (shadows/highlights/whites/blacks), per channel
         if p['highlights'] != 0 or p['shadows'] != 0 or p['whites'] != 0 or p['blacks'] != 0:
-            lum = (0.299 * processed[:, :, 0] + 0.587 * processed[:, :, 1]
-                   + 0.114 * processed[:, :, 2])
-            if p['shadows'] != 0:
-                mask = 1.0 - _smoothstep(xp, 0.0, 0.5, lum)
-                processed += (p['shadows'] * 0.3) * mask[:, :, None]
-            if p['blacks'] != 0:
-                mask = 1.0 - _smoothstep(xp, 0.0, 0.25, lum)
-                processed += (p['blacks'] * 0.3) * mask[:, :, None]
-            if p['highlights'] != 0:
-                mask = _smoothstep(xp, 0.5, 1.0, lum)
-                processed += (p['highlights'] * 0.3) * mask[:, :, None]
-            if p['whites'] != 0:
-                mask = _smoothstep(xp, 0.75, 1.0, lum)
-                processed += (p['whites'] * 0.3) * mask[:, :, None]
+            processed = self._apply_tone_curve(processed)
 
-        # 3. Contrast around 0.5 midpoint
+        # 3. Contrast: positive blends toward a smoothstep S-curve (soft
+        # shoulders, no clipping); negative compresses linearly around 0.5
         if p['contrast'] != 0:
-            processed = (processed - 0.5) * (1.0 + p['contrast']) + 0.5
+            if p['contrast'] > 0:
+                c = xp.clip(processed, 0.0, 1.0)
+                s = c * c * (3.0 - 2.0 * c)
+                processed = c + (s - c) * (p['contrast'] * 1.5)
+            else:
+                processed = (processed - 0.5) * (1.0 + p['contrast']) + 0.5
 
         # 4. Brightness (flat offset)
         if p['brightness'] != 0:
@@ -285,6 +281,34 @@ class FilmProcessor:
             if hasattr(fallback, 'get'):
                 fallback = fallback.get()
             return (np.clip(fallback, 0, 1) * 255).astype(np.uint8)
+
+    def _apply_tone_curve(self, img):
+        """Highlights/shadows/whites/blacks, matching the shader's
+        applyToneCurve exactly. Applied per channel like a curves
+        adjustment: shadows/highlights are power curves anchored at 0 and
+        1, whites/blacks are levels-style endpoint remaps, each faded in
+        over its own tonal region."""
+        xp = cp if (GPU_AVAILABLE and hasattr(img, 'device')) else np
+        p = self.params
+        x = xp.clip(img, 0.0, 1.0)
+
+        if p['shadows'] != 0:
+            g = math.exp(-p['shadows'] * 1.2)
+            m = 1.0 - _smoothstep(xp, 0.0, 0.7, x)
+            x = x + m * (x ** g - x)
+        if p['highlights'] != 0:
+            g = math.exp(p['highlights'] * 1.2)
+            m = _smoothstep(xp, 0.3, 1.0, x)
+            x = x + m * ((1.0 - (1.0 - x) ** g) - x)
+        if p['whites'] != 0:
+            w = 1.0 - p['whites'] * 0.25
+            m = _smoothstep(xp, 0.25, 1.0, x)
+            x = x + m * (xp.clip(x / w, 0.0, 1.0) - x)
+        if p['blacks'] != 0:
+            b = -p['blacks'] * 0.25
+            m = 1.0 - _smoothstep(xp, 0.0, 0.75, x)
+            x = x + m * (xp.clip((x - b) / (1.0 - b), 0.0, 1.0) - x)
+        return x
 
     def _apply_levels_adjustment(self, img):
         """Eyedropper levels, matching the shader's applyLevels exactly:

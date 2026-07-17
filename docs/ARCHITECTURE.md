@@ -30,9 +30,13 @@ Both apply, in this order:
 
 ```
 levels (eyedropper black → white → gray points)
-exposure          color * 2^exposure
-tone masks        shadows/blacks/highlights/whites via smoothstep, ×0.3
-contrast          (color - 0.5) * (1 + contrast) + 0.5
+exposure          color * 2^(exposure / 2.2)  (photographic stops on the
+                  gamma-encoded image)
+tone curve        per-channel, endpoints anchored: shadows/highlights are
+                  power curves faded in over their tonal region;
+                  whites/blacks are levels-style endpoint remaps
+contrast          positive: blend toward smoothstep S-curve (no clipping);
+                  negative: (color - 0.5) * (1 + contrast) + 0.5
 brightness        color + brightness
 temperature/tint  ±0.05 channel shifts
 RGB offsets       per-channel add

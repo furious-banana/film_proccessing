@@ -47,25 +47,115 @@ def test_neutral_params_are_identity():
     assert np.allclose(out, img, atol=1e-6), "neutral params must not change pixels"
 
 
-def test_exposure_doubles_values():
+def test_exposure_one_stop_gain():
+    # One photographic stop on a gamma-2.2 encoded image is a 2^(1/2.2) gain
     img = make_test_image() * 0.4  # keep below clipping
     processor = FilmProcessor(img, is_negative=False)
     processor.update_params(exposure=1.0)
     out = processor.apply_adjustments(processor.get_full_res())
     if hasattr(out, 'get'):
         out = out.get()
-    assert np.allclose(out, img * 2.0, atol=1e-5), "+1 stop should double values"
+    assert np.allclose(out, img * 2.0 ** (1.0 / 2.2), atol=1e-5)
 
 
 def test_contrast_matches_shader_formula():
     img = make_test_image() * 0.5 + 0.25  # mid-range, avoid clipping
     processor = FilmProcessor(img, is_negative=False)
+
+    # Positive: blend toward the smoothstep S-curve
     processor.update_params(contrast=0.5)
     out = processor.apply_adjustments(processor.get_full_res())
     if hasattr(out, 'get'):
         out = out.get()
-    expected = (img - 0.5) * 1.5 + 0.5
+    s = img * img * (3.0 - 2.0 * img)
+    expected = img + (s - img) * 0.75
     assert np.allclose(out, expected, atol=1e-5)
+
+    # Negative: linear compression around 0.5
+    processor.update_params(contrast=-0.5)
+    out = processor.apply_adjustments(processor.get_full_res())
+    if hasattr(out, 'get'):
+        out = out.get()
+    expected = (img - 0.5) * 0.5 + 0.5
+    assert np.allclose(out, expected, atol=1e-5)
+
+
+def test_positive_contrast_does_not_clip_endpoints():
+    img = np.zeros((4, 4, 3), dtype=np.float32)
+    img[0, 0] = 0.02
+    img[0, 1] = 0.98
+    processor = FilmProcessor(img, is_negative=False)
+    processor.update_params(contrast=0.5)
+    out = processor.apply_adjustments(processor.get_full_res())
+    if hasattr(out, 'get'):
+        out = out.get()
+    assert out[0, 0, 0] > 0.0, "near-black must not clip to 0"
+    assert out[0, 1, 0] < 1.0, "near-white must not clip to 1"
+
+
+def test_shadows_lift_keeps_black_anchored():
+    img = np.zeros((4, 4, 3), dtype=np.float32)
+    img[0, 1] = 0.1
+    processor = FilmProcessor(img, is_negative=False)
+    processor.update_params(shadows=0.5)
+    out = processor.apply_adjustments(processor.get_full_res())
+    if hasattr(out, 'get'):
+        out = out.get()
+    assert np.allclose(out[0, 0], 0.0, atol=1e-6), "pure black must stay black"
+    assert out[0, 1, 0] > 0.1, "dark tones should lift"
+
+
+def test_highlight_recovery_keeps_white_anchored():
+    img = np.ones((4, 4, 3), dtype=np.float32)
+    img[0, 1] = 0.85
+    processor = FilmProcessor(img, is_negative=False)
+    processor.update_params(highlights=-0.5)
+    out = processor.apply_adjustments(processor.get_full_res())
+    if hasattr(out, 'get'):
+        out = out.get()
+    assert np.allclose(out[0, 0], 1.0, atol=1e-6), "pure white must stay white"
+    assert out[0, 1, 0] < 0.85, "bright tones should compress down"
+
+
+def test_blacks_slider_moves_black_point():
+    img = np.zeros((4, 4, 3), dtype=np.float32)
+    img[0, 1] = 0.1
+    img[0, 2] = 0.9
+    processor = FilmProcessor(img, is_negative=False)
+
+    processor.update_params(blacks=-1.0)  # crush
+    out = processor.apply_adjustments(processor.get_full_res())
+    if hasattr(out, 'get'):
+        out = out.get()
+    assert out[0, 1, 0] < 0.01, "dark tones below the black point crush to 0"
+    assert out[0, 2, 0] > 0.85, "highlights stay essentially untouched"
+
+    processor.update_params(blacks=1.0)  # lift
+    out = processor.apply_adjustments(processor.get_full_res())
+    if hasattr(out, 'get'):
+        out = out.get()
+    assert out[0, 0, 0] > 0.15, "black point lifts off the floor"
+
+
+def test_whites_slider_moves_white_point():
+    img = np.ones((4, 4, 3), dtype=np.float32)
+    img[0, 1] = 0.8
+    img[0, 2] = 0.1
+    processor = FilmProcessor(img, is_negative=False)
+
+    processor.update_params(whites=1.0)
+    out = processor.apply_adjustments(processor.get_full_res())
+    if hasattr(out, 'get'):
+        out = out.get()
+    assert np.allclose(out[0, 0], 1.0, atol=1e-6)
+    assert out[0, 1, 0] > 0.9, "near-whites push toward the new white point"
+    assert abs(out[0, 2, 0] - 0.1) < 0.01, "shadows stay essentially untouched"
+
+    processor.update_params(whites=-1.0)
+    out = processor.apply_adjustments(processor.get_full_res())
+    if hasattr(out, 'get'):
+        out = out.get()
+    assert out[0, 0, 0] < 0.85, "white point pulls down"
 
 
 def test_linear_curves_are_identity():

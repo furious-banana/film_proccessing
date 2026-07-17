@@ -146,11 +146,19 @@ class MobileRenderer {
 
             varying highp vec2 v_texCoord;
 
+            // Photographic stops on a gamma-encoded (~2.2) image
             vec3 applyExposure(vec3 color, float exposure) {
-                return color * pow(2.0, exposure);
+                return color * pow(2.0, exposure / 2.2);
             }
 
+            // Positive: blend toward smoothstep S-curve (no clipping);
+            // negative: linear compress around 0.5
             vec3 applyContrast(vec3 color, float contrast) {
+                if (contrast > 0.0) {
+                    vec3 c = clamp(color, 0.0, 1.0);
+                    vec3 s = c * c * (3.0 - 2.0 * c);
+                    return mix(c, s, contrast * 1.5);
+                }
                 return (color - 0.5) * (1.0 + contrast) + 0.5;
             }
 
@@ -170,22 +178,37 @@ class MobileRenderer {
                 return color;
             }
 
+            // Per-channel tone curve: shadows/highlights are power curves
+            // anchored at 0 and 1; whites/blacks are levels-style endpoint
+            // remaps. Keeps black black and white white unless an endpoint
+            // is moved on purpose.
             vec3 applyToneCurve(vec3 color, float highlights, float shadows, float whites, float blacks) {
-                float lum = dot(color, vec3(0.299, 0.587, 0.114));
+                if (highlights == 0.0 && shadows == 0.0 && whites == 0.0 && blacks == 0.0) {
+                    return color;
+                }
+                vec3 x = clamp(color, 0.0, 1.0);
 
-                float shadowMask = 1.0 - smoothstep(0.0, 0.5, lum);
-                color += shadows * shadowMask * 0.3;
-
-                float blackMask = 1.0 - smoothstep(0.0, 0.25, lum);
-                color += blacks * blackMask * 0.3;
-
-                float highlightMask = smoothstep(0.5, 1.0, lum);
-                color += highlights * highlightMask * 0.3;
-
-                float whiteMask = smoothstep(0.75, 1.0, lum);
-                color += whites * whiteMask * 0.3;
-
-                return color;
+                if (shadows != 0.0) {
+                    float g = exp(-shadows * 1.2);
+                    vec3 m = 1.0 - smoothstep(0.0, 0.7, x);
+                    x = mix(x, pow(x, vec3(g)), m);
+                }
+                if (highlights != 0.0) {
+                    float g = exp(highlights * 1.2);
+                    vec3 m = smoothstep(0.3, 1.0, x);
+                    x = mix(x, 1.0 - pow(1.0 - x, vec3(g)), m);
+                }
+                if (whites != 0.0) {
+                    float w = 1.0 - whites * 0.25;
+                    vec3 m = smoothstep(0.25, 1.0, x);
+                    x = mix(x, clamp(x / w, 0.0, 1.0), m);
+                }
+                if (blacks != 0.0) {
+                    float b = -blacks * 0.25;
+                    vec3 m = 1.0 - smoothstep(0.0, 0.75, x);
+                    x = mix(x, clamp((x - b) / (1.0 - b), 0.0, 1.0), m);
+                }
+                return x;
             }
 
             vec3 applyLevels(vec3 color, vec3 blackPt, vec3 whitePt, vec3 grayPt,

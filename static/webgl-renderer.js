@@ -280,15 +280,24 @@ class WebGLRenderer {
                 return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
             }
             
-            // Apply exposure adjustment
+            // Apply exposure adjustment in photographic stops. The image is
+            // gamma-encoded (~2.2), so one stop of scene light is a gain of
+            // 2^(1/2.2) on the encoded values - a plain 2^ev gain here would
+            // be worth more than two real stops per slider stop.
             vec3 applyExposure(vec3 color, float exposure) {
-                return color * pow(2.0, exposure);
+                return color * pow(2.0, exposure / 2.2);
             }
-            
-            // Apply contrast
+
+            // Apply contrast. Positive blends toward a smoothstep S-curve
+            // (soft shoulders, endpoints stay anchored so nothing clips);
+            // negative compresses linearly around 0.5, which cannot clip.
             vec3 applyContrast(vec3 color, float contrast) {
-                float factor = (1.0 + contrast);
-                return (color - 0.5) * factor + 0.5;
+                if (contrast > 0.0) {
+                    vec3 c = clamp(color, 0.0, 1.0);
+                    vec3 s = c * c * (3.0 - 2.0 * c);
+                    return mix(c, s, contrast * 1.5);
+                }
+                return (color - 0.5) * (1.0 + contrast) + 0.5;
             }
             
             // Apply saturation
@@ -314,28 +323,41 @@ class WebGLRenderer {
                 return color;
             }
             
-            // Tone curve (highlights/shadows/whites/blacks)
+            // Tone curve (highlights/shadows/whites/blacks), applied per
+            // channel like a curves adjustment rather than as additive
+            // offsets, so pure black stays black and pure white stays white
+            // unless an endpoint is moved on purpose:
+            //   shadows/highlights - power curves anchored at 0 and 1, faded
+            //                        in over the dark/bright half
+            //   whites/blacks      - levels-style white/black point remaps,
+            //                        faded in toward their end of the range
             vec3 applyToneCurve(vec3 color, float highlights, float shadows, float whites, float blacks) {
-                // Compute luminance to determine tone region
-                float lum = dot(color, vec3(0.299, 0.587, 0.114));
-                
-                // Shadows affect darker tones (0-0.5)
-                float shadowMask = 1.0 - smoothstep(0.0, 0.5, lum);
-                color += shadows * shadowMask * 0.3;
-                
-                // Blacks affect darkest tones (0-0.25)
-                float blackMask = 1.0 - smoothstep(0.0, 0.25, lum);
-                color += blacks * blackMask * 0.3;
-                
-                // Highlights affect brighter tones (0.5-1.0)
-                float highlightMask = smoothstep(0.5, 1.0, lum);
-                color += highlights * highlightMask * 0.3;
-                
-                // Whites affect brightest tones (0.75-1.0)
-                float whiteMask = smoothstep(0.75, 1.0, lum);
-                color += whites * whiteMask * 0.3;
-                
-                return color;
+                if (highlights == 0.0 && shadows == 0.0 && whites == 0.0 && blacks == 0.0) {
+                    return color;
+                }
+                vec3 x = clamp(color, 0.0, 1.0);
+
+                if (shadows != 0.0) {
+                    float g = exp(-shadows * 1.2);
+                    vec3 m = 1.0 - smoothstep(0.0, 0.7, x);
+                    x = mix(x, pow(x, vec3(g)), m);
+                }
+                if (highlights != 0.0) {
+                    float g = exp(highlights * 1.2);
+                    vec3 m = smoothstep(0.3, 1.0, x);
+                    x = mix(x, 1.0 - pow(1.0 - x, vec3(g)), m);
+                }
+                if (whites != 0.0) {
+                    float w = 1.0 - whites * 0.25;
+                    vec3 m = smoothstep(0.25, 1.0, x);
+                    x = mix(x, clamp(x / w, 0.0, 1.0), m);
+                }
+                if (blacks != 0.0) {
+                    float b = -blacks * 0.25;
+                    vec3 m = 1.0 - smoothstep(0.0, 0.75, x);
+                    x = mix(x, clamp((x - b) / (1.0 - b), 0.0, 1.0), m);
+                }
+                return x;
             }
             
             // Apply levels adjustment (eyedropper black/white/gray points)
