@@ -167,7 +167,25 @@ def test_highlights_recovery_is_local():
 
 
 def test_tone_preserves_hue():
-    # The luminance-ratio gain must scale channels proportionally
+    # RGBTone application: the middle channel keeps its relative position
+    # between min and max, so hue never shifts under tone edits
+    img = np.zeros((2, 2, 3), dtype=np.float32)
+    img[:, :] = [0.4, 0.2, 0.1]
+    processor = FilmProcessor(img, is_negative=False)
+    processor.update_params(shadows=0.5, contrast=0.3, blacks=0.2)
+    out = processor.apply_adjustments(processor.get_full_res())
+    if hasattr(out, 'get'):
+        out = out.get()
+    r, g, b = out[0, 0]
+    assert r > g > b, "channel order must survive tone edits"
+    hue_in = (0.2 - 0.1) / (0.4 - 0.1)
+    hue_out = (g - b) / (r - b)
+    assert abs(hue_out - hue_in) < 1e-3, f"hue shifted: {hue_in:.4f} -> {hue_out:.4f}"
+
+
+def test_tone_relaxes_saturation():
+    # Lifting shadows must gently desaturate toward the lift (Photoshop
+    # feel), not keep chroma locked in place (neon shadows)
     img = np.zeros((2, 2, 3), dtype=np.float32)
     img[:, :] = [0.4, 0.2, 0.1]
     processor = FilmProcessor(img, is_negative=False)
@@ -175,9 +193,12 @@ def test_tone_preserves_hue():
     out = processor.apply_adjustments(processor.get_full_res())
     if hasattr(out, 'get'):
         out = out.get()
-    ratios_in = img[0, 0] / img[0, 0, 0]
-    ratios_out = out[0, 0] / out[0, 0, 0]
-    assert np.allclose(ratios_in, ratios_out, atol=1e-4), "channel ratios must survive tone edits"
+    r, g, b = out[0, 0]
+    assert r > 0.4, "shadows should lift"
+    sat_in = (0.4 - 0.1) / 0.4
+    sat_out = (r - b) / r
+    assert sat_out < sat_in - 0.02, \
+        f"saturation should relax under a shadow lift: {sat_in:.3f} -> {sat_out:.3f}"
 
 
 def test_linear_curves_are_identity():

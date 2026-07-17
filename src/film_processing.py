@@ -7,10 +7,12 @@ client GPU; this module produces the identical result for the CPU preview
 fallback and for full-quality export.
 
 Shader pipeline order:
-    levels (eyedropper) -> exposure (linear-light stops with highlight
-    rolloff) -> tone (shadows/highlights/whites/blacks/contrast/brightness
-    computed on luminance, applied as one ratio-preserving gain;
-    shadows/highlights masked by blurred LOCAL luminance) ->
+    levels (eyedropper) -> tone (exposure with highlight rolloff, then
+    shadows/highlights/whites/blacks/contrast/brightness; one scalar curve
+    applied Adobe-RGBTone-style: evaluated at each pixel's max and min
+    channels, middle channel interpolated, so hue is preserved and
+    saturation relaxes naturally; shadows/highlights masked by blurred
+    LOCAL luminance) ->
     temperature/tint -> RGB offsets -> saturation -> custom curves -> clamp
 """
 
@@ -267,6 +269,60 @@ class FilmProcessor:
                           interpolation=cv2.INTER_LINEAR)
         return xp.asarray(full) if xp is not np else full
 
+    def _tone_value(self, xp, x, cl):
+        """Scalar tone curve, evaluated elementwise on an array of values.
+        Matches toneValue in the shader exactly: exposure (linear-light
+        stops with a soft shoulder above 0.9), locally-masked shadows and
+        highlights, whites, blacks, contrast, brightness. Monotone in x
+        across the slider ranges, so RGBTone interpolation is valid."""
+        p = self.params
+
+        if p['exposure'] != 0:
+            lin = xp.power(xp.maximum(x, 0.0), 2.2) * (2.0 ** p['exposure'])
+            shoulder = 0.9 + 0.1 * (1.0 - xp.exp(-(lin - 0.9) / 0.1))
+            x = xp.power(xp.where(lin > 0.9, shoulder, lin), 1.0 / 2.2)
+
+        # Shadows: multiplicative lift/dip weighted toward dark tones
+        # (slider is +/-0.5, doubled internally for useful strength)
+        if p['shadows'] != 0:
+            sm = 1.0 - xp.maximum(cl, x)
+            x = x * xp.exp((p['shadows'] * 2.0) * sm * sm)
+
+        # Highlights: compress/expand the top end, black stays put.
+        # Quartic mask keeps the effect out of mids and shadows;
+        # slider is +/-0.5, tripled internally for useful strength
+        if p['highlights'] != 0:
+            hm = xp.minimum(cl, x)
+            hm4 = (hm * hm) * (hm * hm)
+            x = 1.0 - (1.0 - x) * xp.exp(-(p['highlights'] * 3.0) * hm4)
+
+        x = xp.clip(x, 0.0, 1.0)
+
+        # Whites: white point. Up = soft-knee stretch, down = scale back
+        if p['whites'] > 0:
+            x = _soft_knee(xp, x, 1.0 / (1.0 - 0.25 * p['whites']))
+        elif p['whites'] < 0:
+            x = x * (1.0 + 0.25 * p['whites'])
+
+        # Blacks: black point. Down = soft toe, up = darkest-tone lift
+        if p['blacks'] > 0:
+            x = x * xp.exp(p['blacks'] * (1.0 - x) ** 6)
+        elif p['blacks'] < 0:
+            x = 1.0 - _soft_knee(xp, 1.0 - x, 1.0 / (1.0 + 0.25 * p['blacks']))
+
+        # Contrast: up = endpoint-pinned S-curve, down = linear flatten
+        if p['contrast'] > 0:
+            s_curve = x * x * (3.0 - 2.0 * x)
+            x = x + (s_curve - x) * min(2.0 * p['contrast'], 1.0)
+        elif p['contrast'] < 0:
+            x = 0.5 + (x - 0.5) * (1.0 + p['contrast'])
+
+        # Brightness: midtone gamma, endpoints pinned
+        if p['brightness'] != 0:
+            x = xp.power(xp.maximum(x, 0.0), 2.0 ** (-p['brightness']))
+
+        return x
+
     def apply_adjustments(self, img):
         """Apply all current parameters to a float32 [0,1] image.
 
@@ -280,95 +336,57 @@ class FilmProcessor:
         # 0. Levels (eyedropper black/white/gray points)
         processed = self._apply_levels_adjustment(processed)
 
-        # 1. Exposure: multiply in linear light (true stops), soft shoulder
-        #    above 0.9 rolls pushed highlights off instead of clipping
-        if p['exposure'] != 0:
-            lin = xp.power(xp.maximum(processed, 0.0), 2.2) * (2.0 ** p['exposure'])
-            shoulder = 0.9 + 0.1 * (1.0 - xp.exp(-(lin - 0.9) / 0.1))
-            processed = xp.power(xp.where(lin > 0.9, shoulder, lin), 1.0 / 2.2)
-
-        # 2. Tone (shadows/highlights/whites/blacks/contrast/brightness):
-        #    computed on luminance, applied as one ratio-preserving gain so
-        #    hue and saturation survive. Each op keeps black and white pinned
-        #    unless its job is to move that endpoint. Matches applyTone in
-        #    the shader.
-        tone_keys = ('shadows', 'highlights', 'whites', 'blacks', 'contrast', 'brightness')
+        # 1. Tone (exposure/shadows/highlights/whites/blacks/contrast/
+        #    brightness): one scalar curve applied the way Adobe Camera Raw
+        #    applies theirs (RGBTone from Adobe's DNG SDK): evaluate at each
+        #    pixel's max and min channels and place the middle channel by
+        #    interpolation. Hue is preserved exactly while saturation
+        #    relaxes naturally toward the endpoints (the Photoshop feel).
+        #    Matches applyTone in the shader.
+        tone_keys = ('exposure', 'shadows', 'highlights', 'whites', 'blacks',
+                     'contrast', 'brightness')
         if any(p[k] != 0 for k in tone_keys):
-            lum = xp.clip(0.299 * processed[:, :, 0] + 0.587 * processed[:, :, 1]
-                          + 0.114 * processed[:, :, 2], 0.0, 1.0)
-            nl = lum
+            c = xp.clip(processed, 0.0, 1.0)
+            lum = xp.clip(0.299 * c[:, :, 0] + 0.587 * c[:, :, 1]
+                          + 0.114 * c[:, :, 2], 0.0, 1.0)
 
             # Shadows/Highlights are LOCAL: their masks blend in the blurred
             # neighborhood luminance, so detail inside a bright or dark
-            # region keeps its contrast instead of flattening. min/max
-            # against pixel luminance stops halos across strong edges.
-            # Matches the shader (cl = mix(lum, blum, 0.6)).
+            # region keeps its contrast instead of flattening. Matches the
+            # shader (cl = mix(lum, blum, 0.6)); cl only feeds the
+            # shadows/highlights masks, so skip the map when both are 0.
             if p['shadows'] != 0 or p['highlights'] != 0:
                 blum = self._local_lum_for(img, xp)
                 cl = lum * 0.4 + blum * 0.6
+            else:
+                cl = lum
 
-                # Shadows: multiplicative lift/dip weighted toward dark tones
-                # (slider is +/-0.5, doubled internally for useful strength)
-                if p['shadows'] != 0:
-                    sm = 1.0 - xp.maximum(cl, lum)
-                    nl = nl * xp.exp((p['shadows'] * 2.0) * sm * sm)
+            mx = c.max(axis=2)
+            mn = c.min(axis=2)
+            tmx = self._tone_value(xp, mx, cl)
+            tmn = self._tone_value(xp, mn, cl)
+            scale = (tmx - tmn) / xp.maximum(mx - mn, 1e-6)
+            processed = tmn[:, :, None] + (c - mn[:, :, None]) * scale[:, :, None]
 
-                # Highlights: compress/expand the top end, black stays put.
-                # Quartic mask keeps the effect out of mids and shadows;
-                # slider is +/-0.5, tripled internally for useful strength
-                if p['highlights'] != 0:
-                    hm = xp.minimum(cl, lum)
-                    hm4 = (hm * hm) * (hm * hm)
-                    ht = 1.0 - (1.0 - hm) * xp.exp(-(p['highlights'] * 3.0) * hm4)
-                    nl = nl * (ht / xp.maximum(hm, 1e-4))
-
-                nl = xp.clip(nl, 0.0, 1.0)
-
-            # Whites: white point. Up = soft-knee stretch, down = scale back
-            if p['whites'] > 0:
-                nl = _soft_knee(xp, nl, 1.0 / (1.0 - 0.25 * p['whites']))
-            elif p['whites'] < 0:
-                nl = nl * (1.0 + 0.25 * p['whites'])
-
-            # Blacks: black point. Down = soft toe, up = darkest-tone lift
-            if p['blacks'] > 0:
-                nl = nl * xp.exp(p['blacks'] * (1.0 - nl) ** 6)
-            elif p['blacks'] < 0:
-                nl = 1.0 - _soft_knee(xp, 1.0 - nl, 1.0 / (1.0 + 0.25 * p['blacks']))
-
-            # Contrast: up = endpoint-pinned S-curve, down = linear flatten
-            if p['contrast'] > 0:
-                s_curve = nl * nl * (3.0 - 2.0 * nl)
-                nl = nl + (s_curve - nl) * min(2.0 * p['contrast'], 1.0)
-            elif p['contrast'] < 0:
-                nl = 0.5 + (nl - 0.5) * (1.0 + p['contrast'])
-
-            # Brightness: midtone gamma, endpoints pinned
-            if p['brightness'] != 0:
-                nl = xp.power(xp.maximum(nl, 0.0), 2.0 ** (-p['brightness']))
-
-            gain = xp.maximum(nl, 0.0) / xp.maximum(lum, 1e-4)
-            processed = processed * gain[:, :, None]
-
-        # 3. Temperature and tint
+        # 2. Temperature and tint
         if p['temperature'] != 0:
             processed[:, :, 0] += p['temperature'] * 0.05
             processed[:, :, 2] -= p['temperature'] * 0.05
         if p['tint'] != 0:
             processed[:, :, 1] += p['tint'] * 0.05
 
-        # 4. Per-channel RGB offsets
+        # 3. Per-channel RGB offsets
         for c, name in enumerate(('red', 'green', 'blue')):
             if p[name] != 0:
                 processed[:, :, c] += p[name]
 
-        # 5. Saturation: mix(gray, color, 1 + saturation)
+        # 4. Saturation: mix(gray, color, 1 + saturation)
         if p['saturation'] != 0:
             gray = (0.299 * processed[:, :, 0] + 0.587 * processed[:, :, 1]
                     + 0.114 * processed[:, :, 2])
             processed = gray[:, :, None] + (processed - gray[:, :, None]) * (1.0 + p['saturation'])
 
-        # 6. Custom curves last
+        # 5. Custom curves last
         processed = self._apply_curves(processed)
 
         return xp.clip(processed, 0.0, 1.0)
