@@ -9,7 +9,7 @@
 
 // Shown on the start screen so an update can be verified at a glance.
 // Keep in step with CACHE_VERSION in sw.js.
-const APP_VERSION = 'v38';
+const APP_VERSION = 'v39';
 
 // Auto Grade: fit an automatic correction for a scanned film positive.
 // Scanner positives keep the film-base fog floor (blacks near ~0.1, never
@@ -233,6 +233,12 @@ class MobileFilmProcessor {
         this.grayPoint = null;
         this.eyedropperMode = null;
         this.curves = this.defaultCurves();
+        // A newly loaded image starts untouched: every slider back to
+        // neutral (saved sidecar settings are re-applied afterwards)
+        document.querySelectorAll('.pro-slider[id]').forEach(s => {
+            s.value = s.dataset.neutral || 0;
+            this.updateValueDisplay(s.id, parseFloat(s.value));
+        });
         document.querySelectorAll('.eyedropper-btn').forEach(b => b.classList.remove('active'));
         this.setStraightenValue(0);
         this.drawCurves();

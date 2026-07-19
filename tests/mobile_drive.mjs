@@ -859,11 +859,23 @@ print('MAP', grid.shape[1], grid.shape[0], ','.join(map(str, grid.flatten().toli
         mobileApp.renderer.imageWidth === 300 && mobileApp.renderer.imageHeight === 200,
         null, { timeout: 30_000 });
     check('PNG loads at correct size', true);
-    // Re-picking the same file must work (input resets after change)
+    // Re-picking the same file must work (input resets after change),
+    // and slider state from the previous image must not leak into it
+    await page.evaluate(() => {
+        document.getElementById('exposure').value = 0.9;
+        document.getElementById('density_r').value = 1.4;
+    });
     await page.setInputFiles('#fileInput', JPEG);
     await page.waitForFunction(() =>
         mobileApp.renderer.imageWidth === 600, null, { timeout: 30_000 });
     check('re-picking a file works', true);
+    const freshSliders = await page.evaluate(() => ({
+        exposure: document.getElementById('exposure').value,
+        density: document.getElementById('density_r').value,
+    }));
+    check('loading a new image resets the sliders to neutral',
+        parseFloat(freshSliders.exposure) === 0 && parseFloat(freshSliders.density) === 1,
+        JSON.stringify(freshSliders));
 
     // --- Folder browser (fake directory handle; no native picker) ---
     const tiffB64 = fs.readFileSync(TIFF).toString('base64');

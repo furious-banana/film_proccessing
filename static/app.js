@@ -2103,6 +2103,12 @@ class ProfessionalFilmProcessor {
         this.curves = this.defaultCurves();
         this.rotation = 0;
         this.zoom = 1.0;
+        // A newly loaded image starts untouched: every slider back to
+        // neutral (saved sidecar settings are re-applied afterwards)
+        document.querySelectorAll('.pro-slider[id]').forEach(s => {
+            s.value = s.dataset.neutral || 0;
+            this.updateValueDisplay(s.id, parseFloat(s.value));
+        });
         this.setStraightenValue(0);
         this.drawCurves();
         this.updateUndoButton();

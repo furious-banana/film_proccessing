@@ -852,10 +852,23 @@ try {
     const BORDERED = path.join(os.tmpdir(), 'film_processor_test_bordered.tif');
     execSync(`uv run python -c "import numpy as np, cv2, tifffile; h,w=800,1200; img=np.full((h,w,3),0.85,np.float32); yy,xx=np.mgrid[0:h,0:w]; grad=(np.stack([xx/(w-1),yy/(h-1),(xx+yy)/(w+h-2)],axis=-1)*0.4+0.2).astype(np.float32); x0,x1,y0,y1=int(w*0.12),int(w*0.88),int(h*0.12),int(h*0.88); img[y0:y1,x0:x1]=grad[y0:y1,x0:x1]; M=cv2.getRotationMatrix2D((w/2,h/2),1.5,1.0); img=cv2.warpAffine(img,M,(w,h),flags=cv2.INTER_LINEAR,borderMode=cv2.BORDER_CONSTANT,borderValue=(0.85,0.85,0.85)); tifffile.imwrite(r'${BORDERED.replace(/\\/g, '/')}', np.round(img*65535).astype(np.uint16), photometric='rgb')"`,
         { cwd: APP_DIR, stdio: 'inherit' });
+    // Dirty a couple of sliders first: a newly loaded image must start
+    // untouched (settings from the previous image reset on load)
+    await page.evaluate(() => {
+        document.getElementById('exposure').value = 0.7;
+        document.getElementById('density_r').value = 1.3;
+    });
     await page.setInputFiles('#fileInput', BORDERED);
     await page.waitForFunction(() => document.getElementById('processingStatus')
         .textContent.includes('uploaded successfully'), null, { timeout: 300_000 });
     await page.waitForTimeout(800);
+    const fresh = await page.evaluate(() => ({
+        exposure: document.getElementById('exposure').value,
+        density: document.getElementById('density_r').value,
+    }));
+    check('loading a new image resets the sliders to neutral',
+        parseFloat(fresh.exposure) === 0 && parseFloat(fresh.density) === 1,
+        JSON.stringify(fresh));
     // Film base correction would crush the synthetic border to black;
     // make sure it's off (the toggle survives from earlier steps)
     const fcOn = await page.evaluate(() =>
