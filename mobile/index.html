@@ -207,8 +207,7 @@
             </details>
 
             <div class="export-row">
-                <button id="exportTiffBtn" class="tb-btn primary wide">💾 Export 16-bit TIFF</button>
-                <button id="exportJpegBtn" class="tb-btn wide">📤 Export JPEG</button>
+                <button id="exportBtn" class="tb-btn primary wide">📤 Export</button>
             </div>
             </div>
         </div>
@@ -299,11 +298,10 @@
     <div id="batchDialog" style="display:none">
         <div class="batch-dialog-card">
             <h3>Batch export</h3>
-            <label class="choice-row"><input type="radio" name="batchFormat" value="tiff" checked> 16-bit TIFF</label>
-            <label class="choice-row"><input type="radio" name="batchFormat" value="jpeg"> JPEG</label>
             <label class="choice-row"><input type="checkbox" id="batchAutoCrop" checked> Auto-crop frames without a saved crop</label>
-            <p class="hint">Each frame exports with its own saved settings.
-            You'll pick the destination folder next.</p>
+            <p class="hint">Each frame exports as a maximum-quality JPEG
+            with its own saved settings. You'll pick the destination
+            folder next.</p>
             <div class="batch-dialog-actions">
                 <button id="batchDialogGo" class="tb-btn primary">Export</button>
                 <button id="batchDialogCancel" class="tb-btn">Cancel</button>

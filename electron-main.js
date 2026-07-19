@@ -118,11 +118,16 @@ ipcMain.handle('open-file-dialog', async (event, sourcePath) => {
 
 // Save file dialog for export
 ipcMain.handle('save-file-dialog', async (event, defaultName, sourcePath) => {
-    // Determine file type from extension
+    // Filter must match the suggested name's extension, or Windows
+    // renames the saved file to the filter's extension
     const ext = path.extname(defaultName).toLowerCase();
-    const filters = ext === '.json' ?
-        [{ name: 'Settings', extensions: ['json'] }] :
-        [{ name: 'TIFF Image', extensions: ['tif', 'tiff'] }];
+    const filters = {
+        '.json': [{ name: 'Settings', extensions: ['json'] }],
+        '.jpg': [{ name: 'JPEG Image', extensions: ['jpg', 'jpeg'] }],
+        '.jpeg': [{ name: 'JPEG Image', extensions: ['jpg', 'jpeg'] }],
+        '.tif': [{ name: 'TIFF Image', extensions: ['tif', 'tiff'] }],
+        '.tiff': [{ name: 'TIFF Image', extensions: ['tif', 'tiff'] }],
+    }[ext] || [{ name: 'All Files', extensions: ['*'] }];
 
     const result = await dialog.showSaveDialog(mainWindow, {
         defaultPath: path.join(dialogStartDir(sourcePath), defaultName),

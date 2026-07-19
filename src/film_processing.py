@@ -284,16 +284,29 @@ class FilmProcessor:
         gammas chosen so near-neutral pixels stay neutral. Returns a params
         dict (eyedropper levels + density balance) - it does NOT apply
         them. Purely corrective: contrast/looks are left to the user.
+
+        Two deliberate softenings (the scan has usually been through the
+        scanner's own auto-correction already, so a second hard stretch
+        compounds its clipping): the black percentile lands on a ~2% pedestal
+        instead of pure 0 (like Photoshop Auto Color's default targets), and
+        the gamma fit gives the shadow band an equal vote with the midtones
+        so a leftover shadow cast doesn't survive a midtone-only fit.
         """
         img = self.get_proxy()
         if hasattr(img, 'get'):
             img = img.get()
         x = np.clip(img.reshape(-1, 3).astype(np.float64), 0.0, 1.0)
 
-        black = np.percentile(x, 0.2, axis=0)
+        black = np.percentile(x, 0.1, axis=0)
         white = np.percentile(x, 99.85, axis=0)
-        span = np.maximum(white - black, 1e-3)
-        y = np.clip((x - black) / span, 0.0, 1.0)
+        # Shadow headroom: lower the black point so the black percentile
+        # maps to PEDESTAL instead of 0 - detail at the floor stays
+        # separated instead of being crushed to pure black
+        PEDESTAL = 0.02
+        black_eff = np.maximum(
+            black - PEDESTAL * (white - black) / (1.0 - PEDESTAL), 0.0)
+        span = np.maximum(white - black_eff, 1e-3)
+        y = np.clip((x - black_eff) / span, 0.0, 1.0)
 
         # Near-neutral pixels carry the gray axis; if the cast is so strong
         # that few qualify, widen the net
@@ -303,25 +316,43 @@ class FilmProcessor:
         if neutral.mean() < 0.02:
             neutral = (sat < 0.25) & (lum > 0.05) & (lum < 0.9)
 
+        # Per-channel gammas from neutral medians, fitted in two luminance
+        # bands (shadow / midtone) and averaged: green anchors, R/B bend
+        # to meet it. A band only votes when it has enough pixels.
+        min_count = max(50, int(0.002 * x.shape[0]))
+
+        def band_gammas(mask):
+            if int(mask.sum()) < min_count:
+                return None
+            med = np.median(y[mask], axis=0)
+            if not 1e-4 < med[1] < 0.999:
+                return None
+            out = {}
+            for c in (0, 2):
+                if 1e-4 < med[c] < 0.999:
+                    out[c] = float(np.clip(
+                        np.log(med[1]) / np.log(med[c]), 0.5, 2.0))
+            return out
+
         gammas = [1.0, 1.0, 1.0]
-        if neutral.any():
-            med = np.median(y[neutral], axis=0)
-            ref = med[1]  # green anchors; R/B bend to meet it
-            if ref > 1e-4:
-                for c in (0, 2):
-                    if med[c] > 1e-4:
-                        gammas[c] = float(np.clip(
-                            np.log(ref) / np.log(med[c]), 0.5, 2.0))
+        fits = [f for f in (band_gammas(neutral & (lum <= 0.35)),
+                            band_gammas(neutral & (lum > 0.35))) if f]
+        if not fits:  # neither band alone is populated enough
+            fits = [f for f in (band_gammas(neutral),) if f]
+        for c in (0, 2):
+            votes = [f[c] for f in fits if c in f]
+            if votes:
+                gammas[c] = float(np.clip(np.mean(votes), 0.5, 2.0))
 
         # Express the black/white stretch through the eyedropper levels
         # chain (black remap then white divide): dividing by
         # (white-black)/(1-black) after the black remap equals a direct
         # (c-black)/(white-black) stretch
-        white_pt = 255.0 * (white - black) / np.maximum(1.0 - black, 1e-3)
+        white_pt = 255.0 * span / np.maximum(1.0 - black_eff, 1e-3)
         return {
-            'black_point_r': float(black[0] * 255.0),
-            'black_point_g': float(black[1] * 255.0),
-            'black_point_b': float(black[2] * 255.0),
+            'black_point_r': float(black_eff[0] * 255.0),
+            'black_point_g': float(black_eff[1] * 255.0),
+            'black_point_b': float(black_eff[2] * 255.0),
             'white_point_r': float(white_pt[0]),
             'white_point_g': float(white_pt[1]),
             'white_point_b': float(white_pt[2]),

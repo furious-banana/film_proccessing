@@ -123,7 +123,7 @@ function rendererParamsFor(p) {
     };
 }
 
-function pixels16ToJpegBlob(data16, width, height) {
+async function pixels16ToJpegBlob(data16, width, height, desc) {
     const canvas = document.createElement('canvas');
     canvas.width = width;
     canvas.height = height;
@@ -138,7 +138,9 @@ function pixels16ToJpegBlob(data16, width, height) {
     ctx.putImageData(imgData, 0, 0);
     // Quality 1.0 is the only setting where the browser encoder skips
     // chroma subsampling (full-resolution colour, Photoshop "Maximum").
-    return new Promise(res => canvas.toBlob(res, 'image/jpeg', 1.0));
+    const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 1.0));
+    // Roll metadata, stamped as a JPEG COM segment (app.js helper)
+    return jpegWithComment(blob, desc);
 }
 
 // Let a status update reach the screen before the next CPU-heavy file
@@ -257,7 +259,7 @@ class BatchProcessor {
 
         r.updateParams(rendererParamsFor(settings));
         const { data16, width, height } = r.renderToPixels16(prepared);
-        if (format === 'jpeg') return pixels16ToJpegBlob(data16, width, height);
+        if (format === 'jpeg') return pixels16ToJpegBlob(data16, width, height, desc);
         // desc: roll metadata, stamped as the TIFF's ImageDescription
         return new Blob([encodeTiff16(data16, width, height, desc)],
             { type: 'image/tiff' });

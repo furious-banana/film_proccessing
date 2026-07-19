@@ -259,7 +259,6 @@ class ProfessionalFilmProcessor {
         document.getElementById('zoomFitBtn')?.addEventListener('click', () => this.zoomFit());
         document.getElementById('zoom100Btn')?.addEventListener('click', () => this.zoom100());
         document.getElementById('exportBtn')?.addEventListener('click', () => this.exportImage());
-        document.getElementById('exportJpegBtn')?.addEventListener('click', () => this.exportImage('jpeg'));
         document.getElementById('saveSettingsBtn')?.addEventListener('click', () => this.saveSettings());
         document.getElementById('loadSettingsBtn')?.addEventListener('click', () => this.loadSettings());
         document.getElementById('rotateLeftBtn')?.addEventListener('click', () => this.rotateLeft());
@@ -754,24 +753,32 @@ class ProfessionalFilmProcessor {
     // Export
     // ------------------------------------------------------------------
 
-    async exportImage(format = 'tiff') {
-        const btnId = format === 'jpeg' ? 'exportJpegBtn' : 'exportBtn';
-        const exportBtn = document.getElementById(btnId);
+    // Write the current settings next to the source image (where
+    // autoLoadSettings looks for them). Returns true on success.
+    async writeSettingsSidecar() {
+        if (!window.electronAPI || !this.originalFilePath) return false;
+        const dot = this.originalFilePath.lastIndexOf('.');
+        const base = dot > 0 ? this.originalFilePath.substring(0, dot)
+                             : this.originalFilePath;
+        const json = JSON.stringify(this.getParameters(), null, 2);
+        const result = await window.electronAPI.writeFile(
+            base + '_settings.json', new TextEncoder().encode(json));
+        return !!result.success;
+    }
+
+    async exportImage() {
+        const exportBtn = document.getElementById('exportBtn');
         const idleLabel = exportBtn ? exportBtn.textContent : '';
-        const ext = format === 'jpeg' ? '.jpg' : '.tif';
         try {
             if (exportBtn) {
                 exportBtn.textContent = '⏳ Exporting...';
                 exportBtn.disabled = true;
             }
 
-            const params = this.getParameters();
-            params.format = format;
-
             const response = await fetch('/export', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(params)
+                body: JSON.stringify(this.getParameters())
             });
             if (!response.ok) {
                 throw new Error(`Export failed: ${response.status}`);
@@ -780,11 +787,11 @@ class ProfessionalFilmProcessor {
             const blob = await response.blob();
 
             if (window.electronAPI) {
-                let defaultName = 'processed_image' + ext;
+                let defaultName = 'processed_image.jpg';
                 if (this.originalFilePath) {
                     const fileName = this.originalFilePath.split(/[\\/]/).pop();
                     const base = fileName.substring(0, fileName.lastIndexOf('.')) || fileName;
-                    defaultName = base + '_processed' + ext;
+                    defaultName = base + '_processed.jpg';
                 }
 
                 const savePath = await window.electronAPI.saveFileDialog(
@@ -795,17 +802,31 @@ class ProfessionalFilmProcessor {
                     if (!result.success) {
                         throw new Error(result.error);
                     }
-                    alert('Image exported successfully!');
+                    // The export freezes an edit worth keeping: record it
+                    // next to the scan so reopening restores the look
+                    const saved = await this.writeSettingsSidecar();
+                    this.updateProcessingStatus(saved
+                        ? 'Exported JPEG + settings saved next to the scan'
+                        : 'Exported JPEG');
+                    setTimeout(() => this.updateProcessingStatus(''), 3000);
                 }
             } else {
-                const url = window.URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `processed_image_${Date.now()}${ext}`;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                window.URL.revokeObjectURL(url);
+                const stamp = Date.now();
+                for (const [data, name] of [
+                    [blob, `processed_image_${stamp}.jpg`],
+                    [new Blob([JSON.stringify(this.getParameters(), null, 2)],
+                              { type: 'application/json' }),
+                     `processed_image_${stamp}_settings.json`],
+                ]) {
+                    const url = window.URL.createObjectURL(data);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = name;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url);
+                }
             }
         } catch (error) {
             console.error('Export error:', error);
