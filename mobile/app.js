@@ -9,21 +9,25 @@
 
 // Shown on the start screen so an update can be verified at a glance.
 // Keep in step with CACHE_VERSION in sw.js.
-const APP_VERSION = 'v41';
+const APP_VERSION = 'v42';
 
 // Auto Grade: fit an automatic correction for a scanned film positive.
 // Scanner positives keep the film-base fog floor (blacks near ~0.1, never
 // 0), a color cast, and mismatched per-channel gammas (color crossover).
 // Fit per-channel black/white points from histogram percentiles, then
-// per-channel gammas so near-neutral pixels stay neutral. Two deliberate
-// softenings (the scan has usually been through the scanner's own
-// auto-correction already, so a second hard stretch compounds its
-// clipping): the black percentile lands on a ~2% pedestal instead of pure
-// 0, and the gamma fit gives the shadow band an equal vote with the
-// midtones so a leftover shadow cast doesn't survive a midtone-only fit.
-// Same algorithm as FilmProcessor.auto_grade() in the desktop backend.
-// Input is the renderer's Float32Array RGB source; returns fitted params
-// (not applied).
+// per-channel gammas. Two deliberate softenings (the scan has usually
+// been through the scanner's own auto-correction already, so a second
+// hard stretch compounds its clipping): the black percentile lands on a
+// ~2% pedestal instead of pure 0, and the gamma fit corrects CROSSOVER
+// ONLY - shadow/midtone tints are aligned to the highlight tint, not
+// forced to gray. A dye-layer mismatch always converges to neutral at
+// the top (the white stretch pins it), while a genuinely warm scene
+// stays tinted in its highlights - so anchoring there fixes the film
+// defect without stripping scene warmth (the gray-point eyedropper
+// still neutralizes absolutely on demand). Same algorithm as
+// FilmProcessor.auto_grade() in the desktop backend. Input is the
+// renderer's Float32Array RGB source; returns fitted params (not
+// applied).
 function computeAutoGrade(data, width, height) {
     const n = width * height;
     const BINS = 2048;
@@ -55,15 +59,15 @@ function computeAutoGrade(data, width, height) {
         Math.max(b - PEDESTAL * (white[c] - b) / (1 - PEDESTAL), 0));
     const span = blackEff.map((b, c) => Math.max(white[c] - b, 1e-3));
 
-    // Neutral-pixel medians of the normalized image, in two luminance
-    // bands (shadow / midtone) -> per-channel gammas. Two passes: strict
-    // chroma window, widened if the cast is extreme.
+    // Neutral-pixel medians of the normalized image, in three luminance
+    // bands (shadow / midtone / highlight) -> per-channel gammas. Two
+    // passes: strict chroma window, widened if the cast is extreme.
     const fitMedians = (satLimit) => {
         const mkBand = () => ({
             h: [new Float64Array(BINS), new Float64Array(BINS), new Float64Array(BINS)],
             count: 0,
         });
-        const bands = [mkBand(), mkBand()]; // [shadow, midtone]
+        const bands = [mkBand(), mkBand(), mkBand()];
         let count = 0;
         for (let i = 0; i < n * 3; i += 3) {
             const y = [0, 1, 2].map(c =>
@@ -72,7 +76,7 @@ function computeAutoGrade(data, width, height) {
             const sat = Math.max(y[0], y[1], y[2]) - Math.min(y[0], y[1], y[2]);
             if (sat < satLimit && lum > 0.05 && lum < 0.9) {
                 count++;
-                const band = bands[lum <= 0.35 ? 0 : 1];
+                const band = bands[lum <= 0.35 ? 0 : (lum <= 0.65 ? 1 : 2)];
                 band.count++;
                 for (let c = 0; c < 3; c++) {
                     band.h[c][Math.min(BINS - 1, (y[c] * BINS) | 0)]++;
@@ -97,35 +101,56 @@ function computeAutoGrade(data, width, height) {
     let fit = fitMedians(0.12);
     if (!fit || fit.count < 0.02 * n) fit = fitMedians(0.25) || fit;
 
-    // Green anchors; R/B bend to meet it. Each band with enough pixels
-    // gets an equal vote; if neither qualifies alone, pool them.
+    // The highlight band's tint is the anchor (scene warmth lives there;
+    // crossover doesn't); shadow/midtone bands vote for the gamma that
+    // bends their tint to match it. Green is the reference channel.
     const gammas = [1, 1, 1];
     if (fit) {
         const minCount = Math.max(50, 0.002 * n);
-        let usable = fit.bands.filter(b =>
-            b.count >= minCount && b.medians[1] > 1e-4);
-        if (!usable.length && fit.count >= minCount) {
-            const pooled = {
-                count: fit.count,
-                medians: [0, 1, 2].map(c => {
+        const valid = fit.bands.map(b => (b.count >= minCount
+            && b.medians[1] > 1e-4 && b.medians[1] < 0.999) ? b : null);
+        const anchor = valid[2] || valid[1] || null;
+        if (!anchor) {
+            // Not enough tonal spread to tell crossover from scene tint:
+            // fall back to neutralizing the pooled medians
+            if (fit.count >= minCount) {
+                const pooled = [0, 1, 2].map(c => {
                     let acc = 0;
                     for (let k = 0; k < BINS; k++) {
-                        acc += fit.bands[0].h[c][k] + fit.bands[1].h[c][k];
+                        acc += fit.bands[0].h[c][k] + fit.bands[1].h[c][k]
+                             + fit.bands[2].h[c][k];
                         if (acc >= fit.count / 2) return (k + 0.5) / BINS;
                     }
                     return 0.5;
-                }),
-            };
-            if (pooled.medians[1] > 1e-4) usable = [pooled];
-        }
-        for (const c of [0, 2]) {
-            const votes = usable
-                .filter(b => b.medians[c] > 1e-4 && b.medians[c] < 0.999)
-                .map(b => Math.min(2, Math.max(0.5,
-                    Math.log(b.medians[1]) / Math.log(b.medians[c]))));
-            if (votes.length) {
-                gammas[c] = Math.min(2, Math.max(0.5,
-                    votes.reduce((a, v) => a + v, 0) / votes.length));
+                });
+                if (pooled[1] > 1e-4 && pooled[1] < 0.999) {
+                    for (const c of [0, 2]) {
+                        if (pooled[c] > 1e-4 && pooled[c] < 0.999) {
+                            gammas[c] = Math.min(2, Math.max(0.5,
+                                Math.log(pooled[1]) / Math.log(pooled[c])));
+                        }
+                    }
+                }
+            }
+        } else {
+            for (const c of [0, 2]) {
+                // Clamped so one bright colored surface can't drag the fit
+                const r = Math.min(1.25, Math.max(0.8,
+                    anchor.medians[c] / anchor.medians[1]));
+                const votes = [];
+                for (const b of valid) {
+                    if (!b || b === anchor) continue;
+                    const t = b.medians[1] * r;
+                    if (b.medians[c] > 1e-4 && b.medians[c] < 0.999
+                        && t > 1e-4 && t < 0.999) {
+                        votes.push(Math.min(2, Math.max(0.5,
+                            Math.log(t) / Math.log(b.medians[c]))));
+                    }
+                }
+                if (votes.length) {
+                    gammas[c] = Math.min(2, Math.max(0.5,
+                        votes.reduce((a, v) => a + v, 0) / votes.length));
+                }
             }
         }
     }

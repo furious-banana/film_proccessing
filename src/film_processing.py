@@ -289,8 +289,13 @@ class FilmProcessor:
         scanner's own auto-correction already, so a second hard stretch
         compounds its clipping): the black percentile lands on a ~2% pedestal
         instead of pure 0 (like Photoshop Auto Color's default targets), and
-        the gamma fit gives the shadow band an equal vote with the midtones
-        so a leftover shadow cast doesn't survive a midtone-only fit.
+        the gamma fit corrects CROSSOVER ONLY - shadow/midtone tints are
+        aligned to the highlight tint, not forced to gray. A dye-layer
+        mismatch always converges to neutral at the top (the white stretch
+        pins it), while a genuinely warm scene stays tinted in its
+        highlights - so anchoring on the highlight tint fixes the film
+        defect without stripping scene warmth. Absolute neutralization
+        stays available through the gray-point eyedropper.
         """
         img = self.get_proxy()
         if hasattr(img, 'get'):
@@ -316,33 +321,48 @@ class FilmProcessor:
         if neutral.mean() < 0.02:
             neutral = (sat < 0.25) & (lum > 0.05) & (lum < 0.9)
 
-        # Per-channel gammas from neutral medians, fitted in two luminance
-        # bands (shadow / midtone) and averaged: green anchors, R/B bend
-        # to meet it. A band only votes when it has enough pixels.
+        # Per-channel gammas from neutral medians in three luminance bands.
+        # The highlight band's tint is the anchor (scene warmth lives
+        # there; crossover doesn't); the shadow and midtone bands vote for
+        # the gamma that bends their tint to match it. Green is the
+        # reference channel; R/B bend to meet it.
         min_count = max(50, int(0.002 * x.shape[0]))
 
-        def band_gammas(mask):
+        def band_medians(mask):
             if int(mask.sum()) < min_count:
                 return None
             med = np.median(y[mask], axis=0)
             if not 1e-4 < med[1] < 0.999:
                 return None
-            out = {}
-            for c in (0, 2):
-                if 1e-4 < med[c] < 0.999:
-                    out[c] = float(np.clip(
-                        np.log(med[1]) / np.log(med[c]), 0.5, 2.0))
-            return out
+            return med
 
+        bands = [band_medians(neutral & (lum <= 0.35)),
+                 band_medians(neutral & (lum > 0.35) & (lum <= 0.65)),
+                 band_medians(neutral & (lum > 0.65))]
+        anchor = next((b for b in (bands[2], bands[1]) if b is not None), None)
         gammas = [1.0, 1.0, 1.0]
-        fits = [f for f in (band_gammas(neutral & (lum <= 0.35)),
-                            band_gammas(neutral & (lum > 0.35))) if f]
-        if not fits:  # neither band alone is populated enough
-            fits = [f for f in (band_gammas(neutral),) if f]
-        for c in (0, 2):
-            votes = [f[c] for f in fits if c in f]
-            if votes:
-                gammas[c] = float(np.clip(np.mean(votes), 0.5, 2.0))
+        if anchor is None:
+            # Not enough tonal spread to tell crossover from scene tint:
+            # fall back to neutralizing the pooled medians
+            med = band_medians(neutral)
+            if med is not None:
+                for c in (0, 2):
+                    if 1e-4 < med[c] < 0.999:
+                        gammas[c] = float(np.clip(
+                            np.log(med[1]) / np.log(med[c]), 0.5, 2.0))
+        else:
+            for c in (0, 2):
+                # Clamped so one bright colored surface can't drag the fit
+                r = float(np.clip(anchor[c] / anchor[1], 0.8, 1.25))
+                votes = []
+                for med in bands:
+                    if med is None or med is anchor:
+                        continue
+                    if 1e-4 < med[c] < 0.999 and 1e-4 < med[1] * r < 0.999:
+                        votes.append(float(np.clip(
+                            np.log(med[1] * r) / np.log(med[c]), 0.5, 2.0)))
+                if votes:
+                    gammas[c] = float(np.clip(np.mean(votes), 0.5, 2.0))
 
         # Express the black/white stretch through the eyedropper levels
         # chain (black remap then white divide): dividing by
