@@ -1,4 +1,4 @@
-// Cache-first service worker: after the first visit the app works fully
+﻿// Cache-first service worker: after the first visit the app works fully
 // offline. Bump CACHE_VERSION when any app file changes.
 //
 // Updates are ATOMIC: fetches only ever come from THIS version's cache,
@@ -7,7 +7,7 @@
 // end up with half old / half new files - which used to break the app
 // mid-update when the old HTML met a newer script.
 // Keep in step with APP_VERSION in app.js (shown on the start screen)
-const CACHE_VERSION = 'film-mobile-v39';
+const CACHE_VERSION = 'film-mobile-v40';
 
 const ASSETS = [
     './',

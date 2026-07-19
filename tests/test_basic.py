@@ -228,7 +228,7 @@ def test_auto_grade_neutralizes_scan():
     ], axis=-1)
     processor = FilmProcessor(img, is_negative=False)
     fitted = processor.auto_grade()
-    assert 0.10 < fitted['black_point_r'] / 255.0 < 0.14, "fog floor found"
+    assert 0.09 < fitted['black_point_r'] / 255.0 < 0.14, "fog floor found"
     assert fitted['density_r'] > 1.05, "red gamma skew detected"
     assert fitted['density_b'] < 0.95, "blue gamma skew detected"
 
@@ -239,7 +239,12 @@ def test_auto_grade_neutralizes_scan():
     mid = out[:, 32:96]  # midtones, away from the rebate and clipped top
     spread = np.abs(mid.max(axis=-1) - mid.min(axis=-1)).mean()
     assert spread < 0.03, f"graded ramp should be neutral, spread {spread:.4f}"
-    assert out[:, :8].max() < 0.02, "rebate/fog floor should reach true black"
+    # Shadow headroom: the fog floor lands just above black (~2% pedestal)
+    # instead of being crushed to 0 - scanner auto-correction has usually
+    # clipped the shadows once already
+    floor = out[:, :8]
+    assert 0.005 < floor.max() < 0.05, \
+        f"fog floor should sit on a small pedestal, got {floor.max():.4f}"
 
 
 def test_linear_curves_are_identity():

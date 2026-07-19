@@ -9,15 +9,21 @@
 
 // Shown on the start screen so an update can be verified at a glance.
 // Keep in step with CACHE_VERSION in sw.js.
-const APP_VERSION = 'v39';
+const APP_VERSION = 'v40';
 
 // Auto Grade: fit an automatic correction for a scanned film positive.
 // Scanner positives keep the film-base fog floor (blacks near ~0.1, never
 // 0), a color cast, and mismatched per-channel gammas (color crossover).
 // Fit per-channel black/white points from histogram percentiles, then
-// per-channel gammas so near-neutral pixels stay neutral. Same algorithm
-// as FilmProcessor.auto_grade() in the desktop backend. Input is the
-// renderer's Float32Array RGB source; returns fitted params (not applied).
+// per-channel gammas so near-neutral pixels stay neutral. Two deliberate
+// softenings (the scan has usually been through the scanner's own
+// auto-correction already, so a second hard stretch compounds its
+// clipping): the black percentile lands on a ~2% pedestal instead of pure
+// 0, and the gamma fit gives the shadow band an equal vote with the
+// midtones so a leftover shadow cast doesn't survive a midtone-only fit.
+// Same algorithm as FilmProcessor.auto_grade() in the desktop backend.
+// Input is the renderer's Float32Array RGB source; returns fitted params
+// (not applied).
 function computeAutoGrade(data, width, height) {
     const n = width * height;
     const BINS = 2048;
@@ -39,49 +45,87 @@ function computeAutoGrade(data, width, height) {
         }
         return 1;
     };
-    const black = hist.map(h => percentile(h, 0.002));
+    const black = hist.map(h => percentile(h, 0.001));
     const white = hist.map(h => percentile(h, 0.9985));
-    const span = black.map((b, c) => Math.max(white[c] - b, 1e-3));
+    // Shadow headroom: lower the black point so the black percentile maps
+    // to PEDESTAL instead of 0 - detail at the floor stays separated
+    // instead of being crushed to pure black
+    const PEDESTAL = 0.02;
+    const blackEff = black.map((b, c) =>
+        Math.max(b - PEDESTAL * (white[c] - b) / (1 - PEDESTAL), 0));
+    const span = blackEff.map((b, c) => Math.max(white[c] - b, 1e-3));
 
-    // Neutral-pixel medians of the normalized image -> per-channel gammas.
-    // Two passes: strict chroma window, widened if the cast is extreme.
+    // Neutral-pixel medians of the normalized image, in two luminance
+    // bands (shadow / midtone) -> per-channel gammas. Two passes: strict
+    // chroma window, widened if the cast is extreme.
     const fitMedians = (satLimit) => {
-        const nh = [new Float64Array(BINS), new Float64Array(BINS), new Float64Array(BINS)];
+        const mkBand = () => ({
+            h: [new Float64Array(BINS), new Float64Array(BINS), new Float64Array(BINS)],
+            count: 0,
+        });
+        const bands = [mkBand(), mkBand()]; // [shadow, midtone]
         let count = 0;
         for (let i = 0; i < n * 3; i += 3) {
             const y = [0, 1, 2].map(c =>
-                Math.min(Math.max((data[i + c] - black[c]) / span[c], 0), 1));
+                Math.min(Math.max((data[i + c] - blackEff[c]) / span[c], 0), 1));
             const lum = (y[0] + y[1] + y[2]) / 3;
             const sat = Math.max(y[0], y[1], y[2]) - Math.min(y[0], y[1], y[2]);
             if (sat < satLimit && lum > 0.05 && lum < 0.9) {
                 count++;
+                const band = bands[lum <= 0.35 ? 0 : 1];
+                band.count++;
                 for (let c = 0; c < 3; c++) {
-                    nh[c][Math.min(BINS - 1, (y[c] * BINS) | 0)]++;
+                    band.h[c][Math.min(BINS - 1, (y[c] * BINS) | 0)]++;
                 }
             }
         }
         if (!count) return null;
-        return { medians: nh.map(h => {
+        const median = (h, cnt) => {
             let acc = 0;
             for (let b = 0; b < BINS; b++) {
                 acc += h[b];
-                if (acc >= count / 2) return (b + 0.5) / BINS;
+                if (acc >= cnt / 2) return (b + 0.5) / BINS;
             }
             return 0.5;
-        }), count };
+        };
+        return { bands: bands.map(b => ({
+            count: b.count,
+            h: b.h,
+            medians: b.h.map(h => median(h, b.count)),
+        })), count };
     };
     let fit = fitMedians(0.12);
     if (!fit || fit.count < 0.02 * n) fit = fitMedians(0.25) || fit;
 
+    // Green anchors; R/B bend to meet it. Each band with enough pixels
+    // gets an equal vote; if neither qualifies alone, pool them.
     const gammas = [1, 1, 1];
     if (fit) {
-        const ref = fit.medians[1]; // green anchors; R/B bend to meet it
-        if (ref > 1e-4) {
-            for (const c of [0, 2]) {
-                if (fit.medians[c] > 1e-4) {
-                    gammas[c] = Math.min(2, Math.max(0.5,
-                        Math.log(ref) / Math.log(fit.medians[c])));
-                }
+        const minCount = Math.max(50, 0.002 * n);
+        let usable = fit.bands.filter(b =>
+            b.count >= minCount && b.medians[1] > 1e-4);
+        if (!usable.length && fit.count >= minCount) {
+            const pooled = {
+                count: fit.count,
+                medians: [0, 1, 2].map(c => {
+                    let acc = 0;
+                    for (let k = 0; k < BINS; k++) {
+                        acc += fit.bands[0].h[c][k] + fit.bands[1].h[c][k];
+                        if (acc >= fit.count / 2) return (k + 0.5) / BINS;
+                    }
+                    return 0.5;
+                }),
+            };
+            if (pooled.medians[1] > 1e-4) usable = [pooled];
+        }
+        for (const c of [0, 2]) {
+            const votes = usable
+                .filter(b => b.medians[c] > 1e-4 && b.medians[c] < 0.999)
+                .map(b => Math.min(2, Math.max(0.5,
+                    Math.log(b.medians[1]) / Math.log(b.medians[c]))));
+            if (votes.length) {
+                gammas[c] = Math.min(2, Math.max(0.5,
+                    votes.reduce((a, v) => a + v, 0) / votes.length));
             }
         }
     }
@@ -89,9 +133,9 @@ function computeAutoGrade(data, width, height) {
     // Express the stretch through the eyedropper levels chain (black remap
     // then white divide): dividing by (white-black)/(1-black) after the
     // black remap equals a direct (c-black)/(white-black) stretch
-    const whitePt = black.map((b, c) => 255 * span[c] / Math.max(1 - b, 1e-3));
+    const whitePt = blackEff.map((b, c) => 255 * span[c] / Math.max(1 - b, 1e-3));
     return {
-        black_point_r: black[0] * 255, black_point_g: black[1] * 255, black_point_b: black[2] * 255,
+        black_point_r: blackEff[0] * 255, black_point_g: blackEff[1] * 255, black_point_b: blackEff[2] * 255,
         white_point_r: whitePt[0], white_point_g: whitePt[1], white_point_b: whitePt[2],
         density_r: gammas[0], density_g: gammas[1], density_b: gammas[2],
     };
