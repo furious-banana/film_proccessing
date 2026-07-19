@@ -7,7 +7,7 @@
 // end up with half old / half new files - which used to break the app
 // mid-update when the old HTML met a newer script.
 // Keep in step with APP_VERSION in app.js (shown on the start screen)
-const CACHE_VERSION = 'film-mobile-v37';
+const CACHE_VERSION = 'film-mobile-v38';
 
 const ASSETS = [
     './',

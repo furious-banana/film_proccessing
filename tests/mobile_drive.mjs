@@ -1325,6 +1325,31 @@ print('MAP', grid.shape[1], grid.shape[0], ','.join(map(str, grid.flatten().toli
         !!stamped && stamped.includes('Portra 400') && stamped.includes('ISO 800'),
         String(stamped));
 
+    // JPEG export must be maximum quality: at quality 1.0 the browser
+    // encoder skips chroma subsampling, so the SOF marker's sampling
+    // factors must all read 0x11 (4:4:4, full-resolution colour).
+    const jpegSamp = await page.evaluate(async () => {
+        const blob = await mobileApp.makeJpegBlob();
+        const buf = new Uint8Array(await blob.arrayBuffer());
+        let i = 2, samp = null;
+        while (i + 4 < buf.length && buf[i] === 0xFF) {
+            const marker = buf[i + 1];
+            if (marker === 0xC0 || marker === 0xC1 || marker === 0xC2) {
+                const ncomp = buf[i + 9];
+                samp = [];
+                for (let c = 0; c < ncomp; c++) samp.push(buf[i + 11 + c * 3]);
+                break;
+            }
+            if (marker === 0xDA) break;
+            i += 2 + ((buf[i + 2] << 8) | buf[i + 3]);
+        }
+        return { type: blob.type, magic: buf[0] === 0xFF && buf[1] === 0xD8, samp };
+    });
+    check('JPEG export is full-colour max quality (4:4:4, no subsampling)',
+        jpegSamp.type === 'image/jpeg' && jpegSamp.magic
+            && !!jpegSamp.samp && jpegSamp.samp.every(s => s === 0x11),
+        JSON.stringify(jpegSamp));
+
     // --- USB-drive regression: some Android storage providers mis-serve
     // byte-range reads through a folder handle (slice() comes back empty),
     // which made real TIFFs look "not supported". Whole-file reads work,

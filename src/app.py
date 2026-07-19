@@ -245,9 +245,9 @@ def undo_crop():
 
 @app.route('/auto_grade', methods=['POST'])
 def auto_grade():
-    """Fit an automatic film-scan correction (levels + density balance +
-    S-curve) from the current image. Returns the fitted params without
-    applying them; the client sets its controls and re-renders."""
+    """Fit an automatic film-scan correction (levels + density balance)
+    from the current image. Returns the fitted params without applying
+    them; the client sets its controls and re-renders."""
     try:
         if processor is None:
             return jsonify({'error': 'No image loaded', 'success': False})
@@ -259,7 +259,8 @@ def auto_grade():
 
 @app.route('/export', methods=['POST'])
 def export_image():
-    """Export the processed image as a full-resolution 16-bit TIFF.
+    """Export the processed image as a full-resolution 16-bit TIFF, or a
+    maximum-quality JPEG when the request asks for format 'jpeg'.
 
     Uses the exact same pipeline as the preview, on the full-resolution
     source (inverted if negative, cropped if cropped), so the export
@@ -282,6 +283,23 @@ def export_image():
         quarter_turns = (((rotation % 360) + 360) % 360) // 90
         if quarter_turns:
             processed = np.rot90(processed, k=(4 - quarter_turns) % 4)
+
+        if params.get('format') == 'jpeg':
+            img_uint8 = np.rint(np.clip(processed, 0.0, 1.0) * 255).astype(np.uint8)
+            output = io.BytesIO()
+            # quality=100 + subsampling=0 (4:4:4) keeps full-resolution
+            # colour — the equivalent of Photoshop's "Maximum" setting.
+            Image.fromarray(img_uint8).save(output, format='JPEG',
+                                            quality=100, subsampling=0)
+            size = output.tell()
+            output.seek(0)
+            logger.info(f"Exported JPEG: {img_uint8.shape}, {size} bytes")
+            return send_file(
+                output,
+                mimetype='image/jpeg',
+                as_attachment=True,
+                download_name=f'processed_{int(time.time())}.jpg'
+            )
 
         img_uint16 = np.rint(np.clip(processed, 0.0, 1.0) * 65535).astype(np.uint16)
 

@@ -9,7 +9,7 @@
 
 // Shown on the start screen so an update can be verified at a glance.
 // Keep in step with CACHE_VERSION in sw.js.
-const APP_VERSION = 'v37';
+const APP_VERSION = 'v38';
 
 // Auto Grade: fit an automatic correction for a scanned film positive.
 // Scanner positives keep the film-base fog floor (blacks near ~0.1, never
@@ -1435,7 +1435,9 @@ class MobileFilmProcessor {
             imgData.data[i * 4 + 3] = 255;
         }
         ctx.putImageData(imgData, 0, 0);
-        return new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.95));
+        // Quality 1.0 is the only setting where the browser encoder skips
+        // chroma subsampling (full-resolution colour, Photoshop "Maximum").
+        return new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 1.0));
     }
 
     // Save with a real pick-the-location dialog where the browser has one

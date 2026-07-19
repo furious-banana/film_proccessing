@@ -16,8 +16,9 @@ code in `src/`, `static/` or `templates/`.
 - 16-bit TIFF decode via [UTIF.js](https://github.com/photopea/UTIF.js)
   (vendored, MIT); Adobe RGB scans are converted to sRGB on load, like
   the desktop app.
-- Export writes an uncompressed 16-bit RGB TIFF (or a JPEG for quick
-  sharing) and hands it to the system share sheet.
+- Export writes an uncompressed 16-bit RGB TIFF (or a maximum-quality
+  JPEG — quality 100, no chroma subsampling — for sharing) and hands it
+  to the system share sheet.
 - **Working resolution is capped at 4096 px** on the long side — phones
   can't hold a 22-megapixel float pipeline in browser memory. Use the
   desktop app when you need full-resolution output.

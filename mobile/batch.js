@@ -136,7 +136,9 @@ function pixels16ToJpegBlob(data16, width, height) {
         imgData.data[i * 4 + 3] = 255;
     }
     ctx.putImageData(imgData, 0, 0);
-    return new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.95));
+    // Quality 1.0 is the only setting where the browser encoder skips
+    // chroma subsampling (full-resolution colour, Photoshop "Maximum").
+    return new Promise(res => canvas.toBlob(res, 'image/jpeg', 1.0));
 }
 
 // Let a status update reach the screen before the next CPU-heavy file
