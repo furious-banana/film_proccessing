@@ -1,8 +1,8 @@
 # Film Processor — Mobile
 
 A standalone, fully client-side version of the film processor that runs
-entirely on your phone. No PC, no server — decoding, editing and 16-bit
-TIFF export all happen in the browser.
+entirely on your phone. No PC, no server — decoding, editing and export
+all happen in the browser.
 
 It is completely separate from the desktop app; nothing here touches the
 code in `src/`, `static/` or `templates/`.
@@ -16,9 +16,9 @@ code in `src/`, `static/` or `templates/`.
 - 16-bit TIFF decode via [UTIF.js](https://github.com/photopea/UTIF.js)
   (vendored, MIT); Adobe RGB scans are converted to sRGB on load, like
   the desktop app.
-- Export writes an uncompressed 16-bit RGB TIFF (or a maximum-quality
-  JPEG — quality 100, no chroma subsampling — for sharing) and hands it
-  to the system share sheet.
+- Export writes a maximum-quality JPEG (quality 100, no chroma
+  subsampling — Photoshop's "Maximum") and saves the photo's settings,
+  so reopening it restores exactly the exported look.
 - **Working resolution is capped at 4096 px** on the long side — phones
   can't hold a 22-megapixel float pipeline in browser memory. Use the
   desktop app when you need full-resolution output.
@@ -40,8 +40,7 @@ the same file the desktop app auto-loads and saves.
 **Roll metadata**: the 🎞️ button in the browser records the roll's film
 stock, camera, ISO, date and notes as a `roll.json` in the scans folder,
 so the info travels with the roll. It shows under the folder name and is
-stamped into exported TIFFs as their description tag (JPEG exports carry
-no metadata). Whichever device
+stamped into exported JPEGs as a comment segment. Whichever device
 saved last wins, and crops made on the phone survive a PC round-trip
 (the desktop app doesn't touch them).
 
@@ -73,5 +72,6 @@ install.
 ## Development
 
 Automated test: `node tests/mobile_drive.mjs` drives the app in an
-Electron window, exercises every control, and cross-checks an exported
-TIFF pixel-for-pixel against the desktop Python pipeline.
+Electron window, exercises every control, and cross-checks the export
+pixels (via an internal lossless TIFF path) pixel-for-pixel against the
+desktop Python pipeline.

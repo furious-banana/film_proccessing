@@ -707,26 +707,20 @@ try {
         check('film correction toggle syncs to server', fcBefore !== fcAfter, `${fcBefore} -> ${fcAfter}`);
     }
 
-    // --- Export via fetch (avoids the native save dialog) ---
-    const exportInfo = await page.evaluate(async () => {
-        const resp = await fetch('/export', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(processor.getParameters())
-        });
-        const buf = await resp.arrayBuffer();
-        return { ok: resp.ok, type: resp.headers.get('content-type'), bytes: buf.byteLength };
-    });
-    check('export returns 16-bit TIFF',
-        exportInfo.ok && exportInfo.type === 'image/tiff' && exportInfo.bytes > 100000,
-        JSON.stringify(exportInfo));
+    // --- Export via fetch (avoids the native save dialog). One export
+    // path only: maximum-quality JPEG, no chroma subsampling (4:4:4) ---
+    const oneButton = await page.evaluate(() => ({
+        jpegBtn: !!document.getElementById('exportJpegBtn'),
+        label: document.getElementById('exportBtn')?.textContent.trim(),
+    }));
+    check('a single Export button remains', !oneButton.jpegBtn
+        && oneButton.label === '📤 Export', JSON.stringify(oneButton));
 
-    // --- JPEG export: maximum quality, no chroma subsampling (4:4:4) ---
     const jpegInfo = await page.evaluate(async () => {
         const resp = await fetch('/export', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...processor.getParameters(), format: 'jpeg' })
+            body: JSON.stringify(processor.getParameters())
         });
         const buf = new Uint8Array(await resp.arrayBuffer());
         // Walk the JPEG segments to the SOF marker and read each

@@ -9,7 +9,7 @@
 
 // Shown on the start screen so an update can be verified at a glance.
 // Keep in step with CACHE_VERSION in sw.js.
-const APP_VERSION = 'v40';
+const APP_VERSION = 'v41';
 
 // Auto Grade: fit an automatic correction for a scanned film positive.
 // Scanner positives keep the film-base fog floor (blacks near ~0.1, never
@@ -139,6 +139,29 @@ function computeAutoGrade(data, width, height) {
         white_point_r: whitePt[0], white_point_g: whitePt[1], white_point_b: whitePt[2],
         density_r: gammas[0], density_g: gammas[1], density_b: gammas[2],
     };
+}
+
+// Stamp text into a JPEG as a COM (comment) segment - the JPEG
+// equivalent of the TIFF ImageDescription roll line, since the canvas
+// encoder has no metadata support of its own. Inserted after any
+// leading APPn segments so the JFIF header stays first.
+async function jpegWithComment(blob, text) {
+    if (!text) return blob;
+    const buf = new Uint8Array(await blob.arrayBuffer());
+    let at = 2; // past SOI
+    while (at + 4 <= buf.length && buf[at] === 0xFF
+           && buf[at + 1] >= 0xE0 && buf[at + 1] <= 0xEF) {
+        at += 2 + ((buf[at + 2] << 8) | buf[at + 3]);
+    }
+    const bytes = new TextEncoder().encode(text);
+    const seg = new Uint8Array(4 + bytes.length);
+    seg[0] = 0xFF;
+    seg[1] = 0xFE;
+    seg[2] = (bytes.length + 2) >> 8;
+    seg[3] = (bytes.length + 2) & 0xFF;
+    seg.set(bytes, 4);
+    return new Blob([buf.slice(0, at), seg, buf.slice(at)],
+        { type: 'image/jpeg' });
 }
 
 class MobileFilmProcessor {
@@ -1269,27 +1292,36 @@ class MobileFilmProcessor {
         return params;
     }
 
+    // Remember the current settings locally and, when the photo came
+    // from the folder browser, write the sidecar next to it (asking for
+    // write access - must be called from a tap so the permission prompt
+    // is allowed). Returns { where: 'sidecar'|'local', params }.
+    async persistSettings() {
+        const params = this.settingsPayload();
+        params.saved_at = Date.now(); // freshness for phone<->PC sync
+        // Remembered locally so reopening this photo restores its edits
+        this.rememberSettings(params);
+        const folder = this.sourceFolder;
+        const canWrite = folder && this.sourceFile && (folder.canWrite
+            || (folder.requestWrite && await folder.requestWrite()));
+        if (canWrite
+            && await writeSidecar(folder.dir, this.sourceFile.name, params)) {
+            if (folder.sidecars) folder.sidecars.add(
+                sidecarName(this.sourceFile.name).toLowerCase());
+            return { where: 'sidecar', params };
+        }
+        return { where: 'local', params };
+    }
+
     setupSettingsFile() {
         document.getElementById('saveSettingsBtn').addEventListener('click', async () => {
             if (!this.original) { this.status('Load an image first'); return; }
-            const params = this.settingsPayload();
-            params.saved_at = Date.now(); // freshness for phone<->PC sync
-            // Remembered locally so reopening this photo restores its edits
-            this.rememberSettings(params);
-            // Opened from the folder browser: ask for write access now (a
-            // tap, so the permission prompt is allowed) and save the
-            // sidecar next to the photo, where the desktop app auto-loads
-            // it - no save dialog needed
-            const folder = this.sourceFolder;
-            const canWrite = folder && this.sourceFile && (folder.canWrite
-                || (folder.requestWrite && await folder.requestWrite()));
-            if (canWrite
-                && await writeSidecar(folder.dir, this.sourceFile.name, params)) {
-                if (folder.sidecars) folder.sidecars.add(
-                    sidecarName(this.sourceFile.name).toLowerCase());
+            const { where, params } = await this.persistSettings();
+            if (where === 'sidecar') {
                 this.status('Settings saved next to the photo');
                 return;
             }
+            // No writable folder: fall back to a save dialog
             const base = this.sourceFile
                 ? this.sourceFile.name.replace(/\.[^.]+$/, '') : 'image';
             const ok = await this.saveFileAs(
@@ -1487,7 +1519,9 @@ class MobileFilmProcessor {
         ctx.putImageData(imgData, 0, 0);
         // Quality 1.0 is the only setting where the browser encoder skips
         // chroma subsampling (full-resolution colour, Photoshop "Maximum").
-        return new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 1.0));
+        const blob = await new Promise(resolve =>
+            canvas.toBlob(resolve, 'image/jpeg', 1.0));
+        return jpegWithComment(blob, this.rollDescription());
     }
 
     // Save with a real pick-the-location dialog where the browser has one
@@ -1544,19 +1578,18 @@ class MobileFilmProcessor {
         const base = () => this.sourceFile
             ? this.sourceFile.name.replace(/\.[^.]+$/, '') + '_edit'
             : 'film_' + new Date().toISOString().replace(/[:T-]/g, '').slice(0, 14);
-        document.getElementById('exportTiffBtn').addEventListener('click', async () => {
+        document.getElementById('exportBtn').addEventListener('click', async () => {
             if (!this.original) return;
-            this.status('Exporting TIFF…');
-            const ok = await this.saveFileAs(() => this.makeTiffBlob(), base() + '.tif',
-                [{ description: '16-bit TIFF image', accept: { 'image/tiff': ['.tif', '.tiff'] } }]);
-            this.status(ok ? 'Exported 16-bit TIFF' : 'Export cancelled');
-        });
-        document.getElementById('exportJpegBtn').addEventListener('click', async () => {
-            if (!this.original) return;
-            this.status('Exporting JPEG…');
+            this.status('Exporting…');
             const ok = await this.saveFileAs(() => this.makeJpegBlob(), base() + '.jpg',
                 [{ description: 'JPEG image', accept: { 'image/jpeg': ['.jpg', '.jpeg'] } }]);
-            this.status(ok ? 'Exported JPEG' : 'Export cancelled');
+            if (!ok) { this.status('Export cancelled'); return; }
+            // An export is an edit worth keeping: record the settings too,
+            // so reopening the photo restores exactly this look
+            const { where } = await this.persistSettings();
+            this.status(where === 'sidecar'
+                ? 'Exported JPEG - settings saved next to the photo'
+                : 'Exported JPEG - settings remembered');
         });
     }
 

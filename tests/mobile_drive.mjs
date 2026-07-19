@@ -383,7 +383,7 @@ try {
             }) };
         };
         mobileApp.exportPixels = async () => { seq.push('render'); return origRender(); };
-        document.getElementById('exportTiffBtn').click();
+        document.getElementById('exportBtn').click();
         await new Promise(res => setTimeout(res, 1000));
         window.showSaveFilePicker = origPicker;
         delete mobileApp.exportPixels;
@@ -672,7 +672,8 @@ try {
     const b64 = await page.evaluate(() => mobileApp.exportTiffBase64());
     const exportPath = path.join(os.tmpdir(), 'film_mobile_export.tif');
     fs.writeFileSync(exportPath, Buffer.from(b64, 'base64'));
-    check('export produces a TIFF', fs.statSync(exportPath).size > 1000000,
+    check('internal lossless TIFF harness captures the export pixels',
+        fs.statSync(exportPath).size > 1000000,
         `${fs.statSync(exportPath).size} bytes`);
 
     // cmd.exe splits multi-line -c strings at newlines; use a script file
@@ -1322,18 +1323,30 @@ print('MAP', grid.shape[1], grid.shape[0], ','.join(map(str, grid.flatten().toli
         rollBack === 'Portra 400 · Canon AE-1 · ISO 800 · June 2026 · test roll',
         rollBack);
 
-    // The editor's own TIFF export stamps the roll as ImageDescription
+    // The editor's JPEG export stamps the roll as a COM comment segment
+    // (the JPEG stand-in for the TIFF ImageDescription tag)
     const stamped = await page.evaluate(async () => {
         let f = null;
         for await (const e of window.__browseDir.values()) {
             if (e.name === 'a_frame1.tif') f = await e.getFile();
         }
         await mobileApp.loadFile(f, { dir: window.__browseDir, canWrite: true });
-        const blob = await mobileApp.makeTiffBlob();
-        const ifd = UTIF.decode(await blob.arrayBuffer())[0];
-        return ifd.t270 ? String(ifd.t270) : null;
+        const blob = await mobileApp.makeJpegBlob();
+        const buf = new Uint8Array(await blob.arrayBuffer());
+        let i = 2, com = null;
+        while (i + 4 < buf.length && buf[i] === 0xFF) {
+            const marker = buf[i + 1];
+            const len = (buf[i + 2] << 8) | buf[i + 3];
+            if (marker === 0xFE) {
+                com = new TextDecoder().decode(buf.slice(i + 4, i + 2 + len));
+                break;
+            }
+            if (marker === 0xDA) break;
+            i += 2 + len;
+        }
+        return com;
     });
-    check('editor TIFF export carries the roll in ImageDescription',
+    check('editor JPEG export carries the roll as a comment segment',
         !!stamped && stamped.includes('Portra 400') && stamped.includes('ISO 800'),
         String(stamped));
 
@@ -1594,18 +1607,29 @@ print('MAP', grid.shape[1], grid.shape[0], ','.join(map(str, grid.flatten().toli
 
     await page.evaluate(() => {
         document.getElementById('batchExportBtn').click(); // opens the dialog
-        document.getElementById('batchDialogGo').click();  // 16-bit TIFF default
+        document.getElementById('batchDialogGo').click();  // max-quality JPEG
     });
     await page.waitForFunction(() =>
         window.__batchOut && Object.keys(window.__batchOut).length === 1,
         null, { timeout: 120_000 });
     const exp = await page.evaluate(async (fsz) => {
-        const blob = window.__batchOut['roll_01_edit.tif'];
+        const blob = window.__batchOut['roll_01_edit.jpg'];
         if (!blob) return { names: Object.keys(window.__batchOut) };
-        const ifd = UTIF.decode(await blob.arrayBuffer())[0];
-        const desc = ifd.t270 ? String(ifd.t270) : null;
-        await mobileApp.loadFile(new File([blob], 'roll_01_edit.tif',
-            { type: 'image/tiff' }));
+        // Roll info lives in the JPEG COM comment segment
+        const buf = new Uint8Array(await blob.arrayBuffer());
+        let i = 2, desc = null;
+        while (i + 4 < buf.length && buf[i] === 0xFF) {
+            const marker = buf[i + 1];
+            const len = (buf[i + 2] << 8) | buf[i + 3];
+            if (marker === 0xFE) {
+                desc = new TextDecoder().decode(buf.slice(i + 4, i + 2 + len));
+                break;
+            }
+            if (marker === 0xDA) break;
+            i += 2 + len;
+        }
+        await mobileApp.loadFile(new File([blob], 'roll_01_edit.jpg',
+            { type: 'image/jpeg' }));
         const r = mobileApp.renderer;
         let sum = 0, n = 0;
         for (let i = 0; i < r.imageData.length; i += 997) { sum += r.imageData[i]; n++; }
@@ -1622,7 +1646,7 @@ print('MAP', grid.shape[1], grid.shape[0], ','.join(map(str, grid.flatten().toli
         exp.mean > 0.55, `mean ${exp.mean && exp.mean.toFixed(3)}`);
     check('exported flag recorded and badge shown', exp.exported && exp.badge,
         JSON.stringify(exp));
-    check('batch export stamps the roll into ImageDescription',
+    check('batch export stamps the roll into the JPEG comment',
         !!exp.desc && exp.desc.includes('HP5') && exp.desc.includes('ISO 1600'),
         String(exp.desc));
 

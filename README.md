@@ -2,7 +2,7 @@
 
 A desktop/web app for color-correcting scanned film negatives. Loads 16-bit
 TIFF scans (and JPEG/PNG/BMP), inverts negatives, and gives you real-time
-GPU-accelerated adjustments with a lossless 16-bit TIFF export that exactly
+GPU-accelerated adjustments with a maximum-quality JPEG export that exactly
 matches the on-screen preview.
 
 ## Running
@@ -44,8 +44,9 @@ uv run python main.py
   rotation changes
 - **Settings sidecars**: save/load all edit parameters as JSON; in the
   desktop app, `<image>_settings.json` next to the file is auto-loaded
-- **Export**: full-resolution 16-bit TIFF, with rotation and crop applied;
-  zero-edit exports are pixel-lossless
+- **Export**: full-resolution maximum-quality JPEG (quality 100, no chroma
+  subsampling — Photoshop's "Maximum"), with rotation and crop applied;
+  the settings sidecar is saved next to the scan at the same time
 
 ## Architecture (short version)
 
@@ -89,4 +90,4 @@ Packaging a portable Windows build: `package-for-distribution.bat`
   are converted to sRGB on load)
 - **JPEG / PNG / BMP** (8-bit)
 
-Export is always untagged sRGB 16-bit TIFF.
+Export is always untagged sRGB maximum-quality JPEG.

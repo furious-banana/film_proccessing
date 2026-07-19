@@ -800,7 +800,7 @@ class FolderBrowser {
         document.getElementById('batchDialog').style.display = 'none';
         const sel = this.selectedEntries();
         if (!sel.length) return;
-        const format = document.querySelector('input[name="batchFormat"]:checked').value;
+        const format = 'jpeg'; // maximum-quality JPEG, roll info in COM
         const autoCrop = document.getElementById('batchAutoCrop').checked;
         let dir = window.__batchOutDir || null; // test hook
         if (!dir) {

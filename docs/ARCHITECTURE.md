@@ -14,7 +14,7 @@ Upload (TIFF/JPEG/PNG/BMP)
             │    └─ WebGL shader   ALL live adjustments, instant
             ├─ /process            same adjustments in NumPy/CuPy (CPU
             │                      fallback preview when WebGL unavailable)
-            └─ /export             same adjustments at full res → 16-bit TIFF
+            └─ /export             same adjustments at full res → max-quality JPEG
 ```
 
 ## The pipeline invariant (read this before changing adjustments)
