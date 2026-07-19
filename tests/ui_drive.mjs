@@ -721,6 +721,36 @@ try {
         exportInfo.ok && exportInfo.type === 'image/tiff' && exportInfo.bytes > 100000,
         JSON.stringify(exportInfo));
 
+    // --- JPEG export: maximum quality, no chroma subsampling (4:4:4) ---
+    const jpegInfo = await page.evaluate(async () => {
+        const resp = await fetch('/export', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...processor.getParameters(), format: 'jpeg' })
+        });
+        const buf = new Uint8Array(await resp.arrayBuffer());
+        // Walk the JPEG segments to the SOF marker and read each
+        // component's sampling factors; 0x11 everywhere means 4:4:4.
+        let i = 2, samp = null;
+        while (i + 4 < buf.length && buf[i] === 0xFF) {
+            const marker = buf[i + 1];
+            if (marker === 0xC0 || marker === 0xC1 || marker === 0xC2) {
+                const ncomp = buf[i + 9];
+                samp = [];
+                for (let c = 0; c < ncomp; c++) samp.push(buf[i + 11 + c * 3]);
+                break;
+            }
+            if (marker === 0xDA) break;
+            i += 2 + ((buf[i + 2] << 8) | buf[i + 3]);
+        }
+        return { ok: resp.ok, type: resp.headers.get('content-type'),
+                 magic: buf[0] === 0xFF && buf[1] === 0xD8, samp };
+    });
+    check('JPEG export is full-colour max quality (4:4:4, no subsampling)',
+        jpegInfo.ok && jpegInfo.type === 'image/jpeg' && jpegInfo.magic
+            && !!jpegInfo.samp && jpegInfo.samp.every(s => s === 0x11),
+        JSON.stringify(jpegInfo));
+
     // --- Settings round trip ---
     const rt = await page.evaluate(() => {
         document.getElementById('shadows').value = 0.25;

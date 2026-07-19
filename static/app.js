@@ -259,6 +259,7 @@ class ProfessionalFilmProcessor {
         document.getElementById('zoomFitBtn')?.addEventListener('click', () => this.zoomFit());
         document.getElementById('zoom100Btn')?.addEventListener('click', () => this.zoom100());
         document.getElementById('exportBtn')?.addEventListener('click', () => this.exportImage());
+        document.getElementById('exportJpegBtn')?.addEventListener('click', () => this.exportImage('jpeg'));
         document.getElementById('saveSettingsBtn')?.addEventListener('click', () => this.saveSettings());
         document.getElementById('loadSettingsBtn')?.addEventListener('click', () => this.loadSettings());
         document.getElementById('rotateLeftBtn')?.addEventListener('click', () => this.rotateLeft());
@@ -753,8 +754,11 @@ class ProfessionalFilmProcessor {
     // Export
     // ------------------------------------------------------------------
 
-    async exportImage() {
-        const exportBtn = document.getElementById('exportBtn');
+    async exportImage(format = 'tiff') {
+        const btnId = format === 'jpeg' ? 'exportJpegBtn' : 'exportBtn';
+        const exportBtn = document.getElementById(btnId);
+        const idleLabel = exportBtn ? exportBtn.textContent : '';
+        const ext = format === 'jpeg' ? '.jpg' : '.tif';
         try {
             if (exportBtn) {
                 exportBtn.textContent = '⏳ Exporting...';
@@ -762,6 +766,7 @@ class ProfessionalFilmProcessor {
             }
 
             const params = this.getParameters();
+            params.format = format;
 
             const response = await fetch('/export', {
                 method: 'POST',
@@ -775,11 +780,11 @@ class ProfessionalFilmProcessor {
             const blob = await response.blob();
 
             if (window.electronAPI) {
-                let defaultName = 'processed_image.tif';
+                let defaultName = 'processed_image' + ext;
                 if (this.originalFilePath) {
                     const fileName = this.originalFilePath.split(/[\\/]/).pop();
                     const base = fileName.substring(0, fileName.lastIndexOf('.')) || fileName;
-                    defaultName = base + '_processed.tif';
+                    defaultName = base + '_processed' + ext;
                 }
 
                 const savePath = await window.electronAPI.saveFileDialog(
@@ -796,7 +801,7 @@ class ProfessionalFilmProcessor {
                 const url = window.URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = `processed_image_${Date.now()}.tif`;
+                a.download = `processed_image_${Date.now()}${ext}`;
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
@@ -807,7 +812,7 @@ class ProfessionalFilmProcessor {
             alert('Failed to export image: ' + error.message);
         } finally {
             if (exportBtn) {
-                exportBtn.textContent = '💾 Export';
+                exportBtn.textContent = idleLabel;
                 exportBtn.disabled = false;
             }
         }
@@ -1131,6 +1136,9 @@ class ProfessionalFilmProcessor {
             document.getElementById('cropBtn').style.display = 'none';
             document.getElementById('applyCropBtn').style.display = 'block';
             document.getElementById('cancelCropBtn').style.display = 'block';
+            // Hidden while picking a box so the toolbar stays one row
+            // (a taller toolbar mid-crop breaks the image/overlay fit)
+            document.getElementById('undoCropBtn').style.display = 'none';
         } else {
             this.cancelCrop();
         }
@@ -1382,8 +1390,8 @@ class ProfessionalFilmProcessor {
                     this.displayImage(data.image);
                 }
 
+                this.cropUndoAvailable = true;
                 this.cancelCrop();
-                document.getElementById('undoCropBtn').style.display = 'inline-block';
             }
         } catch (error) {
             console.error('Error cropping image:', error);
@@ -1399,6 +1407,8 @@ class ProfessionalFilmProcessor {
         document.getElementById('cropBtn').style.display = 'block';
         document.getElementById('applyCropBtn').style.display = 'none';
         document.getElementById('cancelCropBtn').style.display = 'none';
+        document.getElementById('undoCropBtn').style.display =
+            this.cropUndoAvailable ? 'inline-block' : 'none';
         const bar = document.getElementById('straightenBar');
         if (bar) bar.style.display = 'none';
         // Leave the constant-scale sizing behind and re-fit the view
@@ -1433,6 +1443,7 @@ class ProfessionalFilmProcessor {
                 }
 
                 if (!data.undoAvailable) {
+                    this.cropUndoAvailable = false;
                     document.getElementById('undoCropBtn').style.display = 'none';
                 }
             }
@@ -2138,6 +2149,7 @@ class ProfessionalFilmProcessor {
             this.originalImage = result.image;
             this.resetEditState();
 
+            this.cropUndoAvailable = false;
             document.getElementById('undoCropBtn').style.display = 'none';
 
             // Bake film base correction (if enabled) into the source before
